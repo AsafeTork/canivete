@@ -13,6 +13,7 @@ import "./lib/tasks.mjs";
 import "./lib/devengine.mjs";
 import "./lib/tools-browser.mjs";
 import "./lib/tools-owner.mjs";
+import "./lib/feedback.mjs";
 
 reg("n_tools_info", {
   description: "Catálogo agrupado do canivete: filesystem+exec, web/APIs sem chave, orquestração, DevEngine, browsers e meta. Use para descobrir o que o MCP faz e qual tool chamar.",
@@ -42,8 +43,8 @@ reg("n_tools_info", {
       "-- DevEngine AI-Native (8): arquitetura sem varrer, investigar causa (12→1), impacto, patch AST, testes afetados, bg proc, UI state, DAG --",
       g(["n_get_architecture_summary", "n_investigate_issue", "n_analyze_change_impact", "n_apply_semantic_patch", "n_execute_targeted_tests", "n_manage_background_process", "n_inspect_ui_state", "n_orchestrate_task"]),
       "",
-      "-- Meta (4): catálogo, pergunta humana, skill, plan --",
-      g(["n_tools_info", "n_question", "n_skill", "n_plan"]),
+      "-- Meta (5): catálogo, pergunta humana, skill, plan, report --",
+      g(["n_tools_info", "n_question", "n_skill", "n_plan", "n_report"]),
     ].join("\n"));
   },
 });

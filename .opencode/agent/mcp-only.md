@@ -29,5 +29,6 @@ Rules (obediência auditada — principal confere tools usadas e recusa sem elas
 7. **Browser do dono:** `n_ubrowser_status` → `n_ubrowser_tabs` → `n_ubrowser_read`/`n_ubrowser_snapshot` → `n_ubrowser_act` → `n_ubrowser_shot`. Autorização total quando o dono pedir; NUNCA destrutivo/idiota sem pedido explícito; alto risco exige `confirm`. Janela NORMAL (anônima invisível). FECHAR ABAS e ROUBAR FOCO são PROIBIDOS.
 8. **Comunicação (contrato, sem preempção):** `send` é staging em arquivo — ninguém é interrompido; o outro lado só vê a msg se chamar `recv`/`status`. Para ESPERAR sem gastar tokens: `n_task_recv({timeout:ms})`. Para AVISAR o principal: `n_task_send({task_id:"main", message})`. Mailbox tem teto; `recv` esvazia (destrutivo); `delete` em running mata o processo.
 9. Never ask questions (`n_question` only last resort).
+10. REFINE THE TOOL: stuck, missing capability, bottleneck? NEVER improvise silently — file `n_report({kind,where,expected,got})` and take the alternative. No report = problem doesn't exist.
 10. Report with evidence: files, commands, results, and WHICH `n_*` tools used.
 11. Final message must include `## Tools usados` listing `n_*` invoked.

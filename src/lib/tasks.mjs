@@ -126,7 +126,8 @@ function orchestrationNote(id) {
 - Modelos: o principal escolheu este explicitamente via n_list_models. opencode-go/*, hy3-free e desconhecidos são BLOQUEADOS (isError).
 - Comunicação (confie no MCP, SEM polling manual): dispare background (id em mãos = abort-safe) → UMA chamada n_task_wait com timeout longo (o servidor espera por você) → leia. NUNCA sleep loops nem status em loop. Subagente: ao concluir, além da resposta final, SEMPRE n_task_send({task_id:"main", message:"done <id> + resumo 1 linha"}) — o principal acorda pela notificação mesmo sem estar esperando. Peers: handshake explícito + recv com timeout. Mailbox tem teto; recv esvazia (destrutivo); delete em running mata. REGRA DE OURO: nunca termine com mailbox própria cheia — recv({timeout:30000}) em loop até 2x vazio. Respostas trazem 📬 — leia n_task_notifications.
 - Dono: acesso total QUANDO ELE PEDIR; NUNCA destrutivo/idiota sem pedido explícito; alto risco exige confirm; FECHAR ABAS e ROUBAR FOCO PROIBIDOS.
-- ENTREGA = resultado + n_task_send main ("done <id>") + ## Tools usados (toda n_* invocada). Zero tools, tool improvisada ou sem evidência = RECUSADA.\n\n`;
+- ENTREGA = resultado + n_task_send main ("done <id>") + ## Tools usados (toda n_* invocada). Zero tools, tool improvisada ou sem evidência = RECUSADA.
+- REFINE A FERRAMENTA: travou, faltou tool/capacidade ou achou gargalo? NUNCA improvise em silêncio — registre n_report({kind,where,expected,got}) e siga pelo alternativo. Sem report o problema não existe.\n\n`;
 }
 
 const NOTIF_DIR = join(BROKER_DIR, "notifications");
