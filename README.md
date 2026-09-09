@@ -35,6 +35,19 @@ claude mcp add canivete -- node /caminho/canivete/src/server.mjs
 
 **Genérico (qualquer cliente MCP stdio):** comando `node`, args `["/caminho/canivete/src/server.mjs"]`, cwd = seu projeto.
 
+## Modo remoto (recomendado: zero restart do host)
+
+```bash
+node src/server.mjs --http 19423   # Streamable HTTP em 127.0.0.1:19423/mcp
+```
+
+```json
+{ "mcp": { "canivete": { "type": "remote", "url": "http://127.0.0.1:19423/mcp", "headers": { "X-Token": "{file:/home/voce/.config/canivete/token.txt}" } } } }
+```
+
+O host reconecta por chamada: trocar **código** do canivete nunca exige restart do opencode
+(só reinicie o processo do canivete). Trocar **config** exige 1 restart (opencode lê config só no boot).
+
 Exemplos prontos em `examples/`.
 
 ## Runner de subagentes (`n_task`)

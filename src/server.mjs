@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // canivete — MCP universal (qualquer CLI via stdio): fs+exec, web, apis, tasks, devengine, browsers.
+// Modo remoto (sem restart do host p/ trocar código): node src/server.mjs --http 19423
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { TOOLS, reg, out, sendToHost } from "./lib/ctx.mjs";
@@ -51,6 +52,16 @@ for (const id of safeTaskIds()) {
   try {
     await sweepTask(readJson(join(TASKS_DIR, `${id}.json`), null));
   } catch {}
+}
+
+// Modo remoto (sem restart do host p/ trocar código): node src/server.mjs --http 19423
+// (depois deste ponto só roda o loop stdio; o remoto já registrou tudo acima)
+const httpIdx = process.argv.indexOf("--http");
+if (httpIdx >= 0) {
+  const port = Number(process.argv[httpIdx + 1]) || 19423;
+  const { serveHttp, getToken } = await import("./remote.mjs");
+  await serveHttp(port, getToken());
+  await new Promise(() => {});
 }
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
