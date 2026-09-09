@@ -61,6 +61,16 @@ CANIVETE_RUNNER=claude CANIVETE_RUN_TEMPLATE="claude -p {prompt}" node src/serve
 
 Sem o binário do runner, `n_task` devolve erro claro (o resto funciona).
 
+## Correio que acorda (mailbox push)
+
+`send` grava em disco compartilhado (`MCP_BROKER_DIR`, padrão por projeto; fixe
+`MCP_BROKER_DIR=/tmp/canivete-shared` para um correio único entre projetos).
+Cada servidor observa `TASK_ID` próprio + `main` (se `CANIVETE_WATCH_MAIN=1`) e
+empurra 📬 automático na sessão — ninguém dorme sem ler. Extras via `CANIVETE_WATCH`
+(vírgula). No modo remoto o push não atravessa HTTP: vale o handshake
+(`recv` com timeout + regra de ouro no prompt do agente) e o scan de
+"correio dormindo" em `n_task_notifications` + aviso ao enviar p/ task parada.
+
 ## Segurança (doutrina do dono)
 
 - O agente só age **quando o dono pede**. Fechar abas e roubar foco **não existem** no código.

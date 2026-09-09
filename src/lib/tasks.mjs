@@ -1,7 +1,7 @@
 // canivete — orquestração: spawn de subagentes (runner plugável) + mailbox + todos + meta(skills)
 import { spawn, execSync } from "node:child_process";
 import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
-import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync, watch } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { reg, out, trimOut, CWD, HOME, sendToHost } from "./ctx.mjs";
@@ -122,12 +122,49 @@ function orchestrationNote(id) {
 - Nomes: as tools aparecem aqui como ${pfx}_n_* (prefixo do servidor); "n_*" é o mesmo nome sem prefixo. Prefira sempre n_*: saída truncada e uso auditável em ## Tools usados.
 - Modelos: o principal escolheu este explicitamente via n_list_models. opencode-go/*, hy3-free e desconhecidos são BLOQUEADOS (isError).
 - DevEngine preferir: n_get_architecture_summary, n_investigate_issue, n_analyze_change_impact, n_apply_semantic_patch, n_execute_targeted_tests
-- Comunicação (contrato, sem preempção): send é staging em arquivo — ninguém é interrompido; o receptor só vê a msg se chamar recv/status. Para ESPERAR sem gastar tokens: n_task_recv({timeout:ms}) espera até 170s no servidor. Para AVISAR o principal no meio da task: n_task_send({task_id:"main", message}). Para COORDENAR peers: o principal injeta os task_ids nos prompts + handshake explícito (ex: "após etapa 1 faça recv com timeout; enviarei GO"). Mailbox tem teto (100 msgs/4000 chars); recv esvazia (destrutivo); delete em running encerra o processo. Respostas trazem 📬 quando há notificações pendentes — leia n_task_notifications então. O principal pode ver sua geração ao vivo via n_task_tail.
+- Comunicação (contrato, sem preempção): send é staging em arquivo — ninguém é interrompido; o receptor só vê a msg se chamar recv/status. Para ESPERAR sem gastar tokens: n_task_recv({timeout:ms}) espera até 170s no servidor. Para AVISAR o principal no meio da task: n_task_send({task_id:"main", message}). Para COORDENAR peers: o principal injeta os task_ids nos prompts + handshake explícito (ex: "após etapa 1 faça recv com timeout; enviarei GO"). Mailbox tem teto (100 msgs/4000 chars); recv esvazia (destrutivo); delete em running encerra o processo. Respostas trazem 📬 quando há notificações pendentes — leia n_task_notifications então. O principal pode ver sua geração ao vivo via n_task_tail. REGRA DE OURO: nunca termine com mailbox própria não-vazia — antes de concluir, faça n_task_recv({timeout:30000}); se vier msg, responda e repita até vir vazio 2x. No modo local o 📬 chega automático na sessão.
 - Ao terminar, responda com resultado + ## Tools usados.\n\n`;
 }
 
 const NOTIF_DIR = join(BROKER_DIR, "notifications");
 mkdirSync(NOTIF_DIR, { recursive: true });
+
+// ---- entrega AUTOMÁTICA (modo stdio/local): observa as caixas e empurra 📬 p/ sessão ----
+// Cada servidor observa sua própria caixa (TASK_ID do worker) + "main" se CANIVETE_WATCH_MAIN=1
+// (+ extras em CANIVETE_WATCH, vírgula). No modo remoto (HTTP) não há push — vale o handshake.
+const WATCH_BOXES = [...new Set([
+  ...(process.env.TASK_ID ? [process.env.TASK_ID] : []),
+  ...(process.env.CANIVETE_WATCH_MAIN === "1" ? ["main"] : []),
+  ...(process.env.CANIVETE_WATCH || "").split(",").map((s) => s.trim()).filter(Boolean),
+])];
+if (WATCH_BOXES.length) {
+  try {
+    mkdirSync(MB_DIR, { recursive: true });
+    const known = new Map(); // box -> "len:lastTs"
+    const sigOf = (box) => (box && box.msgs && box.msgs.length ? `${box.msgs.length}:${box.msgs[box.msgs.length - 1].ts}` : "");
+    for (const id of WATCH_BOXES) {
+      try { known.set(id, sigOf(readJson(join(MB_DIR, `${id}.json`), null))); } catch { known.set(id, ""); }
+    }
+    let timer = null;
+    const check = () => {
+      for (const id of WATCH_BOXES) {
+        let box = null;
+        try { box = readJson(join(MB_DIR, `${id}.json`), null); } catch {}
+        const sig = sigOf(box);
+        if (sig && sig !== known.get(id)) {
+          known.set(id, sig);
+          const last = box.msgs[box.msgs.length - 1];
+          try {
+            sendToHost({ method: "notifications/message", params: { level: "info", logger: "canivete", data: `📬 ${box.msgs.length} nova(s) p/ ${id} de ${last.from}: ${String(last.message).slice(0, 200)} — leia com n_task_recv` } });
+          } catch {}
+        } else if (!sig) known.set(id, "");
+      }
+    };
+    watch(MB_DIR, (ev, file) => {
+      if (file && String(file).endsWith(".json")) { clearTimeout(timer); timer = setTimeout(check, 800); }
+    }).on("error", () => {});
+  } catch {}
+}
 
 async function notifyMain(taskId, status, description, model, summary) {
   const ts = new Date().toISOString();
@@ -695,10 +732,14 @@ reg("n_task_send", {
   },
   run: async ({ task_id, message, from }) => {
     if (task_id !== "main" && !resolveTask(task_id)) return out(`task ${task_id} not found`, true);
+    const target = task_id === "main" ? null : resolveTask(task_id);
     const file = join(MB_DIR, `${task_id}.json`);
     const box = pushCapped(readJson(file, { msgs: [] }), from || "main", message);
     await writeJson(file, box);
-    return out(`delivered to ${task_id} (mailbox ${box.msgs.length} msg(s), cap ${MAX_MSGS})` + pendingHints());
+    const dormant = target && target.status !== "running"
+      ? `\nAVISO: task ${task_id} está ${target.status} — a msg pode dormir sem leitura. Prefira "main" ou re-spawne.`
+      : "";
+    return out(`delivered to ${task_id} (mailbox ${box.msgs.length} msg(s), cap ${MAX_MSGS})${dormant}` + pendingHints());
   },
 });
 
@@ -832,8 +873,20 @@ reg("n_task_notifications", {
         } catch {}
       }
     } catch {}
-    if (!notifs.length) return out("(no notifications)");
-    return out(notifs.map((n) => `[${n.ts}] ${n.taskId} (${n.description}) — ${n.status}${n.summary ? `: ${n.summary.slice(0, 150)}` : ""}`).join("\n"));
+    let text = notifs.length ? notifs.map((n) => `[${n.ts}] ${n.taskId} (${n.description}) — ${n.status}${n.summary ? `: ${n.summary.slice(0, 150)}` : ""}`).join("\n") : "(no notifications)";
+    // cartas dormidas: caixas com msg não lida (ninguém deu recv)
+    try {
+      const mbf = readdirSync(MB_DIR).filter((f) => f.endsWith(".json"));
+      const sleeping = [];
+      for (const f of mbf) {
+        try {
+          const b = JSON.parse(readFileSync(join(MB_DIR, f), "utf8"));
+          if (b && b.msgs && b.msgs.length) sleeping.push(`${f.replace(/\.json$/, "")}: ${b.msgs.length} não lida(s), última ${b.msgs[b.msgs.length - 1].ts}`);
+        } catch {}
+      }
+      if (sleeping.length) text += `\n-- correio dormindo (sem recv) --\n${sleeping.join("\n")}`;
+    } catch {}
+    return out(text);
   },
 });
 
