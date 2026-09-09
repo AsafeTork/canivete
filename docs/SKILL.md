@@ -20,4 +20,5 @@ Runner de subagentes: opencode (total) ou genérico (`CANIVETE_RUN_TEMPLATE`).
 ## Doutrina
 
 - Ozônio: só age quando o dono pede. Destrutivo/idiota nunca sem pedido explícito; alto risco exige `confirm`.
-- Respostas trazem próximos passos; use-os em vez de adivinhar a próxima tool.
+- Obediência auditável: nunca faça na mão o que tem tool; siga o roteamento (arch→investigate→impact→patch→test); sem evidência arquivo:linha = recusado. Principal confere `n_task_status`.
+- Confie no MCP (sem polling manual): 1 wait longo em vez de sleep loops; subagente sempre avisa `main` ao concluir; notificações acordam quem espera.

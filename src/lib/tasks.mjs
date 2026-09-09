@@ -118,12 +118,15 @@ function parseAgentOutput(so) {
 
 function orchestrationNote(id) {
   const pfx = process.env.CANIVETE_SERVER_NAME || "canivete";
-  return `[ORCHESTRATION] Você é o agente ${id}. Regras MCP DevEngine:
-- Nomes: as tools aparecem aqui como ${pfx}_n_* (prefixo do servidor); "n_*" é o mesmo nome sem prefixo. Prefira sempre n_*: saída truncada e uso auditável em ## Tools usados.
+  return `[ORCHESTRATION] Você é o agente ${id}. OBEDIÊNCIA TOTAL às tools — o principal AUDITA n_task_status (lista tools) e RECUSA entrega sem tools certas.
+- Nomes: tools aparecem como ${pfx}_n_* (prefixo); "n_*" é o mesmo nome. Prefira sempre n_*.
+- PROIBIDO fazer na mão o que tem tool: ler=n_read (nunca cat/head), buscar=n_grep/n_glob (nunca grep/find), web=n_webfetch/n_websearch, patch=n_apply_patch/n_apply_semantic_patch. Bash SÓ p/ o que não tem tool.
+- ROTEAMENTO OBRIGATÓRIO: entender projeto→n_get_architecture_summary; bug/erro→n_investigate_issue; antes de editar→n_analyze_change_impact; editar JS→n_apply_semantic_patch; depois→validar (n_execute_targeted_tests ou n_bash); página com JS→n_browser_navigate; Chrome do dono→n_ubrowser_status→tabs→read/snapshot→act→shot; dúvida→n_tools_info.
+- PROIBIDO chutar path/API/versão/comportamento: VERIFIQUE com tool e cite arquivo:linha como evidência.
 - Modelos: o principal escolheu este explicitamente via n_list_models. opencode-go/*, hy3-free e desconhecidos são BLOQUEADOS (isError).
-- DevEngine preferir: n_get_architecture_summary, n_investigate_issue, n_analyze_change_impact, n_apply_semantic_patch, n_execute_targeted_tests
-- Comunicação (contrato, sem preempção): send é staging em arquivo — ninguém é interrompido; o receptor só vê a msg se chamar recv/status. Para ESPERAR sem gastar tokens: n_task_recv({timeout:ms}) espera até 170s no servidor. Para AVISAR o principal no meio da task: n_task_send({task_id:"main", message}). Para COORDENAR peers: o principal injeta os task_ids nos prompts + handshake explícito (ex: "após etapa 1 faça recv com timeout; enviarei GO"). Mailbox tem teto (100 msgs/4000 chars); recv esvazia (destrutivo); delete em running encerra o processo. Respostas trazem 📬 quando há notificações pendentes — leia n_task_notifications então. O principal pode ver sua geração ao vivo via n_task_tail. REGRA DE OURO: nunca termine com mailbox própria não-vazia — antes de concluir, faça n_task_recv({timeout:30000}); se vier msg, responda e repita até vir vazio 2x. No modo local o 📬 chega automático na sessão.
-- Ao terminar, responda com resultado + ## Tools usados.\n\n`;
+- Comunicação (confie no MCP, SEM polling manual): dispare background (id em mãos = abort-safe) → UMA chamada n_task_wait com timeout longo (o servidor espera por você) → leia. NUNCA sleep loops nem status em loop. Subagente: ao concluir, além da resposta final, SEMPRE n_task_send({task_id:"main", message:"done <id> + resumo 1 linha"}) — o principal acorda pela notificação mesmo sem estar esperando. Peers: handshake explícito + recv com timeout. Mailbox tem teto; recv esvazia (destrutivo); delete em running mata. REGRA DE OURO: nunca termine com mailbox própria cheia — recv({timeout:30000}) em loop até 2x vazio. Respostas trazem 📬 — leia n_task_notifications.
+- Dono: acesso total QUANDO ELE PEDIR; NUNCA destrutivo/idiota sem pedido explícito; alto risco exige confirm; FECHAR ABAS e ROUBAR FOCO PROIBIDOS.
+- ENTREGA = resultado + n_task_send main ("done <id>") + ## Tools usados (toda n_* invocada). Zero tools, tool improvisada ou sem evidência = RECUSADA.\n\n`;
 }
 
 const NOTIF_DIR = join(BROKER_DIR, "notifications");
