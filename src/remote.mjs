@@ -45,7 +45,10 @@ export async function serveHttp(port, token) {
       }
       if (u.pathname !== "/mcp") { res.writeHead(404); res.end("not found"); return; }
       const tok = req.headers["x-token"] || u.searchParams.get("token") || String(req.headers["authorization"] || "").replace(/^Bearer /i, "");
-      if (!token || tok !== token) { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "bad token" })); return; }
+      if (!token || tok !== token) {
+        process.stderr.write(`[canivete] 401 ${req.method} ${u.pathname} hdrs=${Object.keys(req.headers).join(",")}\n`);
+        res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "bad token" })); return;
+      }
       if (req.method !== "POST") { res.writeHead(405); res.end("POST only"); return; }
       let body = "";
       await new Promise((ok, fail) => {

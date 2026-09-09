@@ -42,7 +42,7 @@ node src/server.mjs --http 19423   # Streamable HTTP em 127.0.0.1:19423/mcp
 ```
 
 ```json
-{ "mcp": { "canivete": { "type": "remote", "url": "http://127.0.0.1:19423/mcp", "headers": { "X-Token": "{file:/home/voce/.config/canivete/token.txt}" } } } }
+{ "mcp": { "canivete": { "type": "remote", "url": "http://127.0.0.1:19423/mcp", "oauth": false, "headers": { "X-Token": "{file:/home/voce/.config/canivete/token.txt}" } } } }
 ```
 
 O host reconecta por chamada: trocar **código** do canivete nunca exige restart do opencode
