@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "canivete": {
+      "type": "local",
+      "command": ["node", "/caminho/para/canivete/src/server.mjs"],
+      "enabled": true,
+      "timeout": 180000
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "canivete",
+  "version": "1.0.0",
+  "description": "MCP universal (qualquer CLI): filesystem+exec, web sem chave, orquestração de subagentes, DevEngine e automação de navegador (headless + Chrome logado via extensão). Zero deps.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "bin": { "canivete-mcp": "./src/server.mjs" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/server.mjs && for f in src/lib/*.mjs; do node --check $f || exit 1; done && node --check extension/background.js && node --check extension/content.js && node --check extension/popup.js && node -e \"JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8'));JSON.parse(require('fs').readFileSync('config/models.json','utf8'))\" && echo OK",
+    "smoke": "node test/smoke.mjs"
+  },
+  "keywords": ["mcp", "model-context-protocol", "automation", "browser", "chrome", "cdp", "devtools"]
+}

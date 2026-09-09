@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Canivete UBrowser",
+  "version": "1.0.0",
+  "description": "Ponte local do canivete: seu agente usa ESTE Chrome, com suas contas logadas. Localhost apenas, com token.",
+  "permissions": ["tabs", "activeTab", "scripting", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "UBrowser Bridge"
+  }
+}

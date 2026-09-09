@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><style>
+body{width:260px;font-family:system-ui,sans-serif;padding:12px;font-size:13px}
+.row{margin:8px 0} input{width:100%;box-sizing:border-box;padding:6px}
+button{width:100%;padding:8px;margin-top:4px;cursor:pointer}
+#dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#999}
+.on{background:#0a0}.off{background:#c00}
+.small{color:#666;font-size:11px}
+</style></head>
+<body>
+<h3><span id="dot"></span> Canivete UBrowser</h3>
+<div class="row small" id="status">carregando…</div>
+<div class="row"><label>Token (arquivo token.txt na pasta da extensão):</label>
+<input id="token" type="password" placeholder="cole o token"></div>
+<div class="row"><button id="save">Salvar token</button></div>
+<div class="row"><button id="toggle">Pausar / Ativar</button></div>
+<div class="row"><button id="test">Testar conexão</button></div>
+<div class="row small" id="diag">diag: …</div>
+<p class="small">Pausado = o modelo NÃO enxerga nem toca no seu navegador. Localhost apenas.</p>
+<script src="popup.js"></script>
+</body></html>
