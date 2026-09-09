@@ -1,5 +1,5 @@
 // canivete — web: fetch enxuto + search multi-backend + cache TTL
-import { reg, out, httpJson, escapeRe } from "./ctx.mjs";
+import { reg, out, trimOut, httpJson, escapeRe, UA } from "./ctx.mjs";
 
 const ttlCache = new Map();
 function cached(key, ttlMs, fn, ok) {
