@@ -42,7 +42,7 @@ function cwdTag(s) {
   for (let i = 0; i < s.length; i++) h = (((h << 5) + h + s.charCodeAt(i)) >>> 0);
   return h.toString(36);
 }
-const BROKER_DIR = process.env.MCP_BROKER_DIR || join(tmpdir(), `opencode-mcp-broker-${cwdTag(CWD)}`);
+const BROKER_DIR = process.env.MCP_BROKER_DIR || join(HOME, `.config/canivete/broker-${cwdTag(CWD)}`);
 const TASKS_DIR = join(BROKER_DIR, "tasks");
 const MB_DIR = join(BROKER_DIR, "mailbox");
 
