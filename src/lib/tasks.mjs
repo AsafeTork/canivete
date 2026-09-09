@@ -174,7 +174,7 @@ async function sweepTask(t) {
   const staleNoPid = !t.pid && age > 60000;
   if (deadPid) {
     try {
-      const finalized = finalizeDetachedIfDead(t.id);
+      const finalized = await finalizeDetachedIfDead(t.id).catch(() => null);
       if (finalized) return finalized;
     } catch { /* finalize failed, fall through to staleNoPid check */ }
   }
@@ -293,16 +293,16 @@ reg("n_task", {
       entry.lastActivityAt = entry.startedAt;
       persistTask(entry);
       child.unref();
-      const finalizeFromDb = (exitCode, err) => {
+      const finalizeFromDb = async (exitCode, err) => {
         clearTimeout(timer);
         clearInterval(pollDb);
         if (!tasks.has(id)) { entry.status = "deleted"; entry.finishedAt = new Date().toISOString(); resolveP(entry); return; }
         if (!sessionId) sessionId = findSessionByTitle(id);
-        let responseText = getSessionAssistantText(sessionId);
+        const settled = sessionId ? await settleSession(sessionId) : { text: "", parts: [] };
+        let responseText = settled.text;
         let toolCalls = [];
         if (sessionId) {
-          const parts = getSessionParts(sessionId);
-          for (const p of parts) {
+          for (const p of settled.parts) {
             if (p.ptype && p.ptype !== "text" && p.ptype !== "step-start") toolCalls.push(p.ptype);
           }
           entry.sessionId = sessionId;
@@ -333,15 +333,15 @@ reg("n_task", {
         entry.lastActivityAt = new Date().toISOString();
         const partial = getSessionAssistantText(sessionId);
         if (partial) entry.tailRaw = partial.slice(-30000);
-        if (isSessionDone(sessionId)) { finalizeFromDb(0, null); }
+        if (isSessionDone(sessionId)) { finalizeFromDb(0, null).catch(() => {}); }
       }, 2000);
-      child.on("error", (err) => { clearInterval(pollDb); finalizeFromDb(-1, err.message); });
+      child.on("error", (err) => { clearInterval(pollDb); finalizeFromDb(-1, err.message).catch(() => {}); });
       child.on("exit", (code) => {
         setTimeout(() => {
           if (!tasks.has(id) || tasks.get(id).status !== "running") return;
           if (!sessionId) sessionId = findSessionByTitle(id);
-          if (sessionId && isSessionDone(sessionId)) { finalizeFromDb(code, null); }
-          else finalizeFromDb(code, code === 0 ? null : `exit ${code}`);
+          if (sessionId && isSessionDone(sessionId)) { finalizeFromDb(code, null).catch(() => {}); }
+          else finalizeFromDb(code, code === 0 ? null : `exit ${code}`).catch(() => {});
         }, 2000);
       });
     });
@@ -413,6 +413,22 @@ function getSessionParts(sessionId) {
   );
 }
 
+// Race fix: o session DB do opencode commita parts/texto assincronamente após o fim da sessão;
+// ler cedo demais devolve result/tools vazios. settleSession repete a leitura até texto
+// não-vazio ou esgotar tries (3s sleep entre tentativas).
+async function settleSession(sessionId, tries = 4) {
+  let text = "";
+  let parts = [];
+  if (!sessionId) return { text, parts };
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    text = getSessionAssistantText(sessionId);
+    parts = getSessionParts(sessionId);
+    if (text) return { text, parts };
+    if (attempt < tries) await new Promise((r) => setTimeout(r, 3000));
+  }
+  return { text, parts };
+}
+
 function isSessionDone(sessionId) {
   if (!sessionId) return false;
   const rows = opencodeDbQuery(`SELECT time_updated, time_created FROM session WHERE id='${sessionId}'`);
@@ -431,18 +447,18 @@ function exportSession(sessionId) {
   } catch { return null; }
 }
 
-function finalizeDetachedIfDead(id) {
+async function finalizeDetachedIfDead(id) {
   const t = resolveTask(id);
   if (!t || t.status !== "running") return null;
   const sessionId = t.sessionId || findSessionByTitle(id);
   const sessionDone = sessionId ? isSessionDone(sessionId) : false;
   const pidDead = t.pid ? !procAlive(t.pid) : true;
   if (!sessionDone && !pidDead) return null;
-  let responseText = getSessionAssistantText(sessionId);
+  const settled = sessionId ? await settleSession(sessionId) : { text: "", parts: [] };
+  let responseText = settled.text;
   let toolCalls = [];
   if (sessionId) {
-    const parts = getSessionParts(sessionId);
-    for (const p of parts) {
+    for (const p of settled.parts) {
       if (p.ptype && p.ptype !== "text" && p.ptype !== "step-start") toolCalls.push(p.ptype);
     }
   }
@@ -461,14 +477,14 @@ function finalizeDetachedIfDead(id) {
 
 async function pollDetached(ids, deadline) {
   return new Promise((resolve) => {
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       if (Date.now() > deadline) { clearInterval(interval); resolve(null); return; }
       for (const id of ids) {
         const t = resolveTask(id);
         if (!t || t.status !== "running") { clearInterval(interval); resolve(t); return; }
         const sessionId = t.sessionId || findSessionByTitle(id);
-        if (sessionId && isSessionDone(sessionId)) { clearInterval(interval); resolve(finalizeDetachedIfDead(id)); return; }
-        if (t.pid && !procAlive(t.pid)) { clearInterval(interval); resolve(finalizeDetachedIfDead(id)); return; }
+        if (sessionId && isSessionDone(sessionId)) { clearInterval(interval); resolve(await finalizeDetachedIfDead(id).catch(() => null)); return; }
+        if (t.pid && !procAlive(t.pid)) { clearInterval(interval); resolve(await finalizeDetachedIfDead(id).catch(() => null)); return; }
       }
     }, 2000);
   });
@@ -507,7 +523,7 @@ reg("n_task_wait", {
         doneById.set(disk.id, disk);
         if (mem) { mem.status = disk.status; mem.finishedAt = disk.finishedAt; mem.error = disk.error; mem.result = disk.result; mem.tools = disk.tools; mem.exitCode = disk.exitCode; }
       } else {
-        const fin = finalizeDetachedIfDead(i);
+        const fin = await finalizeDetachedIfDead(i).catch(() => null);
         if (fin) { doneById.set(fin.id, fin); if (mem) { mem.status = fin.status; mem.finishedAt = fin.finishedAt; mem.error = fin.error; mem.result = fin.result; mem.tools = fin.tools; mem.exitCode = fin.exitCode; } }
         else if (mem?.donePromise && mem.status === "running") { ps.push(mem.donePromise.then((t) => { doneById.set(t.id, t); return t; })); }
       }
@@ -622,7 +638,7 @@ reg("n_task_status", {
       if (!t) return out(`task ${task_id} not found`, true);
       if (t.status === "running") {
         const sessionId = t.sessionId || findSessionByTitle(task_id);
-        if (sessionId && isSessionDone(sessionId)) { t = finalizeDetachedIfDead(task_id) || t; }
+        if (sessionId && isSessionDone(sessionId)) { t = (await finalizeDetachedIfDead(task_id).catch(() => null)) || t; }
       }
       t = await sweep(t);
       return out(fmt(t) + (t.result ? `\n\n${trimOut(t.result, 20000)}` : t.error ? `\n\n${t.error}` : ""));
@@ -748,7 +764,7 @@ reg("n_task_tail", {
     if (t.status === "running") {
       const sessionId = t.sessionId || findSessionByTitle(task_id);
       if (sessionId && isSessionDone(sessionId)) {
-        finalizeDetachedIfDead(task_id);
+        await finalizeDetachedIfDead(task_id).catch(() => {});
         t = resolveTask(task_id) || t;
       }
     }
