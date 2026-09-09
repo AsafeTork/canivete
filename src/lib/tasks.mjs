@@ -117,8 +117,9 @@ function parseAgentOutput(so) {
 }
 
 function orchestrationNote(id) {
+  const pfx = process.env.CANIVETE_SERVER_NAME || "canivete";
   return `[ORCHESTRATION] Você é o agente ${id}. Regras MCP DevEngine:
-- Nomes: as tools aparecem aqui como native_n_* (prefixo do servidor); "n_*" é o mesmo nome sem prefixo. Prefira sempre n_*: saída truncada e uso auditável em ## Tools usados.
+- Nomes: as tools aparecem aqui como ${pfx}_n_* (prefixo do servidor); "n_*" é o mesmo nome sem prefixo. Prefira sempre n_*: saída truncada e uso auditável em ## Tools usados.
 - Modelos: o principal escolheu este explicitamente via n_list_models. opencode-go/*, hy3-free e desconhecidos são BLOQUEADOS (isError).
 - DevEngine preferir: n_get_architecture_summary, n_investigate_issue, n_analyze_change_impact, n_apply_semantic_patch, n_execute_targeted_tests
 - Comunicação (contrato, sem preempção): send é staging em arquivo — ninguém é interrompido; o receptor só vê a msg se chamar recv/status. Para ESPERAR sem gastar tokens: n_task_recv({timeout:ms}) espera até 170s no servidor. Para AVISAR o principal no meio da task: n_task_send({task_id:"main", message}). Para COORDENAR peers: o principal injeta os task_ids nos prompts + handshake explícito (ex: "após etapa 1 faça recv com timeout; enviarei GO"). Mailbox tem teto (100 msgs/4000 chars); recv esvazia (destrutivo); delete em running encerra o processo. Respostas trazem 📬 quando há notificações pendentes — leia n_task_notifications então. O principal pode ver sua geração ao vivo via n_task_tail.
@@ -300,13 +301,8 @@ reg("n_task", {
         if (!sessionId) sessionId = findSessionByTitle(id);
         const settled = sessionId ? await settleSession(sessionId) : { text: "", parts: [] };
         let responseText = settled.text;
-        let toolCalls = [];
-        if (sessionId) {
-          for (const p of settled.parts) {
-            if (p.ptype && p.ptype !== "text" && p.ptype !== "step-start") toolCalls.push(p.ptype);
-          }
-          entry.sessionId = sessionId;
-        }
+        if (sessionId) entry.sessionId = sessionId;
+        const toolCalls = sessionId ? getSessionTools(sessionId) : [];
         entry.exitCode = exitCode;
         entry.status = err ? "failed" : killed ? "timeout" : exitCode === 0 ? "done" : "failed";
         entry.finishedAt = new Date().toISOString();
@@ -333,6 +329,18 @@ reg("n_task", {
         entry.lastActivityAt = new Date().toISOString();
         const partial = getSessionAssistantText(sessionId);
         if (partial) entry.tailRaw = partial.slice(-30000);
+        // progresso empurrado p/ sessão do dono (throttle 25s, só quando cresceu)
+        try {
+          const now = Date.now();
+          const grown = (entry.tailRaw || "").length > (entry.lastPushLen || 0);
+          if (grown && now - (entry.lastPushAt || 0) > 25000) {
+            entry.lastPushAt = now;
+            entry.lastPushLen = (entry.tailRaw || "").length;
+            entry.tools = getSessionTools(sessionId);
+            persistTask(entry).catch(() => {});
+            sendToHost({ method: "notifications/message", params: { level: "info", logger: "canivete", data: `task ${id} (${description || ""}) — andando [${entry.tools.slice(-4).join(", ") || "iniciando"}]\n${(entry.tailRaw || "").slice(-600)}` } });
+          }
+        } catch {}
         if (isSessionDone(sessionId)) { finalizeFromDb(0, null).catch(() => {}); }
       }, 2000);
       child.on("error", (err) => { clearInterval(pollDb); finalizeFromDb(-1, err.message).catch(() => {}); });
@@ -413,20 +421,38 @@ function getSessionParts(sessionId) {
   );
 }
 
-// Race fix: o session DB do opencode commita parts/texto assincronamente após o fim da sessão;
-// ler cedo demais devolve result/tools vazios. settleSession repete a leitura até texto
-// não-vazio ou esgotar tries (3s sleep entre tentativas).
-async function settleSession(sessionId, tries = 4) {
+// settle: o session DB do opencode commita parts/texto com atraso após o fim da sessão.
+// Espera até 60s por TEXTO ou por quiescência (12s sem mudar = escrita parou).
+async function settleSession(sessionId, maxMs = 60000) {
   let text = "";
   let parts = [];
   if (!sessionId) return { text, parts };
-  for (let attempt = 1; attempt <= tries; attempt++) {
-    text = getSessionAssistantText(sessionId);
-    parts = getSessionParts(sessionId);
+  const t0 = Date.now();
+  let lastSig = "", stableSince = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    try {
+      text = getSessionAssistantText(sessionId);
+      parts = getSessionParts(sessionId);
+    } catch {}
     if (text) return { text, parts };
-    if (attempt < tries) await new Promise((r) => setTimeout(r, 3000));
+    const last = parts.length ? parts[parts.length - 1] : null;
+    const sig = `${parts.length}:${String((last && (last.txt || last.text)) || "").length}`;
+    if (sig !== lastSig) { lastSig = sig; stableSince = Date.now(); }
+    if (Date.now() - stableSince > 12000) return { text, parts };
+    await new Promise((r) => setTimeout(r, 3000));
   }
   return { text, parts };
+}
+
+function getSessionTools(sessionId) {
+  if (!sessionId) return [];
+  const rows = opencodeDbQuery(
+    `SELECT DISTINCT json_extract(p.data,'$.tool') as tool FROM part p WHERE p.session_id='${sessionId}' AND json_extract(p.data,'$.type')='tool'`
+  );
+  return rows.map((r) => String(r.tool || "")).filter(Boolean).map((t) => {
+    const bare = t.replace(/^(native|canivete)_/, "");
+    return bare.startsWith("n_") ? bare : `NÃO-MCP:${bare}`;
+  });
 }
 
 function isSessionDone(sessionId) {
@@ -456,12 +482,7 @@ async function finalizeDetachedIfDead(id) {
   if (!sessionDone && !pidDead) return null;
   const settled = sessionId ? await settleSession(sessionId) : { text: "", parts: [] };
   let responseText = settled.text;
-  let toolCalls = [];
-  if (sessionId) {
-    for (const p of settled.parts) {
-      if (p.ptype && p.ptype !== "text" && p.ptype !== "step-start") toolCalls.push(p.ptype);
-    }
-  }
+  const toolCalls = sessionId ? getSessionTools(sessionId) : [];
   if (!responseText) responseText = (() => { try { return readFileSync(join(TASKS_DIR, `${id}.out`), "utf8"); } catch { return ""; } })();
   t.exitCode = 0;
   t.status = "done";
@@ -639,6 +660,13 @@ reg("n_task_status", {
       if (t.status === "running") {
         const sessionId = t.sessionId || findSessionByTitle(task_id);
         if (sessionId && isSessionDone(sessionId)) { t = (await finalizeDetachedIfDead(task_id).catch(() => null)) || t; }
+      } else if (!t.result && !t.error) {
+        // cura tardia: task fechou antes do flush do session DB — tenta capturar agora
+        const sid = t.sessionId || findSessionByTitle(task_id);
+        if (sid) {
+          const s = await settleSession(sid, 30000);
+          if (s.text) { t.result = s.text.trim(); t.tools = getSessionTools(sid); t.tailRaw = s.text.slice(-30000); await persistTask(t); }
+        }
       }
       t = await sweep(t);
       return out(fmt(t) + (t.result ? `\n\n${trimOut(t.result, 20000)}` : t.error ? `\n\n${t.error}` : ""));
