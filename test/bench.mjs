@@ -1,7 +1,7 @@
 // canivete bench: tempo de TODAS as tools no deployment real (http 19423).
 // Uso: CANIVETE_TOKEN=$(cat ~/.config/canivete/token.txt) node test/bench.mjs
 // Gera docs/BENCH.md. Sem nada destrutivo; sandbox /tmp/bench.
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, chmodSync } from "node:fs";
 
 const BASE = process.env.CANIVETE_URL || "http://127.0.0.1:19423/mcp";
 const TOKEN = process.env.CANIVETE_TOKEN || "";
@@ -15,8 +15,11 @@ const call = (id, name, args, ms = 120000) => {
 const txt = (m) => (m?.result?.content || []).map((c) => c.text || `[${c.type}]`).join("\n");
 
 mkdirSync("/tmp/bench", { recursive: true });
+chmodSync("/tmp/bench", 0o777);
 writeFileSync("/tmp/bench/a.txt", "linha um\nlinha dois\n");
 writeFileSync("/tmp/bench/s.js", "function soma(a,b){return a+b}\nmodule.exports={soma}\n");
+chmodSync("/tmp/bench/a.txt", 0o666);
+chmodSync("/tmp/bench/s.js", 0o666);
 
 const CASES = [
   ["n_tools_info", {}], ["n_read", { filePath: "/tmp/bench/a.txt" }], ["n_list", { path: "/tmp/bench", depth: 1 }],
