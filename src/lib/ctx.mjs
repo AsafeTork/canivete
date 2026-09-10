@@ -40,7 +40,15 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const WALK_CAP = Number(process.env.CANIVETE_WALK_CAP) || 8000; // culpa do dev se varrer o disco (era ilimitado)
+// binários/mídias que nunca contêm símbolo pesquisável (culpa do dev se ler lixo)
+const BIN_EXT = new Set("png,jpg,jpeg,gif,bmp,ico,webp,mp4,mkv,webm,mp3,ogg,wav,flac,ttf,otf,woff,woff2,zip,tar,gz,xz,7z,bz2,deb,rpm,exe,msi,dmg,iso,img,so,dll,dylib,a,o,class,pyc,pyo,db,sqlite,sqlite-journal,dat,bin,pdf,doc,docx,xls,xlsx,ppt,pptx,epub,torrent,lock,map".split(","));
+function isSkippable(f) {
+  const i = String(f).toLowerCase().lastIndexOf(".");
+  return i >= 0 && BIN_EXT.has(String(f).toLowerCase().slice(i + 1));
+}
 function walkFiles(root, outArr, rel = "") {
+  if (outArr.length >= WALK_CAP) return;
   let entries;
   try {
     entries = readdirSync(join(root, rel), { withFileTypes: true });
@@ -48,8 +56,10 @@ function walkFiles(root, outArr, rel = "") {
     return;
   }
   for (const e of entries) {
+    if (outArr.length >= WALK_CAP) return;
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue;
+      if (rel && e.name.startsWith(".")) continue; // ocultas aninhadas (top-level explícito passa)
       walkFiles(root, outArr, rel ? join(rel, e.name) : e.name);
     } else if (e.isFile()) {
       outArr.push(rel ? join(rel, e.name) : e.name);
@@ -135,4 +145,4 @@ function sendToHost(obj) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...obj }) + "\n");
 }
 
-export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, estTokens };
+export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, estTokens, WALK_CAP, isSkippable };

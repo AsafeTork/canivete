@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
-import { reg, out, devOut, trimOut, estTokens, fpath, exec, walkFiles, escapeRe, CWD, HOME, SKIP_DIRS } from "./ctx.mjs";
+import { reg, out, devOut, trimOut, estTokens, fpath, exec, walkFiles, escapeRe, WALK_CAP, isSkippable, CWD, HOME, SKIP_DIRS } from "./ctx.mjs";
 import { tasks, taskId, persistTask, resolveTask } from "./tasks.mjs";
 
 function loadPkg() {
@@ -48,6 +48,7 @@ function buildSymbolIndex(limit = 300) {
     if (f.includes("node_modules") || f.includes("dist") || f.includes(".next")) continue;
     try {
       const txt = readFileSync(join(CWD, f), "utf8");
+        if (txt.indexOf("\0") >= 0) continue; // binário
       syms.push(...extractSymbols(txt, f));
       if (syms.length >= limit) break;
     } catch {}
@@ -148,6 +149,7 @@ reg("n_investigate_issue", {
       if (SKIP_DIRS.has(f.split("/")[0])) continue;
       try {
         const txt = readFileSync(join(CWD, f), "utf8");
+        if (txt.indexOf("\0") >= 0) continue; // binário
         const lines = txt.split("\n");
         for (let i = 0; i < lines.length && hits.length < maxHits; i++) {
           if (rx.test(lines[i])) {
@@ -202,8 +204,11 @@ reg("n_analyze_change_impact", {
     const tests = [];
     for (const f of files) {
       if (SKIP_DIRS.has(f.split("/")[0])) continue;
+      if (isSkippable(f)) continue; // mídia/binário nunca tem símbolo
       try {
+        if (statSync(join(CWD, f)).size > 1048576) continue; // >1MB: pula sem ler
         const txt = readFileSync(join(CWD, f), "utf8");
+        if (txt.indexOf("\0") >= 0) continue; // binário
         if (rx.test(txt)) {
           const lines = txt.split("\n");
           for (let i = 0; i < lines.length && callers.length < 30; i++) if (rx.test(lines[i])) callers.push(`${f}:${i + 1}: ${lines[i].slice(0, 180)}`);
@@ -213,7 +218,7 @@ reg("n_analyze_change_impact", {
     }
     return devOut({
       summary: `${callers.length} referência(s) a "${sym}" | ${tests.length} teste(s) afetado(s)`,
-      data: { target, symbol: sym, callers: callers.slice(0, 15), tests_affected: tests.slice(0, 10), public_api: callers.filter((c) => c.includes("export")).slice(0, 5) },
+      data: { target, symbol: sym, callers: callers.slice(0, 15), tests_affected: tests.slice(0, 10), public_api: callers.filter((c) => c.includes("export")).slice(0, 5), files_scanned: files.length, capped: files.length >= WALK_CAP ? `cap ${WALK_CAP} — refine path p/ precisão` : false },
       telemetry: { tokens_saved: Math.max(0, callers.length * 60), execution_time_ms: Date.now() - t0 },
       next: [{ tool: "n_apply_semantic_patch", reason: "Aplicar edição validada por AST" }],
       refs: callers.slice(0, 3).map((c) => c.split(":").slice(0, 2).join(":")),

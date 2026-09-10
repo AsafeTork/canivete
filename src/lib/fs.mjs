@@ -295,6 +295,7 @@ reg("n_grep", {
       let text;
       try {
         text = readFileSync(file, "utf8");
+        if (text.indexOf("\0") >= 0) return; // binário: pula (culpa do dev se varrer lixo)
       } catch {
         return;
       }

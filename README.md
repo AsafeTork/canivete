@@ -48,6 +48,17 @@ node src/server.mjs --http 19423   # Streamable HTTP em 127.0.0.1:19423/mcp
 O host reconecta por chamada: trocar **código** do canivete nunca exige restart do opencode
 (só reinicie o processo do canivete). Trocar **config** exige 1 restart (opencode lê config só no boot).
 
+## Persistência (sobrevive ao reboot)
+
+```bash
+# service user systemd (já instalado nesta máquina):
+systemctl --user enable --now canivete   # sobe no login, reinicia sozinho (Restart=always)
+loginctl enable-linger tork              # sobe mesmo sem login gráfico
+```
+
+Sem isso, todo reboot derruba a ponte e o opencode mostra `SSE error: Unable to connect`.
+Broker em `~/.config/canivete/` (persiste; `/tmp` apagava tudo no reboot).
+
 Exemplos prontos em `examples/`.
 
 ## Runner de subagentes (`n_task`)
