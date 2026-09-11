@@ -1,7 +1,8 @@
 // canivete — trava anti-destrutiva compartilhada (doutrina do dono:
 // acesso total quando ele pedir; NUNCA destrutivo/idiota sem pedido explícito)
 const HIGH = [
-  /pag(?:ar|amento)|pix|transfer|boleto|checkout.*(pagar|confirmar)/i,
+  /pag(?:ar|amento)|transfer|boleto|checkout.*(pagar|confirmar)/i,
+  /\bpix\b|pix\s*[:\-]|\(pix\)|no pix|via pix|pelo pix|chave pix/i, // pix como pagamento (não "Pixtotal")
   /redefinir|redefini.*senha|trocar.*senha|alterar.*senha|nova senha|change.*password|reset.*password|esqueci.*senha|forgot.*password/i,
   /ativar.*2fa|desativar.*2fa|setup.*totp|escanear.*qr/i,
   /exclu.*conta|encerr.*conta|delet.*account|apagar.*conta|cancelar.*(conta|assinatura)/i,

@@ -158,7 +158,10 @@ async function handle(cmd, a = {}) {
     };
     const data = await ask(id, map[cmd], a);
     await new Promise((r) => setTimeout(r, cmd === "tab.read" || cmd === "tab.snapshot" ? 0 : 350));
-    if (cmd === "tab.snapshot" && Array.isArray(data)) return data.slice(0, Math.min(Math.max(Number(a.max) || 50, 5), 120));
+    if (cmd === "tab.snapshot" && Array.isArray(data)) {
+      const off = Math.max(Number(a.offset) || 0, 0);
+      return data.slice(off, off + Math.min(Math.max(Number(a.max) || 50, 5), 120));
+    }
     if (cmd === "tab.click" || cmd === "tab.fill") return await ask(id, "state", {}); // dieta: sem texto
     return data;
   }
@@ -248,7 +251,7 @@ async function handle(cmd, a = {}) {
     const id = a.tabId || (await activeTabId());
     let r;
     try {
-      [r] = await chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func: (code) => eval(code), args: [String(a.js)] });
+      [r] = await withTimeout(chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func: (code) => eval(code), args: [String(a.js)] }), 20000, "evaluate (página pode estar ocupada/bloqueando script)");
     } catch (e) {
       throw new Error("evaluate falhou: " + String(e.message || e).slice(0, 200) + " (CSP pode bloquear eval)");
     }

@@ -40,11 +40,11 @@ reg("n_ubrowser_read", {
 });
 
 reg("n_ubrowser_snapshot", {
-  description: "Elementos clicáveis da aba do dono (ref/tag/texto/selector + x/y). Padrão 50 (cap 120).",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 50 } }, required: [] },
-  run: async ({ tabId }) => {
+  description: "Elementos clicáveis da aba do dono (ref/tag/texto/selector + x/y). Padrão 50 (cap 120); offset p/ paginar até o fim.",
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 50 }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" } }, required: [] },
+  run: async ({ tabId, tab, max, offset }) => {
     const t0 = Date.now();
-    const r = await ubSend("tab.snapshot", { tabId });
+    const r = await ubSend("tab.snapshot", { tabId, tab, max, offset });
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF : "timeout 60s", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     return devOut({ summary: `${(r.data || []).length} elemento(s)`, data: { elements: r.data || [] }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_act", reason: "Agir com selector" }] });

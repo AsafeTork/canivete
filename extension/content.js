@@ -155,9 +155,26 @@ function ubPulse() {
   el.style.transformOrigin = "top left";
   setTimeout(() => (el.style.transform = "scale(1)"), 160);
 }
-function elCenter(el) {
+function elCenterValid(p, vw, vh) {
+  return p && p.w > 0 && p.h > 0 && p.x >= 0 && p.y >= 0 && p.x <= vw && p.y <= vh;
+}
+function elRect(el) {
   const r = el.getBoundingClientRect();
-  return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height) };
+}
+// mede DEPOIS do scroll assentar + re-query (lista virtualizada recicla nós)
+async function elCenterFresh(sel, tries = 2) {
+  let el = null, p = null;
+  for (let i = 0; i < tries; i++) {
+    el = findEl(sel);
+    if (!el) return { el: null, p: null };
+    try { el.scrollIntoView({ block: "center" }); } catch {}
+    await new Promise((r) => setTimeout(r, 280));
+    el = findEl(sel) || el;
+    p = elRect(el);
+    if (elCenterValid(p, innerWidth, innerHeight)) return { el, p };
+  }
+  return { el, p };
 }
 
 // ---- distill: texto enxuto e desduplicado (opera em CLONE, nunca na página real) ----
@@ -290,16 +307,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
             .trim()
             .slice(0, 60)),
           selector: cssPath(el),
-          ...elCenter(el),
+          ...elRect(el),
         })),
       });
     } else if (msg.cmd === "click") {
       const el = await findElResilient(a.selector);
       if (!el) return reply({ ok: false, error: "NOTFOUND: " + a.selector });
-      el.scrollIntoView({ block: "center" });
-      await ubGlide(...Object.values(elCenter(el))); // cursor desliza até o alvo antes de clicar
+      const fresh = await elCenterFresh(a.selector);
+      if (!fresh.el) return reply({ ok: false, error: "NOTFOUND após scroll: " + a.selector });
+      await ubGlide(fresh.p.x, fresh.p.y); // cursor desliza até o alvo antes de clicar
       ubPulse();
-      el.click();
+      (fresh.el || el).click();
       reply({ ok: true, data: { clicked: a.selector, title: document.title, url: location.href } });
     } else if (msg.cmd === "cursor") {
       // cursor independente: move (x,y da viewport) e opcionalmente clica no ponto
@@ -314,17 +332,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     } else if (msg.cmd === "cursor_sel") {
       const el = await findElResilient(a.selector);
       if (!el) return reply({ ok: false, error: "NOTFOUND: " + a.selector });
-      el.scrollIntoView({ block: "center" });
-      const { x, y } = elCenter(el);
-      await ubGlide(x, y);
+      const freshCs = await elCenterFresh(a.selector);
+      if (!freshCs.el) return reply({ ok: false, error: "NOTFOUND após scroll: " + a.selector });
+      await ubGlide(freshCs.p.x, freshCs.p.y);
       let clicked = null;
-      if (a.click) { ubPulse(); el.click(); clicked = el.tagName.toLowerCase(); }
-      reply({ ok: true, data: { x, y, clicked } });
+      if (a.click) { ubPulse(); freshCs.el.click(); clicked = freshCs.el.tagName.toLowerCase(); }
+      reply({ ok: true, data: { x: freshCs.p.x, y: freshCs.p.y, clicked } });
     } else if (msg.cmd === "fill") {
       const el = await findElResilient(a.selector);
       if (!el) return reply({ ok: false, error: "NOTFOUND: " + a.selector });
       el.scrollIntoView({ block: "center" });
-      await ubGlide(...Object.values(elCenter(el))); // cursor desliza até o campo antes de digitar
+      try { const fv = await elCenterFresh(a.selector); await ubGlide(fv.p.x, fv.p.y); } catch {} // visual
       ubPulse();
       el.focus();
       el.value = "";
@@ -342,7 +360,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       const el = await findElResilient(a.selector);
       if (!el) return reply({ ok: false, error: "NOTFOUND: " + a.selector });
       el.scrollIntoView({ block: "center" });
-      await ubGlide(...Object.values(elCenter(el)));
+      try { const fv = await elCenterFresh(a.selector); await ubGlide(fv.p.x, fv.p.y); } catch {} // visual
       ubPulse();
       el.focus();
       try {
