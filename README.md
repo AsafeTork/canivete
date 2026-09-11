@@ -7,6 +7,7 @@ Toolkit MCP completo (51 tools `n_*`, **zero dependências**, Node 22+) que func
 - **Orquestração (10):** spawn de subagentes em paralelo + mailbox em disco + todos + modelos. Runner plugável.
 - **DevEngine (8):** resumo de arquitetura sem varrer, investigação de bug (12→1), impacto de mudança, patch validado por AST, testes afetados, processos em fundo, estado da UI, DAG com rollback.
 - **Browsers (11):** Chrome headless próprio via CDP (navegar com JS, snapshot, agir, screenshot, PDF) + **seu Chrome logado** via extensão local (ler, snapshot, agir, print, cursor independente, aba em fundo).
+  - `n_ubrowser_act`: `select selector text → escolhe opção; highlight selector → destaca elemento; waittext text → aguarda texto aparecer; type selector text → digita`.
 - **Meta (4):** catálogo, pergunta ao humano, skills, plan.
 
 ## Quickstart (5 min)

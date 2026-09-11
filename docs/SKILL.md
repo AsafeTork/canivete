@@ -31,3 +31,5 @@ Runner de subagentes: opencode (total) ou genérico (`CANIVETE_RUN_TEMPLATE`).
 - Snapshot vazio ou `v` antiga → F5 na página e `ping` (versão desatualizada).
 - Login agora permitido; só troca de senha/pagamento bloqueia (alto risco exige `confirm`).
 - `evaluate` precisa retornar valor (`return ...`); sem return vem `undefined`.
+- `n_ubrowser_act scan {pages:4, container?}` p/ listas virtualizadas (rola e coleta antes do `snapshot`).
+- `tab:"trecho título/URL"` em read/snapshot/act/shot/scan (IDs mudam — prefira nome a `tabId`).

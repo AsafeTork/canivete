@@ -16,7 +16,7 @@ chrome.storage.onChanged.addListener((ch, area) => {
   if (ch.url) settings.url = ch.url.newValue || DEFAULT_URL;
 });
 
-const UB_EXPECTED = "4"; // versão do content.js — mismatch = F5 na página
+const UB_EXPECTED = "6"; // versão do content.js — mismatch = F5 na página
 const injectedTabs = new Set(); // fallback manual 1x por aba/sessão (registro cobre o resto)
 
 // registra content.js permanente: injeta sozinho em toda página http/https (sobrevive a F5/navegação)
@@ -45,7 +45,7 @@ function withTimeout(p, ms, what) {
 async function ensureContent(tabId) {
   // 1) ping (registro permanente cobre http/https); 2) fallback: injeção manual 1x/sessão; 3) erro claro
   let lastErr = "sem resposta";
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     try {
       const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd: "ping" }), 4000, "content ping");
       if (r?.ok && r?.data?.v === UB_EXPECTED) return;
@@ -54,7 +54,7 @@ async function ensureContent(tabId) {
     } catch (e) {
       lastErr = e.message || String(e);
       if (/desatualizado|chrome:\/\/|cannot access|no tab|F5/i.test(lastErr)) throw new Error(lastErr);
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 350));
     }
   }
   if (!injectedTabs.has(tabId)) {
@@ -77,6 +77,14 @@ async function ask(tabId, cmd, args) {
 }
 
 async function handle(cmd, a = {}) {
+  // resolução de aba por nome: vale p/ todos os comandos que aceitam tabId
+  if (a && a.tab && !a.tabId) {
+    const needle = String(a.tab).toLowerCase();
+    const all = await chrome.tabs.query({});
+    const found = all.find((t) => ((t.title || "") + " " + (t.url || "")).toLowerCase().includes(needle));
+    if (!found) throw new Error(`aba "${a.tab}" não encontrada — veja n_ubrowser_tabs`);
+    a.tabId = found.id;
+  }
   if (cmd === "ping") return { pong: true, url: settings.url };
   if (cmd === "tab.diag") return { ...diag, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url };
   if (cmd === "tabs.list") {
@@ -138,16 +146,18 @@ async function handle(cmd, a = {}) {
     if (cmd === "tab.back") await chrome.tabs.goBack(id).catch(() => { throw new Error("sem histórico p/ voltar"); });
     if (cmd === "tab.forward") await chrome.tabs.goForward(id).catch(() => { throw new Error("sem histórico p/ avançar"); });
     if (cmd === "tab.reload") await chrome.tabs.reload(id);
-    await new Promise((r) => setTimeout(r, 800));
+    await new Promise((r) => setTimeout(r, 600));
     return await ask(id, "state", {}); // dieta: só título+url
   }
   if (["tab.read", "tab.snapshot", "tab.click", "tab.fill", "tab.press", "tab.scroll"].includes(cmd)) {    const id = a.tabId || (await activeTabId());
+    // destilado por padrão (só-necessário); raw opt-out
+    if (cmd === "tab.read" && (a.mode || "distill") === "distill") return await ask(id, "distill", a);
     const map = {
       "tab.read": "read", "tab.snapshot": "snapshot", "tab.click": "click",
       "tab.fill": "fill", "tab.press": "press", "tab.scroll": "scroll",
     };
     const data = await ask(id, map[cmd], a);
-    await new Promise((r) => setTimeout(r, cmd === "tab.read" || cmd === "tab.snapshot" ? 0 : 600));
+    await new Promise((r) => setTimeout(r, cmd === "tab.read" || cmd === "tab.snapshot" ? 0 : 350));
     if (cmd === "tab.snapshot" && Array.isArray(data)) return data.slice(0, Math.min(Math.max(Number(a.max) || 50, 5), 120));
     if (cmd === "tab.click" || cmd === "tab.fill") return await ask(id, "state", {}); // dieta: sem texto
     return data;
@@ -157,15 +167,101 @@ async function handle(cmd, a = {}) {
     const id = a.tabId || (await activeTabId());
     if (a.selector) return await ask(id, "cursor_sel", a);
     const data = await ask(id, "cursor", a);
-    await new Promise((r) => setTimeout(r, a.click ? 400 : 0));
+    await new Promise((r) => setTimeout(r, a.click ? 250 : 0));
     if (a.click) return { ...data, ...(await ask(id, "state", {})) };
     return data;
+  }
+  if (cmd === "tab.scan") {
+    // varre lista virtualizada (ex: WhatsApp) com scroll coletando snapshot
+    const { container, tabId, pages = 4 } = a;
+    const pagesReq = Math.min(Math.max(Number(pages) || 4, 1), 10);
+    const id = tabId || (await activeTabId());
+    const scanJob = (async () => {
+      const seen = new Map();
+      let lastY = null;
+      let same = 0;
+      let reachedEnd = false;
+      let executed = 0;
+      for (let i = 0; i < pagesReq; i++) {
+        executed = i + 1;
+        const snap = await ask(id, "snapshot");
+        const arr = Array.isArray(snap) ? snap : [];
+        for (const it of arr) {
+          const key = (it?.selector || "") + "|" + (it?.text || "");
+          if (!seen.has(key)) seen.set(key, it);
+        }
+        if (i === pagesReq - 1) break;
+        const [sr] = await chrome.scripting.executeScript({
+          target: { tabId: id },
+          world: "MAIN",
+          func: (sel) => {
+            const el = sel ? document.querySelector(sel) : (document.scrollingElement || document.body);
+            if (!el) return { y: 0, max: 0 };
+            const isDoc = !sel || el === document.scrollingElement || el === document.body || el === document.documentElement;
+            if (isDoc) {
+              window.scrollBy(0, window.innerHeight * 0.9);
+              return { y: window.scrollY, max: document.documentElement.scrollHeight - window.innerHeight };
+            }
+            el.scrollBy(0, (el.clientHeight || window.innerHeight) * 0.9);
+            return { y: el.scrollTop, max: el.scrollHeight - el.clientHeight };
+          },
+          args: [container || null],
+        });
+        const y = sr?.result?.y;
+        if (typeof y === "number") {
+          if (y === lastY) {
+            same++;
+            if (same >= 2) { reachedEnd = true; break; }
+          } else {
+            same = 0;
+            lastY = y;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      const items = [...seen.values()];
+      const yx = (it) => {
+        if (!it || typeof it !== "object") return null;
+        if (typeof it.y === "number" && typeof it.x === "number") return [it.y, it.x];
+        if (typeof it.top === "number" && typeof it.left === "number") return [it.top, it.left];
+        for (const k of ["coords", "rect", "bbox", "box", "pos"]) {
+          const c = it[k];
+          if (!c || typeof c !== "object") continue;
+          if (typeof c.y === "number" && typeof c.x === "number") return [c.y, c.x];
+          if (typeof c.top === "number" && typeof c.left === "number") return [c.top, c.left];
+        }
+        return null;
+      };
+      if (items.some((it) => yx(it))) items.sort((p, q) => {
+        const a = yx(p), b = yx(q);
+        if (!a && !b) return 0;
+        if (!a) return 1;
+        if (!b) return -1;
+        return (a[0] - b[0]) || (a[1] - b[1]);
+      });
+      return { items: items.slice(0, 150), pages: executed, reachedEnd };
+    })();
+    return await withTimeout(scanJob, 60000, "tab.scan");
   }
   if (cmd === "tab.evaluate") {
     if (!a.js) throw new Error("js obrigatório");
     const id = a.tabId || (await activeTabId());
-    const [r] = await chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func: (code) => eval(code), args: [String(a.js)] });
+    let r;
+    try {
+      [r] = await chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func: (code) => eval(code), args: [String(a.js)] });
+    } catch (e) {
+      throw new Error("evaluate falhou: " + String(e.message || e).slice(0, 200) + " (CSP pode bloquear eval)");
+    }
+    const ex = r?.exceptionDetails || r?.error;
+    if (ex) {
+      let msg = ex.message || ex.description || (ex.exception && ex.exception.description);
+      if (!msg) {
+        try { msg = JSON.stringify(ex).slice(0, 300); } catch { msg = String(ex); }
+      }
+      throw new Error("evaluate falhou: " + String(msg).slice(0, 300) + " (CSP pode bloquear eval)");
+    }
     const v = r?.result;
+    if (typeof v === "undefined") return { value: null, note: "expressão não retornou valor — termine o JS com o valor desejado" };
     return { value: typeof v === "string" ? v.slice(0, 4000) : v };
   }
   if (cmd === "tab.shot") {
@@ -176,6 +272,10 @@ async function handle(cmd, a = {}) {
     const t = await chrome.tabs.get(id);
     const url = await chrome.tabs.captureVisibleTab(t.windowId, { format: "png" });
     return { dataUrl: url, tab: { id, title: t.title, url: t.url } };
+  }
+  if (cmd.startsWith("tab.")) {
+    const id = a.tabId || (await activeTabId());
+    return await ask(id, cmd.slice(4), a);
   }
   throw new Error("cmd desconhecido: " + cmd);
 }

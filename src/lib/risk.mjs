@@ -15,7 +15,7 @@ export function riskOf(a = {}) {
   const blob = `${a.action || a.cmd || ""} ${a.selector || ""} ${a.text || ""} ${a.js || ""} ${a.url || ""}`;
   if (HIGH.some((r) => r.test(blob))) return "high";
   if (a.action === "cursor") return a.click ? "medium" : "low";
-  if (["click", "fill", "press", "evaluate"].includes(a.action)) return "medium";
+  if (["click", "fill", "type", "select", "press", "evaluate"].includes(a.action)) return "medium";
   return "low";
 }
 
