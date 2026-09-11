@@ -49,11 +49,13 @@ reg("n_tools_info", {
   },
 });
 
-for (const id of safeTaskIds()) {
-  try {
-    await sweepTask(readJson(join(TASKS_DIR, `${id}.json`), null));
-  } catch {}
-}
+await Promise.allSettled(
+  safeTaskIds().map(async (id) => {
+    try {
+      await sweepTask(readJson(join(TASKS_DIR, `${id}.json`), null));
+    } catch {}
+  })
+);
 
 // Modo remoto (sem restart do host p/ trocar código): node src/server.mjs --http 19423
 // (depois deste ponto só roda o loop stdio; o remoto já registrou tudo acima)

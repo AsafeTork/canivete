@@ -9,7 +9,15 @@ function cached(key, ttlMs, fn, ok) {
     .then(fn)
     .then((val) => {
       if (!ok || ok(val)) {
-        if (ttlCache.size > 300) ttlCache.delete(ttlCache.keys().next().value);
+        // evita crescimento descontrolado: remove entradas expiradas primeiro
+        if (ttlCache.size > 300) {
+          const now = Date.now();
+          for (const [k, v] of ttlCache) {
+            if (now - v.ts >= ttlMs) ttlCache.delete(k);
+            if (ttlCache.size <= 200) break;
+          }
+          if (ttlCache.size > 300) ttlCache.delete(ttlCache.keys().next().value);
+        }
         ttlCache.set(key, { ts: Date.now(), val });
       }
       return val;
@@ -30,7 +38,7 @@ function mainContent(html) {
 }
 
 reg("n_webfetch", {
-  description: "Baixa URL e retorna só conteúdo principal (<article>/<main>, sem header/nav/footer/script, maxChars default 12k). Quando usar: ler página achada no n_websearch; docs/API sem chave. Erro HTTP>=400 NÃO cacheia. Ex: {url:\"https://...\", maxChars:8000}. ~80% menos tokens que HTML inteiro.",
+  description: "Baixa URL SEM JS e retorna conteúdo principal (<article>/<main>, maxChars 12k). Site 100% JS / login-wall / preço dinâmico (Shopee, Amazon, Magalu logada)? NÃO use este — vá de n_browser_navigate (renderiza JS) ou n_ubrowser_* (sessão logada do dono). Erro HTTP>=400 NÃO cacheia.",
   inputSchema: {
     type: "object",
     properties: {

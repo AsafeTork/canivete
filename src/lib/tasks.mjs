@@ -210,7 +210,8 @@ function tryKill(t) {
 }
 
 async function sweepTask(t) {
-  if (!t || t.status !== "running" || t.agent === "devengine") return t;
+  if (!t || t.status !== "running") return t;
+  // devengine tasks (n_orchestrate_task) usam pollDb próprio — finalizar normalmente
   const age = Date.now() - new Date(t.startedAt).getTime();
   const deadPid = t.pid && !procAlive(t.pid);
   const staleNoPid = !t.pid && age > 60000;
@@ -311,7 +312,7 @@ reg("n_task", {
         ? spawn("opencode", args, {
             cwd: CWD,
             env: { ...process.env, TASK_ID: id, MCP_BROKER_DIR: BROKER_DIR },
-            stdio: "ignore",
+            stdio: ["ignore", "pipe", "pipe"],
             detached: true,
           })
         : spawn("bash", ["-lc", RUN_TEMPLATE.replaceAll("{prompt}", prompt).replaceAll("{model}", chosenModel).replaceAll("{agent}", agent).replaceAll("{id}", id)], {
@@ -319,14 +320,19 @@ reg("n_task", {
             env: { ...process.env, TASK_ID: id, MCP_BROKER_DIR: BROKER_DIR },
             stdio: ["ignore", "pipe", "pipe"],
           });
+      // captura stdout/stderr em .out/.err (limitado): sem isso, "exit 1" vinha sem diagnóstico
+      let outBuf = "";
+      const appendCap = (d) => {
+        outBuf += d;
+        if (outBuf.length > 60000) outBuf = outBuf.slice(-60000);
+      };
+      child.stdout?.on("data", appendCap);
+      child.stderr?.on("data", appendCap);
+      child.on("exit", () => {
+        try { writeFileSync(join(TASKS_DIR, `${id}.out`), outBuf); } catch {}
+      });
       if (!isOpencode) {
-        // modo genérico: captura stdout/stderr em .out (sem session DB)
-        let outBuf = "";
-        child.stdout?.on("data", (d) => { outBuf += d; if (outBuf.length > 100000) outBuf = outBuf.slice(-100000); });
-        child.stderr?.on("data", (d) => { outBuf += d; if (outBuf.length > 100000) outBuf = outBuf.slice(-100000); });
-        child.on("exit", (code) => {
-          try { writeFileSync(join(TASKS_DIR, `${id}.out`), outBuf); } catch {}
-        });
+        // modo genérico: sem session DB — o .out acima é a única fonte do resultado
       }
       let killed = false;
       let sessionId = null;
@@ -336,12 +342,27 @@ reg("n_task", {
       persistTask(entry);
       child.unref();
       const finalizeFromDb = async (exitCode, err) => {
+        // trava: exit handler (código real) sempre vence finalizeDetachedIfDead (chute).
+        // Sem isso, wait dizia done/0 e status dizia failed/1 p/ a mesma task.
+        if (entry.finalizing) return;
+        entry.finalizing = true;
         clearTimeout(timer);
         clearInterval(pollDb);
         if (!tasks.has(id)) { entry.status = "deleted"; entry.finishedAt = new Date().toISOString(); resolveP(entry); return; }
         if (!sessionId) sessionId = findSessionByTitle(id);
+        if (!sessionId) {
+          // linha do session DB pode commitar com atraso após o exit — retry curto e limitado
+          for (let i = 0; i < 4 && !sessionId; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            if (!tasks.has(id)) break;
+            sessionId = findSessionByTitle(id);
+          }
+        }
         const settled = sessionId ? await settleSession(sessionId) : { text: "", parts: [] };
         let responseText = settled.text;
+        if (!responseText) {
+          try { responseText = readFileSync(join(TASKS_DIR, `${id}.out`), "utf8"); } catch {}
+        }
         if (sessionId) entry.sessionId = sessionId;
         const toolCalls = sessionId ? getSessionTools(sessionId) : [];
         entry.exitCode = exitCode;
@@ -349,10 +370,11 @@ reg("n_task", {
         entry.finishedAt = new Date().toISOString();
         entry.tools = [...new Set(toolCalls)];
         const modelTag = `[modelo: ${chosenModel}]`;
-        if (err) entry.error = `${modelTag} ${err}`;
-        else if (killed) entry.error = `${modelTag} timeout after ${Math.round(t / 1000)}s`;
-        else if (exitCode !== 0) entry.error = `${modelTag} falhou (exit ${exitCode})`;
-        else entry.error = null;
+        const errTail = (!responseText.trim() && outBuf ? `\n[stderr/stdout capturado]\n${outBuf.slice(-1500)}` : "");
+        if (err) entry.error = `${modelTag} ${err}${errTail}`;
+        else if (killed) entry.error = `${modelTag} timeout after ${Math.round(t / 1000)}s${errTail}`;
+        else if (exitCode !== 0) entry.error = `${modelTag} falhou (exit ${exitCode})${errTail}`;
+        else entry.error = responseText.trim() ? null : `${modelTag} saiu 0 sem resposta${errTail}`;
         entry.result = responseText.trim();
         entry.tailRaw = responseText.slice(-30000);
         persistTask(entry);
@@ -368,7 +390,7 @@ reg("n_task", {
         if (!sessionId) return;
         entry.sessionId = sessionId;
         entry.lastActivityAt = new Date().toISOString();
-        const partial = getSessionAssistantText(sessionId);
+        const partial = pollCached(`txt:${sessionId}`, 5000, () => getSessionAssistantText(sessionId));
         if (partial) entry.tailRaw = partial.slice(-30000);
         // progresso empurrado p/ sessão do dono (throttle 25s, só quando cresceu)
         try {
@@ -377,7 +399,7 @@ reg("n_task", {
           if (grown && now - (entry.lastPushAt || 0) > 25000) {
             entry.lastPushAt = now;
             entry.lastPushLen = (entry.tailRaw || "").length;
-            entry.tools = getSessionTools(sessionId);
+            entry.tools = pollCached(`tools:${sessionId}`, 5000, () => getSessionTools(sessionId));
             persistTask(entry).catch(() => {});
             sendToHost({ method: "notifications/message", params: { level: "info", logger: "canivete", data: `task ${id} (${description || ""}) — andando [${entry.tools.slice(-4).join(", ") || "iniciando"}]\n${(entry.tailRaw || "").slice(-600)}` } });
           }
@@ -386,12 +408,13 @@ reg("n_task", {
       }, 2000);
       child.on("error", (err) => { clearInterval(pollDb); finalizeFromDb(-1, err.message).catch(() => {}); });
       child.on("exit", (code) => {
-        setTimeout(() => {
-          if (!tasks.has(id) || tasks.get(id).status !== "running") return;
-          if (!sessionId) sessionId = findSessionByTitle(id);
-          if (sessionId && isSessionDone(sessionId)) { finalizeFromDb(code, null).catch(() => {}); }
-          else finalizeFromDb(code, code === 0 ? null : `exit ${code}`).catch(() => {});
-        }, 2000);
+        // imediato (sem delay): o handler tem o exit code REAL e a trava finalizing
+        // garante que ele vença finalizeDetachedIfDead. O flush tardio do session DB
+        // já é coberto pelo retry de findSessionByTitle + settleSession em finalizeFromDb.
+        if (!tasks.has(id) || tasks.get(id).status !== "running") return;
+        if (!sessionId) sessionId = findSessionByTitle(id);
+        if (sessionId && isSessionDone(sessionId)) { finalizeFromDb(code, null).catch(() => {}); }
+        else finalizeFromDb(code, code === 0 ? null : `exit ${code}`).catch(() => {});
       });
     });
     entry.donePromise = donePromise;
@@ -437,9 +460,21 @@ function opencodeDbQuery(sql) {
   } catch { return []; }
 }
 
-function findSessionByTitle(taskId) {
+function findSessionByTitleFresh(taskId) {
   const rows = opencodeDbQuery(`SELECT id FROM session WHERE title='${TASK_TITLE_PREFIX}${taskId}' ORDER BY time_created DESC LIMIT 1`);
   return rows.length ? rows[0].id : null;
+}
+
+// session id é IMUTÁVEL após criado: memoiza para sempre; miss throttled 10s.
+// Sem isso, cada pollDb (2s/task) pagava ~6s de execSync bloqueante — event loop saturado.
+const sessionIdCache = new Map();
+function findSessionByTitle(taskId) {
+  const hit = sessionIdCache.get(taskId);
+  if (hit && (hit.id || Date.now() - hit.ts < 10000)) return hit.id;
+  const id = findSessionByTitleFresh(taskId);
+  if (sessionIdCache.size > 500) sessionIdCache.clear();
+  sessionIdCache.set(taskId, { id, ts: Date.now() });
+  return id;
 }
 
 function getSessionAssistantText(sessionId) {
@@ -496,12 +531,34 @@ function getSessionTools(sessionId) {
   });
 }
 
-function isSessionDone(sessionId) {
-  if (!sessionId) return false;
+function isSessionDoneFresh(sessionId) {
   const rows = opencodeDbQuery(`SELECT time_updated, time_created FROM session WHERE id='${sessionId}'`);
   if (!rows.length) return false;
   const s = rows[0];
   return s.time_updated > s.time_created + 3000 && getSessionParts(sessionId).some((p) => p.ptype === "text" && p.txt);
+}
+
+// predicado MONOTÔNICO (false→true): true cacheado p/ sempre; false throttled 5s.
+const doneCache = new Map();
+function isSessionDone(sessionId) {
+  if (!sessionId) return false;
+  const hit = doneCache.get(sessionId);
+  if (hit && (hit.done || Date.now() - hit.ts < 5000)) return hit.done;
+  const done = isSessionDoneFresh(sessionId);
+  if (doneCache.size > 500) doneCache.clear();
+  doneCache.set(sessionId, { done, ts: Date.now() });
+  return done;
+}
+
+// leituras quentes do pollDb (texto parcial + tools): TTL 5s. Finalize usa leitura fresca.
+const pollCache = new Map();
+function pollCached(key, ttlMs, fn) {
+  const hit = pollCache.get(key);
+  if (hit && Date.now() - hit.ts < ttlMs) return hit.val;
+  const val = fn();
+  if (pollCache.size > 200) pollCache.clear();
+  pollCache.set(key, { val, ts: Date.now() });
+  return val;
 }
 
 function exportSession(sessionId) {
@@ -517,20 +574,29 @@ function exportSession(sessionId) {
 async function finalizeDetachedIfDead(id) {
   const t = resolveTask(id);
   if (!t || t.status !== "running") return null;
+  if (t.finalizing) return null; // finalizeFromDb (código real) está no controle — não chutar
   const sessionId = t.sessionId || findSessionByTitle(id);
   const sessionDone = sessionId ? isSessionDone(sessionId) : false;
   const pidDead = t.pid ? !procAlive(t.pid) : true;
   if (!sessionDone && !pidDead) return null;
-  const settled = sessionId ? await settleSession(sessionId) : { text: "", parts: [] };
+  const ageMs = Date.now() - new Date(t.startedAt).getTime();
+  // task velha (>10min): o flush do DB já passou há muito — sem settle de 60s
+  const settled = sessionId
+    ? (ageMs > 600000 ? { text: getSessionAssistantText(sessionId), parts: [] } : await settleSession(sessionId))
+    : { text: "", parts: [] };
   let responseText = settled.text;
   const toolCalls = sessionId ? getSessionTools(sessionId) : [];
   if (!responseText) responseText = (() => { try { return readFileSync(join(TASKS_DIR, `${id}.out`), "utf8"); } catch { return ""; } })();
-  t.exitCode = 0;
-  t.status = "done";
+  responseText = (responseText || "").trim();
+  // sem evidência de sucesso (sem texto) não alegar exit 0: era isso que fazia
+  // wait dizer done/0 enquanto o exit real era 1 (status dizia failed/1).
+  const ok = !!responseText;
+  t.exitCode = ok ? 0 : (t.exitCode ?? 1);
+  t.status = ok ? "done" : "failed";
   t.finishedAt = new Date().toISOString();
   t.tools = [...new Set(toolCalls)];
-  t.result = responseText.trim();
-  t.error = null;
+  t.result = responseText;
+  t.error = ok ? null : `[modelo: ${t.model || "unknown"}] processo encerrou sem resposta aproveitável (sem texto no session DB nem .out)`;
   t.sessionId = sessionId;
   persistTask(t);
   notifyMain(t.id, t.status, t.description, t.model, (t.result || "").slice(0, 200)).catch(() => {});

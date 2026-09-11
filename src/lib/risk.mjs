@@ -2,7 +2,8 @@
 // acesso total quando ele pedir; NUNCA destrutivo/idiota sem pedido explícito)
 const HIGH = [
   /pag(?:ar|amento)|pix|transfer|boleto|checkout.*(pagar|confirmar)/i,
-  /senh|password|2fa|mfa|totp|redefinir.*acesso/i,
+  /redefinir|redefini.*senha|trocar.*senha|alterar.*senha|nova senha|change.*password|reset.*password|esqueci.*senha|forgot.*password/i,
+  /ativar.*2fa|desativar.*2fa|setup.*totp|escanear.*qr/i,
   /exclu.*conta|encerr.*conta|delet.*account|apagar.*conta|cancelar.*(conta|assinatura)/i,
   /(delet|exclu|apag).*(tudo|todos|all)|select.*all.*delet|limpar.*tudo/i,
   /desinstal|uninstall|format(ar)?\b/i,

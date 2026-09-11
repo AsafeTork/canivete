@@ -27,20 +27,21 @@ reg("n_ubrowser_tabs", {
 });
 
 reg("n_ubrowser_read", {
-  description: "Lê aba do dono COM login (título+texto+links). Enxuto por padrão (2500 chars, 15 links). {tabId?} = aba ativa.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 } }, required: [] },
-  run: async ({ tabId }) => {
+  description: "Lê aba do dono COM login (título+texto+links). Destilado enxuto/desduplicado por padrão (mode=distill, 2500 chars, 15 links); mode=raw é opt-out (texto integral). {tabId?} = aba ativa.",
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" } }, required: [] },
+  run: async ({ tabId, mode, maxChars, maxLinks }) => {
     const t0 = Date.now();
-    const r = await ubSend("tab.read", { tabId });
+    const r = await ubSend("tab.read", { tabId, mode: mode || "distill", maxChars, maxLinks });
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF : "timeout 60s", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    return devOut({ summary: `${r.data.title} — ${r.data.url}`, data: { ...r.data, text: trimOut(r.data.text || "", 6000) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_snapshot", reason: "Mapear cliques" }] });
+    const body = r.data.markdown || r.data.text || "";
+    return devOut({ summary: `${r.data.title} — ${r.data.url}${r.data.markdown ? ` (destilado ${r.data.stats ? r.data.stats.chars + " chars" : ""})` : ""}`, data: { ...r.data, text: trimOut(body, 6000) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_snapshot", reason: "Mapear cliques" }] });
   },
 });
 
 reg("n_ubrowser_snapshot", {
   description: "Elementos clicáveis da aba do dono (ref/tag/texto/selector + x/y). Padrão 50 (cap 120).",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, max: { type: "number", default: 50 } }, required: [] },
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 50 } }, required: [] },
   run: async ({ tabId }) => {
     const t0 = Date.now();
     const r = await ubSend("tab.snapshot", { tabId });
@@ -56,7 +57,7 @@ reg("n_ubrowser_act", {
     type: "object",
     properties: {
       action: { type: "string", enum: ["goto", "back", "forward", "reload", "click", "fill", "press", "scroll", "wait", "evaluate", "cursor", "new"] },
-      tabId: { type: "number" }, url: { type: "string" }, selector: { type: "string" }, text: { type: "string" },
+      tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, url: { type: "string" }, selector: { type: "string" }, text: { type: "string" },
       key: { type: "string" }, js: { type: "string" }, ms: { type: "number" },
       x: { type: "number", description: "viewport X p/ cursor" }, y: { type: "number", description: "viewport Y p/ cursor" },
       click: { type: "boolean", description: "cursor clica ao chegar" },
@@ -83,7 +84,7 @@ reg("n_ubrowser_act", {
 
 reg("n_ubrowser_shot", {
   description: "Print da aba VISÍVEL do dono (imagem + arquivo). Fundo = sem print (use read). Nunca troca de aba.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" } }, required: [] },
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" } }, required: [] },
   run: async ({ tabId }) => {
     const t0 = Date.now();
     const r = await ubSend("tab.shot", { tabId });
