@@ -39,6 +39,7 @@ function fail(tool, msg, hint) {
 function listDir(p, depth, maxLines = 1500, sort = "name") {
   const lines = [];
   const rec = (dir, lv) => {
+    if (lines.length > maxLines) return; // para cedo: antes montava a árvore inteira e truncava no fim (pico de RAM em pastas gigantes)
     let ents;
     try {
       ents = readdirSync(dir, { withFileTypes: true });
@@ -67,6 +68,7 @@ function listDir(p, depth, maxLines = 1500, sort = "name") {
         return a.name.localeCompare(b.name);
       });
     for (const e of ents) {
+      if (lines.length > maxLines) return;
       if (lv === 0 && SKIP_DIRS.has(e.name)) continue;
       const full = join(dir, e.name);
       if (e.isDirectory()) {

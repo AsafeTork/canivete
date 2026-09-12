@@ -12,13 +12,19 @@ const TOKEN = (process.env.CANIVETE_TOKEN || "").trim() || (() => { try { return
 let sock = null;
 let connState = "off"; // off|qr|pairing|connecting|open
 let lastQR = null;
+const INBOX_CAP = 500; // anel em memória (era 5000; laptop 3.6GB — todo MB conta)
+const INBOX_PERSIST = 500; // espelho em inbox.json (era 2000)
 let inbox = []; // anel persistente (sobrevive a restart; busca local rápida)
-try { inbox = JSON.parse(readFileSync("./inbox.json", "utf8") || "[]"); } catch {}
+try { inbox = JSON.parse(readFileSync("./inbox.json", "utf8") || "[]").slice(-INBOX_PERSIST); } catch {}
+// Baileys loga em INFO (pino) p/ stdout → systemd anexa em wa-gateway.log sem rotação.
+// Stub silencioso zera o spam no nascedouro (sem dep nova; Baileys só usa .child()+métodos).
+const silentLogger = { level: "silent", trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child() { return silentLogger; } };
 let inboxSaveT = null;
 const saveInbox = () => {
   clearTimeout(inboxSaveT);
-  inboxSaveT = setTimeout(() => { try { writeFileSync("./inbox.json", JSON.stringify(inbox.slice(-2000))); } catch {} }, 2000);
+  inboxSaveT = setTimeout(() => { try { writeFileSync("./inbox.json", JSON.stringify(inbox.slice(-INBOX_PERSIST))); } catch {} }, 2000);
 };
+const capInbox = () => { if (inbox.length > INBOX_CAP) inbox.splice(0, inbox.length - INBOX_CAP); };
 
 function authed() { return sock && connState === "open"; }
 
@@ -28,11 +34,9 @@ async function connect() {
   sock = makeWASocket({
     auth: state, version, printQRInTerminal: false,
     browser: ["Canivete", "Chrome", "1.0"], // preset original que pareou OK (Desktop derruba o login nesta conta)
-    syncFullHistory: true,
-    getMessage: async (key) => {
-      const hit = [...inbox].reverse().find((e) => e.msgId === key.id);
-      return hit?.raw || undefined;
-    },
+    logger: silentLogger, // sem pino INFO → wa-gateway.log para de crescer (546KB hoje, sem rotação no systemd)
+    syncFullHistory: false, // era true: pulava o sync FULL (dezenas de MB bufferizados no Baileys); on-demand via /wa/read continua
+    getMessage: async () => undefined, // pushMsg nunca guardou raw: o scan [...inbox].reverse().find() sempre retornou undefined — removido o O(n) por lookup
   });
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("connection.update", (u) => {
@@ -53,9 +57,10 @@ async function connect() {
     }
   });
   const pushMsg = (m, type) => {
+    if (m.key?.remoteJid === "status@broadcast") return; // stories: ninguém lê via /wa/read (só grupos/números); era ~1/3 do inbox
     const text = (m.message?.conversation || m.message?.extendedTextMessage?.text || m.message?.imageMessage?.caption || "").slice(0, 500);
     inbox.push({ jid: m.key?.remoteJid, msgId: m.key?.id, fromMe: !!m.key?.fromMe, sender: m.key?.participant || "", at: new Date((Number(m.messageTimestamp) || 0) * 1000).toISOString(), text, type });
-    if (inbox.length > 5000) inbox = inbox.slice(-5000);
+    capInbox();
   };
   sock.ev.on("messages.upsert", ({ messages, type }) => {
     for (const m of messages || []) pushMsg(m, type);
@@ -66,9 +71,9 @@ async function connect() {
     for (const m of messages || []) pushMsg(m, `history:${syncType || "?"}`);
     saveInbox();
     inbox.push({ sys: true, at: new Date().toISOString(), text: `history-set: ${syncType} chats=${(chats || []).length} msgs=${(messages || []).length}` });
-    if (inbox.length > 5000) inbox = inbox.slice(-5000);
+    capInbox();
   });
-  sock.ev.on("messaging-history.status", (s) => { inbox.push({ sys: true, at: new Date().toISOString(), text: `history-sync: ${JSON.stringify(s).slice(0, 200)}` }); });
+  sock.ev.on("messaging-history.status", (s) => { inbox.push({ sys: true, at: new Date().toISOString(), text: `history-sync: ${JSON.stringify(s).slice(0, 200)}` }); capInbox(); }); // era push sem teto (vazamento lento)
 }
 
 const norm = (s) => String(s || "").toLowerCase();

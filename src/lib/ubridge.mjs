@@ -52,6 +52,7 @@ function ubEnsure() {
         if (ubQueue.length) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(ubQueue.shift())); return; }
         const t = setTimeout(() => { const i = ubWaiters.findIndex((w) => w.res === res); if (i >= 0) ubWaiters.splice(i, 1); try { res.writeHead(204); res.end(); } catch {} }, 25000);
         ubWaiters.push({ res, t });
+        try { req.on("close", () => { const i = ubWaiters.findIndex((w) => w.res === res); if (i >= 0) { ubWaiters.splice(i, 1); clearTimeout(t); } }); } catch {} // cliente caiu antes dos 25s: libera o waiter (era leak até o timeout)
         return;
       }
       if (req.method === "POST" && (u.pathname === "/hello" || u.pathname === "/result" || u.pathname === "/exec")) {

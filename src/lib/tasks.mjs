@@ -49,7 +49,7 @@ const MB_DIR = join(BROKER_DIR, "mailbox");
 const writeLocks = new Map();
 async function writeJson(file, data) {
   const prev = writeLocks.get(file) || Promise.resolve();
-  const next = prev
+  const cur = prev
     .then(async () => {
       await mkdir(dirname(file), { recursive: true });
       const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
@@ -57,8 +57,9 @@ async function writeJson(file, data) {
       await rename(tmp, file);
     })
     .catch(() => {});
-  writeLocks.set(file, next);
-  await next;
+  writeLocks.set(file, cur);
+  await cur;
+  if (writeLocks.get(file) === cur) writeLocks.delete(file); // era vazamento: 1 entrada por arquivo p/ sempre
 }
 function readJson(file, fallback) {
   try {
@@ -70,6 +71,7 @@ function readJson(file, fallback) {
 
 async function persistTask(t) {
   await writeJson(join(TASKS_DIR, `${t.id}.json`), t);
+  try { evictTasks(); } catch {}
 }
 
 function safeTaskIds() {
@@ -81,6 +83,14 @@ function safeTaskIds() {
 }
 
 const tasks = new Map();
+const TASKS_MEM_CAP = 60; // teto do índice em memória (era ilimitado: cada n_task ficava p/ sempre com tailRaw de 30KB)
+function evictTasks() {
+  if (tasks.size <= TASKS_MEM_CAP) return;
+  for (const [id, t] of tasks) {
+    if (tasks.size <= TASKS_MEM_CAP) break;
+    if (t && t.status !== "running") tasks.delete(id); // finalizada sai da RAM; resolveTask relê do disco
+  }
+}
 let taskSeq = 0;
 const taskId = () => `t${Date.now().toString(36)}${(++taskSeq).toString(36)}`;
 
@@ -175,6 +185,14 @@ async function notifyMain(taskId, status, description, model, summary) {
   const payload = { taskId, status, description, model, ts, summary: (summary || "").slice(0, 500) };
   try {
     await writeJson(join(NOTIF_DIR, `${taskId}.json`), payload);
+  } catch {}
+  try { // poda: notificações nunca lidas cresciam sem teto no broker-shared (n_task_notifications esvazia ao ler)
+    const fs2 = readdirSync(NOTIF_DIR).filter((f) => f.endsWith(".json"));
+    if (fs2.length > 50) {
+      const withMt = fs2.map((f) => { try { return { f, mt: statSync(join(NOTIF_DIR, f)).mtimeMs }; } catch { return { f, mt: 0 }; } });
+      withMt.sort((a, b) => a.mt - b.mt);
+      for (const { f } of withMt.slice(0, withMt.length - 50)) { try { await unlink(join(NOTIF_DIR, f)); } catch {} }
+    }
   } catch {}
   try {
     const mainMailbox = join(MB_DIR, "main.json");

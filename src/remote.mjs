@@ -53,7 +53,8 @@ export async function serveHttp(port, token) {
       let body = "";
       await new Promise((ok, fail) => {
         const ch = [];
-        req.on("data", (c) => ch.push(c));
+        let n = 0;
+        req.on("data", (c) => { n += c.length; if (n > 2 * 1024 * 1024) fail(new Error("body > 2MB")); else ch.push(c); }); // era sem teto (POST gigante = OOM)
         req.on("end", () => { body = Buffer.concat(ch).toString("utf8"); ok(); });
         req.on("error", fail);
       });
