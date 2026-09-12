@@ -74,6 +74,10 @@ function findEl(sel) {
     return (
       [...document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]')].find((e) =>
         ((e.innerText || e.value || "") + "").toLowerCase().includes(t)
+      ) ||
+      // linhas de lista (WhatsApp etc.): divs clicáveis sem role
+      [...document.querySelectorAll('div[data-testid="cell-frame-container"],div[data-testid^="list-item-"],div[role="listitem"],div[role="row"]')].find((e) =>
+        ((e.innerText || "") + "").toLowerCase().includes(t)
       ) || null
     );
   }
@@ -324,8 +328,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       const mc = Math.min(Math.max(Number(a.maxChars) || 4000, 200), 12000);
       const d = ubDistill(mc);
       reply({ ok: true, data: d });
+    } else if (msg.cmd === "html") {
+      // inspeção real: outerHTML do seletor (p/ ver estrutura viva como no DevTools)
+      const el = a.selector ? findEl(a.selector) : document.documentElement;
+      if (!el) return reply({ ok: false, error: "NOTFOUND: " + (a.selector || "root") });
+      const cap = Math.min(Math.max(Number(a.maxChars) || 8000, 500), 30000);
+      reply({ ok: true, data: { tag: el.tagName.toLowerCase(), html: el.outerHTML.slice(0, cap), truncated: el.outerHTML.length > cap } });
     } else if (msg.cmd === "snapshot") {
-      const els = [...document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"],[onclick]')].slice(
+      const els = [...document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="listitem"],[role="row"],div[data-testid="cell-frame-container"],div[data-testid^="list-item-"],[onclick]')].slice(
         0,
         120
       );
@@ -343,6 +353,87 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
           ...elRect(el),
         })),
       });
+    } else if (msg.cmd === "wa_state") {
+      reply({ ok: true, data: { logged: !!document.querySelector('[data-testid="chat-list-search"], #side'), qr: !!document.querySelector('canvas[aria-label="Scan me!"], div[data-testid="qrcode"]'), title: document.title } });
+    } else if (msg.cmd === "wa_chats") {
+      const lim = Math.min(Math.max(Number(a.limit) || 20, 1), 50);
+      const rows = [...document.querySelectorAll('div[data-testid^="list-item-"], div[role="listitem"], div[role="row"]')].slice(0, lim);
+      reply({ ok: true, data: rows.map((r) => ({ name: ((r.querySelector("span[dir]") || {}).innerText || r.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80), preview: (r.innerText || "").replace(/\s+/g, " ").trim().slice(0, 120) })) });
+    } else if (msg.cmd === "wa_open") {
+      if (!a.name) return reply({ ok: false, error: "name obrigatório" });
+      const name = String(a.name);
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      const setNative = (el, v) => {
+        try {
+          const proto = Object.getPrototypeOf(el);
+          const desc = Object.getOwnPropertyDescriptor(proto, "value") || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+          if (desc && desc.set) desc.set.call(el, v);
+          else el.value = v;
+        } catch { try { el.value = v; } catch {} }
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      const box = document.querySelector('#side div[contenteditable="true"][data-tab="3"]') || document.querySelector('#side div[contenteditable="true"]') || document.querySelector('div[title="Search input textbox"]')
+        || document.querySelector('#side input[placeholder*="Pesquisar"]') || document.querySelector('#side input[placeholder*="Search"]') || document.querySelector('input[placeholder*="Pesquisar"]');
+      if (!box) return reply({ ok: false, error: "search-box-not-found" });
+      box.focus();
+      if (box.tagName === "INPUT") setNative(box, name);
+      else { document.execCommand("selectAll", false, null); document.execCommand("insertText", false, name); box.dispatchEvent(new Event("input", { bubbles: true })); }
+      await ubSleep(2000);
+      const rows = [...document.querySelectorAll('div[data-testid="cell-frame-container"]')];
+      const byTitle = (nm) => rows.find((r) => {
+        const t = r.querySelector('[data-testid="cell-frame-title"] span[title]') || r.querySelector('span[title]');
+        return t && (t.getAttribute("title") || "").toLowerCase().includes(nm.toLowerCase());
+      });
+      let target = byTitle(name);
+      if (!target) {
+        const hits = [...document.querySelectorAll('span[data-testid="text-highlight"]')];
+        const hl = hits.find((s) => (s.innerText || "").toLowerCase() && ((s.closest('[data-testid="cell-frame-container"]')?.innerText) || "").toLowerCase().includes(name.toLowerCase()));
+        target = hl ? hl.closest('div[data-testid="cell-frame-container"]') : null;
+      }
+      if (!target) target = rows[0];
+      if (!target) return reply({ ok: false, error: "no-result" });
+      target.click();
+      const want = name.toLowerCase().split(" ")[0];
+      for (let i = 0; i < 12; i++) {
+        await ubSleep(1000);
+        const head = document.querySelector('#main header span[dir="auto"], header span[data-testid="conversation-info-header-chat-title"]');
+        const compose = document.querySelector('#main [data-testid="conversation-compose-box-input"], #main footer div[contenteditable="true"]');
+        const title = ((head && head.innerText) || "").trim();
+        if (head && compose && title.toLowerCase().includes(want)) return reply({ ok: true, data: { opened: true, title: title.slice(0, 80) } });
+      }
+      const head2 = document.querySelector('#main header span[dir="auto"]');
+      reply({ ok: true, data: { opened: false, reason: "sem-confirmacao", headerNow: ((head2 && head2.innerText) || "").trim().slice(0, 80) } });
+    } else if (msg.cmd === "wa_read") {
+      const lim = Math.min(Math.max(Number(a.limit) || 20, 1), 100);
+      const bubbles = [...document.querySelectorAll('#main [data-pre-plain-text]')].slice(-lim);
+      reply({
+        ok: true,
+        data: bubbles.map((b) => {
+          const meta = b.getAttribute("data-pre-plain-text") || "";
+          const m = meta.match(/^\[([^\]]+)\]\s*(.+?):\s*$/);
+          const dir = b.closest(".message-out") ? "out" : b.closest(".message-in") ? "in" : "?";
+          const spans = [...b.querySelectorAll("span[dir]")].filter((s) => !s.querySelector("span[dir]"));
+          let text = spans.map((s) => s.innerText || "").join(" ").replace(/\s+/g, " ").trim();
+          if (!text) text = (b.innerText || "").replace(/\s+/g, " ").trim().slice(0, 500);
+          return { at: m ? m[1] : "", from: m ? m[2] : "", dir, text: text.slice(0, 500) };
+        }),
+      });
+    } else if (msg.cmd === "wa_send") {
+      if (!a.text || !String(a.text).trim()) return reply({ ok: false, error: "text obrigatório e não-vazio" });
+      const msg2 = String(a.text).slice(0, 2000);
+      const box = document.querySelector('#main [data-testid="conversation-compose-box-input"]') || document.querySelector('#main footer div[contenteditable="true"][role="textbox"]') || document.querySelector('#main div[data-lexical-editor="true"]') || document.querySelector('#main footer div[contenteditable="true"]');
+      if (!box) return reply({ ok: false, error: "compose-not-found (abra o chat primeiro)" });
+      box.focus();
+      document.execCommand("insertText", false, msg2);
+      await ubSleep(400);
+      const before = document.querySelectorAll('#main div[data-testid="msg-container"]').length;
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+      await ubSettle({ timeout: 8000 });
+      const outs = [...document.querySelectorAll('#main div.message-out [data-pre-plain-text]')];
+      const last = outs.length ? (outs[outs.length - 1].innerText || "") : "";
+      const after = document.querySelectorAll('#main div[data-testid="msg-container"]').length;
+      reply({ ok: true, data: { sent: after > before || last.includes(msg2.slice(0, 30)), count: after } });
     } else if (msg.cmd === "click") {
       const el = await findElResilient(a.selector);
       if (!el) return reply({ ok: false, error: "NOTFOUND: " + a.selector });

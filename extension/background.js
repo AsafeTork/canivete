@@ -253,7 +253,7 @@ async function handle(cmd, a = {}) {
     if (cmd === "tab.read" && a.links === false) a.maxLinks = 0; // dica p/ content pular coleta
     const map = {
       "tab.read": "read", "tab.snapshot": "snapshot", "tab.click": "click",
-      "tab.fill": "fill", "tab.press": "press", "tab.scroll": "scroll",
+      "tab.fill": "fill", "tab.press": "press", "tab.scroll": "scroll", "tab.html": "html",
     };
     const data = await ask(id, map[cmd], a); // content já faz settle antes de responder — sem sleep
     if (cmd === "tab.read" && a.links === false && data && typeof data === "object" && !Array.isArray(data)) {
@@ -382,108 +382,11 @@ async function handle(cmd, a = {}) {
     if (all.length) return all[0].id;
     return await activeTabId();
   }
-  if (cmd === "tab.wa_state") {
+  if (["tab.wa_state", "tab.wa_chats", "tab.wa_open", "tab.wa_read", "tab.wa_send"].includes(cmd)) {
+    // via content script (confiável; executeScript MAIN trava em CSP rígida)
     const id = await waTab(a);
-    return await waExec(id, () => ({
-      logged: !!document.querySelector('[data-testid="chat-list-search"], #side'),
-      qr: !!document.querySelector('canvas[aria-label="Scan me!"], div[data-testid="qrcode"]'),
-      title: document.title,
-    }));
-  }
-  if (cmd === "tab.wa_chats") {
-    const id = await waTab(a);
-    const limit = Math.min(Math.max(Number(a.limit) || 20, 1), 50);
-    return await waExec(id, (lim) => {
-      const rows = [...document.querySelectorAll('div[data-testid^="list-item-"], div[role="listitem"], div[role="row"]')].slice(0, lim);
-      return rows.map((r) => ({
-        name: ((r.querySelector("span[dir]") || {}).innerText || r.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80),
-        preview: (r.innerText || "").replace(/\s+/g, " ").trim().slice(0, 120),
-      }));
-    }, [limit]);
-  }
-  if (cmd === "tab.wa_open") {
-    if (!a.name) throw new Error("name obrigatório (nome do chat/grupo)");
-    const id = await waTab(a);
-    const opened = await waExec(id, async (name) => {
-      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-      const setNative = (el, v) => {
-        try {
-          const proto = Object.getPrototypeOf(el);
-          const desc = Object.getOwnPropertyDescriptor(proto, "value") || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-          if (desc && desc.set) desc.set.call(el, v);
-          else el.value = v;
-        } catch { try { el.value = v; } catch {} }
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-      };
-      const box = document.querySelector('#side div[contenteditable="true"][data-tab="3"]') || document.querySelector('#side div[contenteditable="true"]') || document.querySelector('div[title="Search input textbox"]')
-        || document.querySelector('#side input[placeholder*="Pesquisar"]') || document.querySelector('#side input[placeholder*="Search"]') || document.querySelector('input[placeholder*="Pesquisar"]');
-      if (!box) return { opened: false, reason: "search-box-not-found" };
-      box.focus();
-      if (box.tagName === "INPUT") setNative(box, name);
-      else {
-        document.execCommand("selectAll", false, null);
-        document.execCommand("insertText", false, name);
-        box.dispatchEvent(new Event("input", { bubbles: true }));
-      }
-      await sleep(2000);
-      // alvos reais (inspecionado): div[data-testid="cell-frame-container"] + span[title] + text-highlight
-      const rows = [...document.querySelectorAll('div[data-testid="cell-frame-container"]')];
-      const byTitle = (nm) => rows.find((r) => {
-        const t = r.querySelector('[data-testid="cell-frame-title"] span[title]') || r.querySelector('span[title]');
-        return t && (t.getAttribute("title") || "").toLowerCase().includes(nm.toLowerCase());
-      });
-      let target = byTitle(name);
-      if (!target) {
-        const hits = [...document.querySelectorAll('span[data-testid="text-highlight"]')];
-        const hl = hits.find((s) => (s.innerText || "").toLowerCase() && ((s.closest('[data-testid="cell-frame-container"]')?.innerText) || "").toLowerCase().includes(name.toLowerCase()));
-        target = hl ? hl.closest('div[data-testid="cell-frame-container"]') : null;
-      }
-      if (!target) target = rows[0];
-      if (!target) return { opened: false, reason: "no-result" };
-      target.click();
-      await sleep(1500);
-      const head = document.querySelector('#main header span[dir="auto"], header span[data-testid="conversation-info-header-chat-title"]');
-      const compose = document.querySelector('#main [data-testid="conversation-compose-box-input"], #main footer div[contenteditable="true"]');
-      return { opened: !!(head && compose), title: (head?.innerText || "").trim().slice(0, 80) };
-    }, [String(a.name)]);
-    return opened;
-  }
-  if (cmd === "tab.wa_read") {
-    const id = await waTab(a);
-    const limit = Math.min(Math.max(Number(a.limit) || 20, 1), 100);
-    return await waExec(id, (lim) => {
-      const bubbles = [...document.querySelectorAll('#main [data-pre-plain-text]')].slice(-lim);
-      return bubbles.map((b) => {
-        const meta = b.getAttribute("data-pre-plain-text") || "";
-        const m = meta.match(/^\[([^\]]+)\]\s*(.+?):\s*$/);
-        const dir = b.closest(".message-out") ? "out" : b.closest(".message-in") ? "in" : "?";
-        const spans = [...b.querySelectorAll("span[dir]")].filter((s) => !s.querySelector("span[dir]"));
-        let text = spans.map((s) => s.innerText || "").join(" ").replace(/\s+/g, " ").trim();
-        if (!text) text = (b.innerText || "").replace(/\s+/g, " ").trim().slice(0, 500);
-        return { at: m ? m[1] : "", from: m ? m[2] : "", dir, text: text.slice(0, 500) };
-      });
-    }, [limit]);
-  }
-  if (cmd === "tab.wa_send") {
-    if (!a.text || !String(a.text).trim()) throw new Error("text obrigatório e não-vazio");
-    const id = await waTab(a);
-    return await waExec(id, async (msg) => {
-      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-      const box = document.querySelector('#main [data-testid="conversation-compose-box-input"]') || document.querySelector('#main footer div[contenteditable="true"][role="textbox"]') || document.querySelector('#main div[data-lexical-editor="true"]') || document.querySelector('#main footer div[contenteditable="true"]');
-      if (!box) return { sent: false, reason: "compose-not-found (abra o chat com wa_open primeiro)" };
-      box.focus();
-      document.execCommand("insertText", false, msg);
-      await sleep(400);
-      const before = document.querySelectorAll('#main div[data-testid="msg-container"]').length;
-      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
-      await sleep(1500);
-      const outs = [...document.querySelectorAll('#main div.message-out [data-pre-plain-text]')];
-      const last = outs.length ? (outs[outs.length - 1].innerText || "") : "";
-      const after = document.querySelectorAll('#main div[data-testid="msg-container"]').length;
-      return { sent: after > before || last.includes(msg.slice(0, 30)), count: after };
-    }, [String(a.text).slice(0, 2000)]);
+    const sub = { "tab.wa_state": "wa_state", "tab.wa_chats": "wa_chats", "tab.wa_open": "wa_open", "tab.wa_read": "wa_read", "tab.wa_send": "wa_send" }[cmd];
+    return await ask(id, sub, a);
   }
   if (cmd === "tab.evaluate") {
     if (!a.js) throw new Error("js obrigatório");
@@ -547,6 +450,23 @@ async function handle(cmd, a = {}) {
       args: [String(a.selector), String(a.name)],
     }), 15000, "content tab.attr");
     return sr?.result || { found: false, value: null };
+  }
+  // flow: sequência atômica numa só ida-volta (eficiente: 1 poll, 1 tab, N passos)
+  if (cmd === "tab.flow") {
+    const steps = Array.isArray(a.steps) ? a.steps.slice(0, 12) : [];
+    if (!steps.length) throw new Error("steps: array não-vazio (máx 12)");
+    const id = a.tabId || (await activeTabId());
+    const out = [];
+    for (const s of steps) {
+      try {
+        const r = await handle(s.cmd, { ...a, ...s, tabId: id });
+        out.push({ cmd: s.cmd, ok: true, data: r });
+        if (s.stopOn && JSON.stringify(r).includes(s.stopOn)) break;
+      } catch (e) {
+        return { steps: out, failedStep: s.cmd, error: String(e.message || e).slice(0, 300) };
+      }
+    }
+    return { steps: out };
   }
   if (cmd.startsWith("tab.")) {
     const id = a.tabId || (await activeTabId());
