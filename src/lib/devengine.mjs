@@ -60,7 +60,7 @@ const bgProcs = new Map();
 // ---- DevEngine tools ----
 
 reg("n_get_architecture_summary", {
-  description: "DevEngine: topologia do projeto sem varrer arquivos — stack, entrypoints, features, EFs, padrões (~85% menos tokens). Quando usar: entender arquitetura antes de qualquer tarefa. Preferir a n_list+n_read manual. Ex: {focus_module:\"features\"}.",
+  description: "DevEngine: topologia leve do projeto (package.json + scans de features/functions, sem ler arquivos inteiros). Quando usar: entender arquitetura antes de qualquer tarefa. Retorna stack, entrypoints, features, EFs e padrões.",
   inputSchema: {
     type: "object",
     properties: {
@@ -120,7 +120,7 @@ reg("n_get_architecture_summary", {
 });
 
 reg("n_investigate_issue", {
-  description: "DevEngine: causa raiz via grafo de chamadas + busca semântica (12→1). Quando usar: bug/erro com symptom. Ex: {symptom:\"TypeError em login\"}. Retorna ranking com score + trechos relevantes. Prefira a grep manual.",
+  description: "DevEngine: busca keyword OR (12 hits→8) com score por contagem + stack_trace opcional. Quando usar: bug/erro com symptom. Retorna candidatos ranqueados. Limite: NÃO é grafo de chamadas nem busca semântica — para caso simples prefira n_grep.",
   inputSchema: {
     type: "object",
     properties: {
@@ -178,7 +178,7 @@ reg("n_investigate_issue", {
 });
 
 reg("n_analyze_change_impact", {
-  description: "DevEngine: impacto de editar um símbolo — callers + tests_affected. Quando usar: ANTES de editar função/componente. Ex: {symbol_id:\"src/lib/sync.js#syncAll\"}. Evita regressões.",
+  description: "DevEngine: busca regex do símbolo nos arquivos — callers + tests por nome. Quando usar: ANTES de editar função/componente. Limite: regex \\b (não AST); ajuda a evitar regressões, não garante.",
   inputSchema: {
     type: "object",
     properties: {
@@ -305,7 +305,7 @@ reg("n_apply_semantic_patch", {
 });
 
 reg("n_execute_targeted_tests", {
-  description: "DevEngine: testes afetados pelo diff (scope=diff_only|module|full). Quando usar: validar mudança sem rodar suite completa. Ex: {scope:\"diff_only\"}. ~70% mais rápido que full.",
+  description: "DevEngine: wrapper de testes (scope=diff_only|module|full). Quando usar: validar mudança. Limite: NÃO mapeia diff→testes; diff_only roda `npm run test:changed`, module roda `vitest run <target>`, full roda `npm test`. Retorna exit+stdout.",
   inputSchema: {
     type: "object",
     properties: {

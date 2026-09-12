@@ -38,7 +38,7 @@ function mainContent(html) {
 }
 
 reg("n_webfetch", {
-  description: "Baixa URL SEM JS e retorna conteúdo principal (<article>/<main>, maxChars 12k). Site 100% JS / login-wall / preço dinâmico (Shopee, Amazon, Magalu logada)? NÃO use este — vá de n_browser_navigate (renderiza JS) ou n_ubrowser_* (sessão logada do dono). Erro HTTP>=400 NÃO cacheia.",
+  description: "Baixa URL SEM JS e extrai texto principal (tenta <article>/<main>, com fallback p/ corpo). Site 100% JS / login-wall / preço dinâmico (Shopee, Amazon, Magalu logada)? NÃO use este — vá de n_browser_navigate (renderiza JS) ou n_ubrowser_* (sessão logada). Erro (inclui DNS) vira isError imediato; HTTP>=400 NÃO cacheia.",
   inputSchema: {
     type: "object",
     properties: {
@@ -170,7 +170,7 @@ async function searchGithub(q, n) {
 }
 
 reg("n_websearch", {
-  description: "Busca web gratuita (7 backends paralelos: Google News RSS, DDG Instant Answer, Wikipedia pt resumo+títulos, HN, GitHub, DDG HTML; fusão por fonte, cache 10min). Quando usar: pesquisar doc/bug/biblioteca; depois n_webfetch para ler. Retorna título+URL+snippet agrupado por fonte. Ex: {query:\"vite 5 pwa config\", numResults:8}.",
+  description: "Busca web gratuita (7 backends paralelos: Google News RSS, DDG Instant Answer, Wikipedia pt resumo+títulos, HN, GitHub, DDG HTML; fusão por fonte, cache 10min). Quando usar: pesquisar doc/bug/biblioteca. Limite: numResults é teto POR FONTE, não total; preços em snippet podem estar desatualizados (confirme ao vivo).",
   inputSchema: {
     type: "object",
     properties: {

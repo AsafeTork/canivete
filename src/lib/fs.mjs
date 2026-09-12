@@ -73,7 +73,7 @@ function listDir(p, depth, maxLines = 1500) {
 }
 
 reg("n_read", {
-  description: "Lê arquivo texto com números de linha (offset/limit, raw, maxChars até 100k) ou lista diretório. Quando usar: inspecionar código/config antes de editar; ler resto após truncation marker. Retorna 'path (N lines)' + corpo numerado; binário avisa usar n_bash; grande trunca com marker explícito (nunca silent). Ex: {filePath:\"src/lib/sync.js\", offset:1, limit:80}.",
+  description: "Lê arquivo texto com números de linha (offset/limit, raw, maxChars até 100k) ou lista diretório simples. Quando usar: inspecionar código/config antes de editar. Retorna corpo numerado (raw tira números); binário/ausente retorna isError; grande trunca com marker explícito (nunca silent).",
   inputSchema: {
     type: "object",
     properties: {
@@ -149,7 +149,7 @@ reg("n_write", {
 });
 
 reg("n_edit", {
-  description: "Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). Falha segura se 0 ou ambíguo sem contexto. Quando usar: edição pontual com contexto; para validar sintaxe use n_apply_semantic_patch. Ex: {filePath, oldString, newString}.",
+  description: "Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). Quando usar: edição pontual com contexto; para validar sintaxe use n_apply_semantic_patch. Limite: default substitui TODAS as ocorrências; ambíguo só falha com replaceAll=false; 0 matches sempre falha.",
   inputSchema: {
     type: "object",
     properties: {
@@ -185,7 +185,7 @@ reg("n_edit", {
 });
 
 reg("n_apply_patch", {
-  description: "Aplica unified diff via `git apply` (multi-arquivo, reverse opcional). Quando usar: patch gerado por agente/review; para 1 hunk prefira n_edit/n_apply_semantic_patch. Retorna bytes ou erro git. Ex: {patch:\"--- a/...\"}.",
+  description: "Aplica unified diff via `git apply` NO REPO ROOT (multi-arquivo, reverse opcional). Quando usar: patch gerado por agente/review. Limite: só paths relativos ao repo; fora do repo falha; usa temp file interno.",
   inputSchema: {
     type: "object",
     properties: {

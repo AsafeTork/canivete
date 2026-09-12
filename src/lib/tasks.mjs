@@ -814,7 +814,7 @@ reg("n_task_send", {
 });
 
 reg("n_task_delete", {
-  description: "Exclui task(s) e mailbox para organizar. Em running: encerra o processo (tombstone, sem ressuscitar). Use para coletores de informação ou quando o principal não for usar mais. Auto: n_task com ephemeral:true já exclui após done.",
+  description: "Exclui task(s) e mailbox para organizar. Em running: encerra o processo (tombstone, sem ressuscitar). Use para coletores de informação ou quando o principal não for usar mais. Auto: n_task com ephemeral:true exclui ~30s após done (não imediato).",
   inputSchema: {
     type: "object",
     properties: {
@@ -961,7 +961,7 @@ reg("n_task_notifications", {
 });
 
 reg("n_todowrite", {
-  description: "Replace the server-side task list (in-memory).",
+  description: "SUBSTITUI (não adiciona) a lista de tarefas in-memory do servidor. Schema por item: {content, status: pending|in_progress|completed|cancelled, priority: high|medium|low}. Volátil (morre com o processo).",
   inputSchema: {
     type: "object",
     properties: {

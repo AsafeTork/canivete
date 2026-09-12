@@ -180,7 +180,7 @@ reg("n_github", {
 });
 
 reg("n_npm", {
-  description: "npm registry info (cache 1h): latest version, size, deps, downloads. Quando usar: checar lib antes de instalar. Ex: {package:\"dexie\"}. Retorna versão, deps, downloads semanal.",
+  description: "npm registry info (cache 1h). Quando usar: checar lib antes de instalar. Retorna versão, licença, deps e downloads do ÚLTIMO MÊS (sem size).",
   inputSchema: {
     type: "object",
     properties: {

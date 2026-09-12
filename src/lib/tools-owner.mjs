@@ -27,7 +27,7 @@ reg("n_ubrowser_tabs", {
 });
 
 reg("n_ubrowser_read", {
-  description: "Lê aba do dono COM login (título+texto+links). Destilado enxuto/desduplicado por padrão (mode=distill, 2500 chars, 15 links); mode=raw é opt-out (texto integral). {tabId?} = aba ativa.",
+  description: "Lê aba do dono COM login. Destilado markdown/desduplicado por padrão (mode=distill, ~4000 chars); mode=raw devolve texto integral + links (maxChars default 2500, maxLinks 15). {tabId?/tab?} = aba ativa.",
   inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" } }, required: [] },
   run: async ({ tabId, mode, maxChars, maxLinks }) => {
     const t0 = Date.now();
