@@ -25,7 +25,13 @@ async function ensureBrowser() {
   if (await cdpVersion()) return;
   if (chromeChild && !chromeChild.killed) {
     try { process.kill(chromeChild.pid, 0); } catch { chromeChild = null; }
-    if (chromeChild) { await new Promise((r) => setTimeout(r, 1500)); if (await cdpVersion()) return; }
+    if (chromeChild) {
+      for (let i = 0; i < 10 && chromeChild; i++) {
+        try { process.kill(chromeChild.pid, 0); } catch { chromeChild = null; break; }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      if (await cdpVersion()) return;
+    }
   }
   try { mkdirSync(CHROME_PROFILE, { recursive: true }); } catch {}
   chromeChild = spawn(CHROME_BIN, [
@@ -77,7 +83,7 @@ async function withCdp(fn, { url } = {}) {
   }
   if (!page) page = await cdpNewPage(url || "about:blank");
   const ws = new WebSocket(page.webSocketDebuggerUrl);
-  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error("WS CDP falhou")); setTimeout(() => rej(new Error("WS CDP timeout")), 10000); });
+  await new Promise((res, rej) => { const t = setTimeout(() => rej(new Error("WS CDP timeout")), 10000); ws.onopen = () => { clearTimeout(t); res(); }; ws.onerror = () => { clearTimeout(t); rej(new Error("WS CDP falhou")); }; });
   let seq = 0;
   const send = (m, p, t) => cdpSend(ws, ++seq, m, p, t);
   try {
@@ -144,7 +150,7 @@ async function cdpGoto(send, url, waitMs = 4000) {
       })();
     });
   } catch {}
-  await new Promise((r) => setTimeout(r, 400));
+  // sem sleep final: o poll de readyState acima já garante carga (retorna cedo)
 }
 
 async function cdpState(send) {

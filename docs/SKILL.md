@@ -33,3 +33,8 @@ Runner de subagentes: opencode (total) ou genérico (`CANIVETE_RUN_TEMPLATE`).
 - `evaluate` precisa retornar valor (`return ...`); sem return vem `undefined`.
 - `n_ubrowser_act scan {pages:4, container?}` p/ listas virtualizadas (rola e coleta antes do `snapshot`).
 - `tab:"trecho título/URL"` em read/snapshot/act/shot/scan (IDs mudam — prefira nome a `tabId`).
+
+## Regra sem-sleep
+- Nunca sleep cego (tempo fixo esperando processo/render/rede); esperar = ouvir evento/notificação com teto e erro imediato no estouro.
+- Follow-up retorna assim que possível (poll curto + saída antecipada); sem `setTimeout` pós-ação p/ "assentar DOM".
+- Onde vale: content (MutationObserver), background (tabs.onUpdated), server/CDP (readyState/WS/long-poll com timeout).
