@@ -54,14 +54,14 @@ async function ensureContent(tabId) {
     } catch (e) {
       lastErr = e.message || String(e);
       if (/desatualizado|chrome:\/\/|cannot access|no tab|F5/i.test(lastErr)) throw new Error(lastErr);
-      await new Promise((r) => setTimeout(r, 350));
+      await new Promise((r) => setTimeout(r, 250)); // espaçamento entre retries, não espera de processo
     }
   }
   if (!injectedTabs.has(tabId)) {
     try {
       await withTimeout(chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }), 12000, "injetar content");
       injectedTabs.add(tabId);
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 250)); // espaçamento p/ content inicializar após injeção
       const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd: "ping" }), 4000, "content ping2");
       if (r?.ok) return;
     } catch (e) { lastErr = e.message || String(e); }
@@ -74,6 +74,24 @@ async function ask(tabId, cmd, args) {
   const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd, args }), 15000, "content " + cmd);
   if (!r?.ok) throw new Error(r?.error || "content falhou");
   return r.data;
+}
+
+function normWait(a) {
+  return Math.min(Math.max(Number(a?.waitMs) || 1800, 500), 15000);
+}
+
+// aguarda EVENTO de load (onUpdated complete) com teto; retorna elapsed ms. Erro de navegação propaga na hora.
+function waitLoad(tabId, maxMs) {
+  const t0 = Date.now();
+  return new Promise((res) => {
+    const to = setTimeout(() => { chrome.tabs.onUpdated.removeListener(fn); res(Date.now() - t0); }, maxMs);
+    const fn = (tid, info) => {
+      if (tid === tabId && info.status === "complete") {
+        clearTimeout(to); chrome.tabs.onUpdated.removeListener(fn); res(Date.now() - t0);
+      }
+    };
+    chrome.tabs.onUpdated.addListener(fn);
+  });
 }
 
 async function handle(cmd, a = {}) {
@@ -107,18 +125,13 @@ async function handle(cmd, a = {}) {
   if (cmd === "tab.goto") {
     if (!a.url) throw new Error("url obrigatória");
     const id = a.tabId || (await activeTabId());
-    // espera o carregamento POR EVENTO (rápido) com teto waitMs — não espera fixa
-    await chrome.tabs.update(id, { url: a.url });
-    await new Promise((res) => {
-      const max = Math.min(Math.max(Number(a.waitMs) || 1800, 500), 15000);
-      const to = setTimeout(() => { chrome.tabs.onUpdated.removeListener(fn); res(); }, max);
-      const fn = (tid, info) => {
-        if (tid === id && info.status === "complete") {
-          clearTimeout(to); chrome.tabs.onUpdated.removeListener(fn); setTimeout(res, 350);
-        }
-      };
-      chrome.tabs.onUpdated.addListener(fn);
-    });
+    const max = normWait(a);
+    const t0 = Date.now();
+    const loadedP = waitLoad(id, max); // listener antes de navegar p/ não perder o evento
+    await chrome.tabs.update(id, { url: a.url }); // erro de navegação retorna na hora
+    await loadedP; // evento complete ou teto
+    const resto = max - (Date.now() - t0);
+    if (resto > 0) await ask(id, "settle", { timeoutMs: resto }).catch(() => {}); // aquieta DOM, best-effort
     return await ask(id, "state", {}); // dieta: só título+url (leia explícito se precisar do texto)
   }
   if (cmd === "tab.new") {
@@ -130,7 +143,7 @@ async function handle(cmd, a = {}) {
         const to = setTimeout(() => { chrome.tabs.onUpdated.removeListener(fn); res(); }, 12000);
         const fn = (tid, info) => {
           if (tid === t.id && info.status === "complete") {
-            clearTimeout(to); chrome.tabs.onUpdated.removeListener(fn); setTimeout(res, 300);
+            clearTimeout(to); chrome.tabs.onUpdated.removeListener(fn); res();
           }
         };
         chrome.tabs.onUpdated.addListener(fn);
@@ -143,10 +156,15 @@ async function handle(cmd, a = {}) {
   }
   if (cmd === "tab.back" || cmd === "tab.forward" || cmd === "tab.reload") {
     const id = a.tabId || (await activeTabId());
+    const max = normWait(a);
+    const t0 = Date.now();
+    const loadedP = waitLoad(id, max); // listener antes de navegar
     if (cmd === "tab.back") await chrome.tabs.goBack(id).catch(() => { throw new Error("sem histórico p/ voltar"); });
     if (cmd === "tab.forward") await chrome.tabs.goForward(id).catch(() => { throw new Error("sem histórico p/ avançar"); });
-    if (cmd === "tab.reload") await chrome.tabs.reload(id);
-    await new Promise((r) => setTimeout(r, 600));
+    if (cmd === "tab.reload") await chrome.tabs.reload(id); // erro retorna na hora
+    await loadedP; // evento complete ou teto
+    const resto = max - (Date.now() - t0);
+    if (resto > 0) await ask(id, "settle", { timeoutMs: resto }).catch(() => {});
     return await ask(id, "state", {}); // dieta: só título+url
   }
   if (["tab.read", "tab.snapshot", "tab.click", "tab.fill", "tab.press", "tab.scroll"].includes(cmd)) {    const id = a.tabId || (await activeTabId());
@@ -156,8 +174,7 @@ async function handle(cmd, a = {}) {
       "tab.read": "read", "tab.snapshot": "snapshot", "tab.click": "click",
       "tab.fill": "fill", "tab.press": "press", "tab.scroll": "scroll",
     };
-    const data = await ask(id, map[cmd], a);
-    await new Promise((r) => setTimeout(r, cmd === "tab.read" || cmd === "tab.snapshot" ? 0 : 350));
+    const data = await ask(id, map[cmd], a); // content já faz settle antes de responder — sem sleep
     if (cmd === "tab.snapshot" && Array.isArray(data)) {
       const off = Math.max(Number(a.offset) || 0, 0);
       return data.slice(off, off + Math.min(Math.max(Number(a.max) || 50, 5), 120));
@@ -169,8 +186,7 @@ async function handle(cmd, a = {}) {
     // cursor INDEPENDENTE: {x,y} na viewport (+click opcional) ou {selector} (+click)
     const id = a.tabId || (await activeTabId());
     if (a.selector) return await ask(id, "cursor_sel", a);
-    const data = await ask(id, "cursor", a);
-    await new Promise((r) => setTimeout(r, a.click ? 250 : 0));
+    const data = await ask(id, "cursor", a); // content já faz settle antes de responder — sem sleep
     if (a.click) return { ...data, ...(await ask(id, "state", {})) };
     return data;
   }
@@ -220,7 +236,21 @@ async function handle(cmd, a = {}) {
             lastY = y;
           }
         }
-        await new Promise((r) => setTimeout(r, 500));
+        // verificação por evento: novo snapshot; se contagem/último item mudou, segue IMEDIATO
+        const prevCount = arr.length;
+        const prevLast = arr.length ? ((arr[arr.length - 1]?.selector || "") + "|" + (arr[arr.length - 1]?.text || "")) : "";
+        const pollT0 = Date.now();
+        while (Date.now() - pollT0 < 1500) { // teto por página; total 60s mantido via withTimeout
+          const s2 = await ask(id, "snapshot");
+          const a2 = Array.isArray(s2) ? s2 : [];
+          for (const it of a2) {
+            const key = (it?.selector || "") + "|" + (it?.text || "");
+            if (!seen.has(key)) seen.set(key, it);
+          }
+          const last2 = a2.length ? ((a2[a2.length - 1]?.selector || "") + "|" + (a2[a2.length - 1]?.text || "")) : "";
+          if (a2.length !== prevCount || last2 !== prevLast) break; // mudou → segue imediato
+          await new Promise((r) => setTimeout(r, 150)); // espaçamento entre verificações, não sleep cego
+        }
       }
       const items = [...seen.values()];
       const yx = (it) => {

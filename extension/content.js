@@ -85,6 +85,39 @@ function findEl(sel) {
 }
 
 const ubSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// ubSettle: espera POR EVENTO (MutationObserver) com teto. Resolve true
+// quiet ms após a última mutação; resolve false no teto. Sem rAF
+// (aba em fundo não dispara rAF). Erro retorna imediato no caller.
+function ubSettle({ timeout = 3000, quiet = 250 } = {}) {
+  const t = Math.min(Math.max(Number(timeout) || 3000, 100), 10000);
+  const q = Math.min(Math.max(Number(quiet) || 250, 50), 2000);
+  return new Promise((resolve) => {
+    let done = false;
+    let obs = null;
+    let quietTo = null;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      try { obs && obs.disconnect(); } catch {}
+      clearTimeout(cap);
+      clearTimeout(quietTo);
+      resolve(v);
+    };
+    const arm = () => {
+      clearTimeout(quietTo);
+      quietTo = setTimeout(() => finish(true), q);
+    };
+    const cap = setTimeout(() => finish(false), t);
+    try {
+      obs = new MutationObserver(() => arm());
+      obs.observe(document.documentElement || document, { childList: true, subtree: true, characterData: true });
+    } catch {
+      finish(true);
+      return;
+    }
+    arm();
+  });
+}
 // Resiliência viewport virtualizada: estabiliza após scrollIntoView+300ms e
 // tenta 1x de novo antes do NOTFOUND final.
 async function findElResilient(sel) {
@@ -169,7 +202,7 @@ async function elCenterFresh(sel, tries = 2) {
     el = findEl(sel);
     if (!el) return { el: null, p: null };
     try { el.scrollIntoView({ block: "center" }); } catch {}
-    await new Promise((r) => setTimeout(r, 280));
+    await ubSettle({ timeout: 800, quiet: 120 });
     el = findEl(sel) || el;
     p = elRect(el);
     if (elCenterValid(p, innerWidth, innerHeight)) return { el, p };
@@ -318,6 +351,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       await ubGlide(fresh.p.x, fresh.p.y); // cursor desliza até o alvo antes de clicar
       ubPulse();
       (fresh.el || el).click();
+      await ubSettle({ timeout: 3000 });
       reply({ ok: true, data: { clicked: a.selector, title: document.title, url: location.href } });
     } else if (msg.cmd === "cursor") {
       // cursor independente: move (x,y da viewport) e opcionalmente clica no ponto
@@ -337,6 +371,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       await ubGlide(freshCs.p.x, freshCs.p.y);
       let clicked = null;
       if (a.click) { ubPulse(); freshCs.el.click(); clicked = freshCs.el.tagName.toLowerCase(); }
+      await ubSettle({ timeout: 3000 });
       reply({ ok: true, data: { x: freshCs.p.x, y: freshCs.p.y, clicked } });
     } else if (msg.cmd === "fill") {
       const el = await findElResilient(a.selector);
@@ -355,6 +390,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         const f = el.form;
         if (f) f.submit();
       }
+      await ubSettle({ timeout: 3000 });
       reply({ ok: true, data: { filled: a.selector, title: document.title, url: location.href } });
     } else if (msg.cmd === "type") {
       const el = await findElResilient(a.selector);
@@ -370,6 +406,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       document.execCommand("insertText", false, String(a.text ?? ""));
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
+      await ubSettle({ timeout: 3000 });
       reply({ ok: true, data: { filled: a.selector, title: document.title, url: location.href } });
     } else if (msg.cmd === "select") {
       const el = await findElResilient(a.selector);
@@ -396,6 +433,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       el.selectedIndex = opts.indexOf(target);
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
+      await ubSettle({ timeout: 3000 });
       reply({ ok: true, data: { selected: el.value } });
     } else if (msg.cmd === "highlight") {
       let el = null;
@@ -411,6 +449,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         try { el.style.outline = prevOutline; el.style.boxShadow = prevBoxShadow; } catch {}
       }, 1200);
       reply({ ok: true, data: { highlighted: true } });
+    } else if (msg.cmd === "settle") {
+      const t = Math.min(Math.max(Number(a.timeoutMs) || 3000, 500), 10000);
+      await ubSettle({ timeout: t });
+      reply({ ok: true, data: { settled: true } });
     } else if (msg.cmd === "waittext") {
       const needle = String(a.text ?? "").toLowerCase();
       if (!needle) return reply({ ok: false, error: "texto vazio" });
