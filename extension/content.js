@@ -409,6 +409,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       }
       const head2 = document.querySelector('#main header span[dir="auto"]');
       reply({ ok: true, data: { opened: false, reason: "sem-confirmacao", headerNow: ((head2 && head2.innerText) || "").trim().slice(0, 80) } });
+    } else if (msg.cmd === "wa_ids") {
+      // ids reais das bolhas carregadas (semente p/ backfill do gateway) — sem clique, sem tela
+      const bubbles = [...document.querySelectorAll('#main [data-pre-plain-text]')];
+      reply({ ok: true, data: bubbles.map((b) => ({ id: b.getAttribute("data-id") || "", meta: (b.getAttribute("data-pre-plain-text") || "").slice(0, 80), len: (b.innerText || "").length })) });
     } else if (msg.cmd === "wa_read") {
       const lim = Math.min(Math.max(Number(a.limit) || 20, 1), 100);
       const bubbles = [...document.querySelectorAll('#main [data-pre-plain-text]')].slice(-lim);

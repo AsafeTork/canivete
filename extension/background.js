@@ -390,11 +390,11 @@ async function handle(cmd, a = {}) {
     if (all.length) return all[0].id;
     return await activeTabId();
   }
-  if (["tab.wa_state", "tab.wa_chats", "tab.wa_open", "tab.wa_read", "tab.wa_send"].includes(cmd)) {
+  if (["tab.wa_state", "tab.wa_chats", "tab.wa_open", "tab.wa_read", "tab.wa_send", "tab.wa_ids"].includes(cmd)) {
     // Store interno primeiro (padrão venom/wppconnect: sem eval, sem clique); DOM como fallback
     const id = await waTab(a);
-    const sub = { "tab.wa_state": "wa_state", "tab.wa_chats": "wa_chats", "tab.wa_open": "wa_open", "tab.wa_read": "wa_read", "tab.wa_send": "wa_send" }[cmd];
-    const op = { "tab.wa_state": "state", "tab.wa_chats": "chats", "tab.wa_open": "open", "tab.wa_read": "read", "tab.wa_send": "send" }[cmd];
+    const sub = { "tab.wa_state": "wa_state", "tab.wa_chats": "wa_chats", "tab.wa_open": "wa_open", "tab.wa_read": "wa_read", "tab.wa_send": "wa_send", "tab.wa_ids": "wa_ids" }[cmd];
+    const op = { "tab.wa_state": "state", "tab.wa_chats": "chats", "tab.wa_open": "open", "tab.wa_read": "read", "tab.wa_send": "send", "tab.wa_ids": "ids" }[cmd];
     try {
       const r = await waStore(id, op, { name: a.name, text: a.text, limit: a.limit, chatName: a.name });
       if (r && !r.error) return r;
