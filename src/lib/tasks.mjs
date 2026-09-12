@@ -231,9 +231,25 @@ async function sweepTask(t) {
   return t;
 }
 
-function pushCapped(box, from, message) {
+function isExpiredMsg(m) {
+  return !!(m && m.expiresAt && Date.now() > m.expiresAt);
+}
+function msgAgeMs(m) {
+  try { return Math.max(0, Date.now() - new Date(m.ts).getTime()); } catch { return 0; }
+}
+function pruneExpiredBox(box) {
+  if (!box || !Array.isArray(box.msgs)) return box;
+  const kept = box.msgs.filter((m) => !isExpiredMsg(m));
+  if (kept.length !== box.msgs.length) box.msgs = kept;
+  return box;
+}
+function pushCapped(box, from, message, ttlMs) {
   const m = String(message ?? "");
-  box.msgs.push({ from, ts: new Date().toISOString(), message: m.length > MAX_MSG_CHARS ? m.slice(0, MAX_MSG_CHARS) + `...[truncated ${m.length - MAX_MSG_CHARS} chars]` : m });
+  if (!box || !Array.isArray(box.msgs)) box = { msgs: [] };
+  const entry = { from, ts: new Date().toISOString(), message: m.length > MAX_MSG_CHARS ? m.slice(0, MAX_MSG_CHARS) + `...[truncated ${m.length - MAX_MSG_CHARS} chars]` : m };
+  const ttl = Number(ttlMs);
+  if (Number.isFinite(ttl) && ttl > 0) entry.expiresAt = Date.now() + ttl;
+  box.msgs.push(entry);
   if (box.msgs.length > MAX_MSGS) box.msgs = box.msgs.slice(-MAX_MSGS);
   return box;
 }
@@ -247,7 +263,7 @@ function pendingHints() {
 }
 
 reg("n_task", {
-  description: "Spawn subagente isolado (runner: opencode ou genérico via CANIVETE_RUN_TEMPLATE). model OBRIGATÓRIO no modo opencode: n_list_models → escolha → passe em {model}. TIPOS (subagent_type): mcp-only (default, só n_*) | explore | quick | general | reviewer. WORKFLOW: decomponha, fan-out N× background:true, n_task_wait any/all, n_task_send (+n_task_send p/ 'main'). Sync bloqueia. Fim gera notificação. Ao vivo: n_task_tail. Delete em running mata o processo.",
+  description: "Spawn subagente isolado (runner: opencode ou genérico via CANIVETE_RUN_TEMPLATE). model OBRIGATÓRIO no modo opencode: n_list_models → escolha → passe em {model}. TIPOS (subagent_type): mcp-only (default, só n_*) | explore | quick | general | reviewer. WORKFLOW: decomponha, fan-out N× background:true, n_task_wait any/all, n_task_send (+n_task_send p/ 'main'). Sync bloqueia. Fim gera notificação. Ao vivo: n_task_tail. Delete em running mata o processo. DAG simples: depends_on espera deps; label apelida status.",
   inputSchema: {
     type: "object",
     properties: {
@@ -258,10 +274,12 @@ reg("n_task", {
       timeout: { type: "number", default: 600000 },
       background: { type: "boolean", description: "Spawn without waiting (default false). Returns task_id immediately." },
       ephemeral: { type: "boolean", description: "Se true, auto-exclui task/mailbox após done (para coletores só de info)" },
+      depends_on: { type: "array", items: { type: "string" }, description: "Aguarda deps done/failed/timeout antes de spawnar; se alguma falhar vira skipped." },
+      label: { type: "string", description: "Apelido curto exibido no status no lugar do id." },
     },
     required: ["prompt", "model"],
   },
-  run: async ({ description, subagent_type, prompt, model, timeout, background, ephemeral }) => {
+  run: async ({ description, subagent_type, prompt, model, timeout, background, ephemeral, depends_on, label }) => {
     if (!model && isOpencode) {
       return out(`model é OBRIGATÓRIO — escolha explícita. Chame n_list_models para ver os disponíveis e passe um deles em n_task({model}).`, true);
     }
@@ -280,6 +298,63 @@ reg("n_task", {
       return out(`subagent_type desconhecido: "${agent}". Válidos: ${KNOWN_AGENTS.join(", ")}`, true);
     }
     const t = timeout || 600000;
+    const shortLabel = typeof label === "string" ? label.trim().slice(0, 40) : "";
+    const deps = [...new Set((Array.isArray(depends_on) ? depends_on : []).map((d) => String(d).trim()).filter(Boolean))];
+    if (deps.length) {
+      const unknown = deps.filter((d) => !resolveTask(d));
+      if (unknown.length) return out(`depends_on inválida: task(s) não encontrada(s): ${unknown.join(", ")}`, true);
+      const depWaitMs = Math.min(t, HOST_GUARD_MS);
+      const depDeadline = Date.now() + depWaitMs;
+      for (;;) {
+        let still = [];
+        let states = [];
+        for (const d of deps) {
+          let dt = resolveTask(d);
+          if (dt && dt.status === "running") {
+            try { dt = await sweepTask(dt); } catch {}
+            if (dt && dt.status === "running") {
+              try { dt = (await finalizeDetachedIfDead(d).catch(() => null)) || dt; } catch {}
+            }
+          }
+          states.push(dt);
+          if (dt && dt.status === "running") still.push(d);
+        }
+        if (!still.length) {
+          const bad = states.filter((dt, i) => !dt || (dt.status !== "done"));
+          if (bad.length) {
+            const badIds = bad.map((dt, i) => `${deps[i]} (${dt?.status || "not found"})`).join(", ");
+            const sid = taskId();
+            const skipped = {
+              id: sid,
+              agent,
+              description: ephemeral ? `[ephemeral] ${description || ""}`.trim() : description || "",
+              model: String(model),
+              ephemeral: !!ephemeral,
+              status: "skipped",
+              startedAt: new Date().toISOString(),
+              finishedAt: new Date().toISOString(),
+              exitCode: null,
+              pid: null,
+              lastActivityAt: null,
+              tools: [],
+              error: `[DAG] skipped — dependência(s) falhou(ram): ${badIds}`,
+              result: null,
+              depends_on: deps,
+              label: shortLabel,
+            };
+            tasks.set(sid, skipped);
+            await persistTask(skipped);
+            await notifyMain(sid, "skipped", description, String(model), skipped.error).catch(() => {});
+            return out(`task ${shortLabel ? `${shortLabel} (${sid})` : sid} skipped — depends_on falhou: ${badIds}`, true);
+          }
+          break;
+        }
+        if (Date.now() >= depDeadline) {
+          return out(`depends_on pendente após ${Math.round(depWaitMs / 1000)}s — ainda rodando: ${still.join(", ")} (chame de novo quando deps terminarem)`, true);
+        }
+        await new Promise((r) => setTimeout(r, Math.min(2000, Math.max(1, depDeadline - Date.now()))));
+      }
+    }
     const id = taskId();
     const chosenModel = String(model);
     const entry = {
@@ -297,6 +372,8 @@ reg("n_task", {
       tools: [],
       error: null,
       result: null,
+      depends_on: deps,
+      label: shortLabel,
     };
     tasks.set(id, entry);
     await persistTask(entry);
@@ -421,13 +498,14 @@ reg("n_task", {
     await persistTask(entry); // garante pid no disco (fecha race pid:null → zombie imortal)
     if (background) {
       const eph = ephemeral ? " [ephemeral auto-exclui em 30s]" : "";
-      return out(`task ${id} spawned in background (${agent} | ${chosenModel})${eph}\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: n_task_send({ task_id: "${id}", message: "..." })\npara excluir: n_task_delete({task_id:"${id}"}) ou n_task_delete({task_id:"all"})`);
+      const tag = shortLabel ? `${shortLabel} (${id})` : id;
+      return out(`task ${tag} spawned in background (${agent} | ${chosenModel})${eph}\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: n_task_send({ task_id: "${id}", message: "..." })\npara excluir: n_task_delete({task_id:"${id}"}) ou n_task_delete({task_id:"all"})`);
     }
     let fin;
     if (t > HOST_GUARD_MS) {
       fin = await Promise.race([donePromise, new Promise((r) => setTimeout(() => r(null), HOST_GUARD_MS))]);
       if (!fin) {
-        return out(`task ${id} ainda rodando após ${Math.round(HOST_GUARD_MS / 1000)}s (limite de resposta; continua em background)\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" })\npara status: n_task_status({ task_id: "${id}" })`);
+        return out(`task ${shortLabel ? `${shortLabel} (${id})` : id} ainda rodando após ${Math.round(HOST_GUARD_MS / 1000)}s (limite de resposta; continua em background)\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" })\npara status: n_task_status({ task_id: "${id}" })`);
       }
     } else {
       fin = await donePromise;
@@ -441,8 +519,15 @@ reg("n_task", {
         } catch {}
       }, 5000);
     }
-    const header = `[${agent} ${fin.status} | ${fin.model || chosenModel}${fin.ephemeral ? " | ephemeral" : ""}, exit ${fin.exitCode}]\ntools usados: ${fin.tools.length ? fin.tools.join(", ") : "nenhum"}`;
-    return out((fin.error && !fin.result ? `${header}\n${fin.error}` : header + (fin.result ? `\n\n${trimOut(fin.result, 20000)}` : "\n(sem resposta)")) + pendingHints());
+    const finTag = fin.label ? `${fin.label} (${fin.id})` : (shortLabel ? `${shortLabel} (${fin.id})` : fin.id);
+    const header = `[${agent} ${fin.status} | ${fin.model || chosenModel}${fin.ephemeral ? " | ephemeral" : ""}, exit ${fin.exitCode}] ${finTag}\ntools usados: ${fin.tools.length ? fin.tools.join(", ") : "nenhum"}`;
+    let ownMb = "";
+    try {
+      const box = readJson(join(MB_DIR, `${fin.id}.json`), null);
+      const n = box && Array.isArray(box.msgs) ? box.msgs.length : 0;
+      if (n) ownMb = `\n📬 ${n} notificação(ões) pendente(s) p/ ${fin.label || shortLabel || fin.id} — leia com n_task_recv({task_id:"${fin.id}"})`;
+    } catch {}
+    return out((fin.error && !fin.result ? `${header}\n${fin.error}` : header + (fin.result ? `\n\n${trimOut(fin.result, 20000)}` : "\n(sem resposta)")) + ownMb + pendingHints());
   },
 });
 
@@ -711,7 +796,8 @@ function formatTaskResult(done, any, still) {
   const blocks = done.map((raw) => {
     const t = raw && typeof raw === "object" ? raw : {};
     const tools = Array.isArray(t.tools) ? t.tools : [];
-    const head = `[${t.status || "unknown"}] ${t.id || "?"} — ${t.description || "(sem descrição)"} | ${t.model || "unknown"} (exit ${t.exitCode})\ntools: ${tools.length ? tools.join(", ") : "nenhum"}`;
+    const name = t.label ? `${t.label} (${t.id || "?"})` : (t.id || "?");
+    const head = `[${t.status || "unknown"}] ${name} — ${t.description || "(sem descrição)"} | ${t.model || "unknown"} (exit ${t.exitCode})\ntools: ${tools.length ? tools.join(", ") : "nenhum"}`;
     return head + (t.result ? `\n\n${trimOut(t.result, 20000)}` : t.error ? `\n\n${t.error}` : "");
   });
   return out(
@@ -790,21 +876,22 @@ reg("n_task_status", {
 });
 
 reg("n_task_send", {
-  description: "Envia mensagem para mailbox (disco compartilhado, NÃO-bloqueante, sem preempção: o receptor só vê ao chamar n_task_recv/n_task_status). task_id pode ser outra task ou 'main' (worker→principal). Sem ACK e sem resposta automática.",
+  description: "Envia msg p/ mailbox (não-bloqueante). ttl_ms opcional: msg velha some no recv/peek/notify.",
   inputSchema: {
     type: "object",
     properties: {
-      task_id: { type: "string" },
-      message: { type: "string" },
-      from: { type: "string", description: "Sender id (default 'main')" },
+      task_id: { type: "string", description: "Destino ou 'main'" },
+      message: { type: "string", description: "Texto da msg" },
+      from: { type: "string", description: "Remetente (padrão 'main')" },
+      ttl_ms: { type: "number", description: "Expira após N ms (opcional)" },
     },
     required: ["task_id", "message"],
   },
-  run: async ({ task_id, message, from }) => {
+  run: async ({ task_id, message, from, ttl_ms }) => {
     if (task_id !== "main" && !resolveTask(task_id)) return out(`task ${task_id} not found`, true);
     const target = task_id === "main" ? null : resolveTask(task_id);
     const file = join(MB_DIR, `${task_id}.json`);
-    const box = pushCapped(readJson(file, { msgs: [] }), from || "main", message);
+    const box = pushCapped(readJson(file, { msgs: [] }), from || "main", message, ttl_ms);
     await writeJson(file, box);
     const dormant = target && target.status !== "running"
       ? `\nAVISO: task ${task_id} está ${target.status} — a msg pode dormir sem leitura. Prefira "main" ou re-spawne.`
@@ -858,32 +945,84 @@ reg("n_task_delete", {
 });
 
 reg("n_task_recv", {
-  description: "Lê e esvazia a mailbox (leitura destrutiva; espiada não-destrutiva só via n_task_status mailbox:N). Usa TASK_ID env se task_id omitido. timeout opcional (ms) espera até chegar msg — poll 1s no servidor, sem gastar tokens; sem timeout retorna imediato. Sem preempção: ninguém é interrompido.",
+  description: "Lê e esvazia mailbox (destrutivo). filter: só consome o que casa. Expirada (ttl) é descartada.",
   inputSchema: {
     type: "object",
     properties: {
-      task_id: { type: "string" },
-      timeout: { type: "number", description: "Espera até N ms por mensagem (máx 170s). Omitido = retorno imediato." },
+      task_id: { type: "string", description: "Caixa (padrão TASK_ID env)" },
+      timeout: { type: "number", description: "Espera até N ms (máx 170s)" },
+      filter: { type: "string", description: "Substring; resto fica na caixa" },
     },
     required: [],
   },
-  run: async ({ task_id, timeout }) => {
+  run: async ({ task_id, timeout, filter }) => {
     const id = task_id || process.env.TASK_ID;
     if (!id) return out("no task_id and no TASK_ID env", true);
     const file = join(MB_DIR, `${id}.json`);
     const waitMs = Math.min(Number(timeout) || 0, HOST_GUARD_MS);
     const deadline = Date.now() + waitMs;
+    const want = typeof filter === "string" && filter ? String(filter) : "";
     for (;;) {
       const box = readJson(file, null);
-      if (box && box.msgs.length) {
-        await unlink(file).catch(() => {});
-        return out(box.msgs.map((m) => `[${m.from} ${m.ts}] ${m.message}`).join("\n"));
+      if (box && Array.isArray(box.msgs) && box.msgs.length) {
+        const before = box.msgs.length;
+        pruneExpiredBox(box);
+        const pruned = box.msgs.length !== before;
+        let matched = box.msgs;
+        let kept = [];
+        if (want) {
+          matched = box.msgs.filter((m) => String(m.message ?? "").includes(want));
+          kept = box.msgs.filter((m) => !String(m.message ?? "").includes(want));
+        }
+        if (matched.length) {
+          if (!want && !pruned) {
+            await unlink(file).catch(() => {});
+          } else if (kept.length) {
+            await writeJson(file, { msgs: kept.slice(-MAX_MSGS) });
+          } else {
+            await unlink(file).catch(() => {});
+          }
+          return out(matched.map((m) => `[${m.from} ${m.ts}] ${m.message}`).join("\n"));
+        }
+        if (pruned) {
+          if (box.msgs.length) await writeJson(file, box);
+          else await unlink(file).catch(() => {});
+        }
       }
       if (Date.now() >= deadline) {
         return out(waitMs > 0 ? `(no messages after ${Math.round(waitMs / 1000)}s — chame de novo para continuar esperando)` : "(no messages)");
       }
       await new Promise((r) => setTimeout(r, Math.min(1000, Math.max(1, deadline - Date.now()))));
     }
+  },
+});
+
+reg("n_task_peek", {
+  description: "Espia mailbox SEM esvaziar. Retorna últimas N + idade. Expirada (ttl) é oculta.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "Caixa (padrão TASK_ID env)" },
+      limit: { type: "number", description: "Quantas mostrar (padrão 5)", default: 5 },
+    },
+    required: [],
+  },
+  run: async ({ task_id, limit }) => {
+    const id = task_id || process.env.TASK_ID;
+    if (!id) return out("no task_id and no TASK_ID env", true);
+    const file = join(MB_DIR, `${id}.json`);
+    const box = readJson(file, null);
+    if (!box || !Array.isArray(box.msgs) || !box.msgs.length) return out("(no messages)");
+    const before = box.msgs.length;
+    pruneExpiredBox(box);
+    if (box.msgs.length !== before) {
+      if (box.msgs.length) await writeJson(file, box);
+      else await unlink(file).catch(() => {});
+    }
+    if (!box.msgs.length) return out("(no messages)");
+    const n = Math.min(Math.max(Number(limit) || 5, 1), MAX_MSGS);
+    const slice = box.msgs.slice(-n);
+    return out(slice.map((m) => `[${m.from} ${m.ts} age_${Math.round(msgAgeMs(m) / 1000)}s] ${m.message}`).join("\n") + `\n(${slice.length}/${box.msgs.length} msgs)`);
   },
 });
 
@@ -929,7 +1068,7 @@ reg("n_task_tail", {
 });
 
 reg("n_task_notifications", {
-  description: "Lê notificações de tasks que terminaram (done/failed/timeout/interrompida). Esvazia após ler. Use para saber quando subagentes concluíram sem polling.",
+  description: "Lê notifs de tasks + correio dormindo. Esvazia notifs. Expirada (ttl) é oculta.",
   inputSchema: { type: "object", properties: {}, required: [] },
   run: async () => {
     const notifs = [];
@@ -951,6 +1090,13 @@ reg("n_task_notifications", {
       for (const f of mbf) {
         try {
           const b = JSON.parse(readFileSync(join(MB_DIR, f), "utf8"));
+          if (!b || !Array.isArray(b.msgs) || !b.msgs.length) continue;
+          const before = b.msgs.length;
+          pruneExpiredBox(b);
+          if (b.msgs.length !== before) {
+            if (b.msgs.length) await writeJson(join(MB_DIR, f), b);
+            else await unlink(join(MB_DIR, f)).catch(() => {});
+          }
           if (b && b.msgs && b.msgs.length) sleeping.push(`${f.replace(/\.json$/, "")}: ${b.msgs.length} não lida(s), última ${b.msgs[b.msgs.length - 1].ts}`);
         } catch {}
       }
@@ -961,7 +1107,7 @@ reg("n_task_notifications", {
 });
 
 reg("n_todowrite", {
-  description: "SUBSTITUI (não adiciona) a lista de tarefas in-memory do servidor. Schema por item: {content, status: pending|in_progress|completed|cancelled, priority: high|medium|low}. Volátil (morre com o processo).",
+  description: "Substitui (replace, padrão) ou mescla (append por content igual) a lista in-memory. Volátil (morre com o processo).",
   inputSchema: {
     type: "object",
     properties: {
@@ -977,12 +1123,24 @@ reg("n_todowrite", {
           required: ["content"],
         },
       },
+      mode: { type: "string", enum: ["append", "replace"], default: "replace", description: "replace substitui tudo; append mescla por content igual atualizando status/priority" },
     },
     required: ["todos"],
   },
-  run: ({ todos }) => {
-    todo.length = 0;
-    for (const t of todos) todo.push({ content: t.content, status: t.status || "pending", priority: t.priority || "medium" });
+  run: ({ todos, mode }) => {
+    const list = Array.isArray(todos) ? todos : [];
+    if ((mode || "replace") === "append") {
+      for (const t of list) {
+        const ex = todo.find((x) => x.content === t.content);
+        if (ex) {
+          if (t.status) ex.status = t.status;
+          if (t.priority) ex.priority = t.priority;
+        } else todo.push({ content: t.content, status: t.status || "pending", priority: t.priority || "medium" });
+      }
+    } else {
+      todo.length = 0;
+      for (const t of list) todo.push({ content: t.content, status: t.status || "pending", priority: t.priority || "medium" });
+    }
     return out(fmtTodo());
   },
 });
@@ -1000,31 +1158,39 @@ reg("n_todo", {
 });
 
 reg("n_question", {
-  description: "Register a question for the user (MCP cannot render interactive options).",
+  description: "Registra pergunta p/ o usuário. MCP não renderiza UI — o agente pergunta diretamente. multiple permite várias opções; id só ecoa p/ referência.",
   inputSchema: {
     type: "object",
     properties: {
-      question: { type: "string" },
-      options: { type: "array", items: { type: "string" } },
+      question: { type: "string", description: "Pergunta a exibir" },
+      options: { type: "array", items: { type: "string" }, description: "Opções de resposta" },
+      multiple: { type: "boolean", description: "Permite marcar várias opções", default: false },
+      id: { type: "string", description: "Nome da pergunta; só ecoa no retorno p/ referência" },
     },
     required: ["question"],
   },
-  run: ({ question, options }) =>
+  run: ({ question, options, multiple, id }) =>
     out(
-      `QUESTION: ${question}${options?.length ? ` | options: ${options.join(" / ")}` : ""}\n(The main agent must ask the user directly; no interactive prompt exists inside MCP.)`
+      `QUESTION${id ? ` [${id}]` : ""}${multiple ? " (múltipla escolha)" : ""}: ${question}${options?.length ? ` | options: ${options.join(" / ")}` : ""}\n(MCP não renderiza UI; o agente deve perguntar diretamente ao usuário.)`
     ),
 });
 
 reg("n_skill", {
-  description: "Load a skill's SKILL.md by name from all local skill directories.",
+  description: "Carrega SKILL.md por nome. refresh:true só lista skills (re-scan p/ recém-criadas).",
   inputSchema: {
     type: "object",
     properties: {
-      name: { type: "string" },
+      name: { type: "string", description: "Nome da skill" },
+      refresh: { type: "boolean", description: "Lista skills recarregando o scan", default: false },
     },
-    required: ["name"],
+    required: [],
   },
-  run: async ({ name }) => {
+  run: async ({ name, refresh }) => {
+    if (refresh) {
+      const known = await skillNames();
+      return out(`skills (${known.length}): ${known.join(", ") || "(none)"} (scan recarregado)`);
+    }
+    if (!name) return out(`informe name ou use refresh:true. Disponíveis: ${(await skillNames()).join(", ") || "(none)"}`, true);
     const candidates = [
       join(CWD, ".agents", "skills", name, "SKILL.md"),
       join(CWD, ".opencode", "skills", name, "SKILL.md"),

@@ -2,41 +2,90 @@
 import { reg, out, httpJson, trimOut } from "./ctx.mjs";
 import { cached } from "./web.mjs";
 
+// Retry local com backoff: tenta até `tries` vezes (default 3), intervalo 500ms,2s.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function fetchRetry(fn, tries = 3) {
+  const delays = [500, 2000];
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      last = await fn();
+      // httpJson nunca lança: sinaliza rede via status 0. Retry em erro transitório.
+      if (last && typeof last.status === "number") {
+        const s = last.status;
+        const transient = s === 0 || s === 429 || (s >= 500 && s < 600);
+        if (transient && i < tries - 1) {
+          await sleep(delays[i] ?? 2000);
+          continue;
+        }
+      }
+      return last;
+    } catch (e) {
+      if (i === tries - 1) throw e;
+      await sleep(delays[i] ?? 2000);
+    }
+  }
+  return last;
+}
+
 reg("n_currency", {
-  description: "Taxa de câmbio/conversão (ECB/Frankfurter, diário, cache 1h). Default BRL→USD. Quando usar: converter valores, precificar. Ex: {from:\"BRL\", to:\"USD,EUR\", amount:100}. Retorna 1 from = X to + amount convertido.",
+  description: "Taxa de câmbio/conversão (ECB/Frankfurter, diário, cache 1h). Converte valores e precifica. Ex: {from:\"BRL\", to:\"USD,EUR\" ou [\"USD\",\"EUR\"], amount:100, invert:false}. Retorna tabela: 1 origem = X destino + valor convertido. Com invert:true inverte (1 USD = N BRL).",
   inputSchema: {
     type: "object",
     properties: {
-      from: { type: "string", description: "Base currency (default BRL)", default: "BRL" },
-      to: { type: "string", description: "Target currency, comma list (default USD)", default: "USD" },
-      amount: { type: "number", description: "Amount to convert (default 1)" },
+      from: { type: "string", description: "Moeda de origem (padrão BRL). Ex: BRL", default: "BRL" },
+      to: {
+        anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
+        description: "Moeda(s) de destino: string com lista separada por vírgula ou array. Ex: \"USD,EUR\" ou [\"USD\",\"EUR\"] (padrão USD)",
+        default: "USD",
+      },
+      amount: { type: "number", description: "Valor a converter na moeda de origem (padrão 1)" },
+      invert: { type: "boolean", description: "Se true, inverte a cotação: mostra 1 destino = N origem (ex: 1 USD = N BRL). Padrão false.", default: false },
     },
     required: [],
   },
-  run: async ({ from, to, amount }) => {
+  run: async ({ from, to, amount, invert }) => {
     const a = Number(amount) || 1;
-    const [f, t] = [from || "BRL", to || "USD"];
+    const f = String(from || "BRL").toUpperCase();
+    let toList = Array.isArray(to) ? to : String(to || "USD").split(/[,\s;]+/);
+    toList = toList.map((s) => String(s).trim().toUpperCase()).filter(Boolean);
+    if (!toList.length) toList = ["USD"];
+    const toParam = toList.join(",");
+    const inv = invert === true;
     const r = await cached(
-      `cur:${f.toUpperCase()}:${t.toUpperCase()}`,
+      `cur:${f}:${toParam}${inv ? ":inv" : ""}`,
       60 * 60 * 1000,
-      () => httpJson(`https://api.frankfurter.app/latest?from=${f.toUpperCase()}&to=${t.toUpperCase()}`),
+      () => fetchRetry(() => httpJson(`https://api.frankfurter.app/latest?from=${f}&to=${toParam}`)),
       (x) => x.status === 200
     );
     if (r.status !== 200 || !r.data?.rates) return out(`currency API failed (HTTP ${r.status}): ${(r.data?.message || r.text || "").slice(0, 300)}`, true);
-    const lines = [f.toUpperCase(), `source: https://api.frankfurter.app (ECB daily rates)`];
-    for (const [cur, rate] of Object.entries(r.data.rates)) {
-      lines.push(`${cur.toUpperCase()}: 1 ${f.toUpperCase()} = ${rate} ${cur.toUpperCase()}  |  ${a} ${f.toUpperCase()} = ${(a * rate).toFixed(4)} ${cur.toUpperCase()}`);
+    const rates = r.data.rates;
+    const lines = inv
+      ? [`Conversão invertida ${toParam} → ${f} (fonte: https://api.frankfurter.app, taxas diárias ECB)`, `| moeda | 1 destino = N origem | ${a} destino = total origem |`, `|---|---|---|`]
+      : [`Conversão ${a} ${f} → ${toParam} (fonte: https://api.frankfurter.app, taxas diárias ECB)`, `| moeda | 1 ${f} = X | ${a} ${f} = Y |`, `|---|---|---|`];
+    for (const cur of toList) {
+      const rate = rates[cur];
+      if (rate == null) {
+        lines.push(`| ${cur} | indisponível | - |`);
+        continue;
+      }
+      if (inv) {
+        const invRate = 1 / rate;
+        lines.push(`| ${cur} | 1 ${cur} = ${invRate.toFixed(4)} ${f} | ${a} ${cur} = ${(a * invRate).toFixed(4)} ${f} |`);
+      } else {
+        lines.push(`| ${cur} | 1 ${f} = ${rate} ${cur} | ${a} ${f} = ${(a * rate).toFixed(4)} ${cur} |`);
+      }
     }
     return out(lines.join("\n"));
   },
 });
 
 reg("n_cep", {
-  description: "Busca CEP brasileiro (ViaCEP, cache 24h). Quando usar: endereço de cliente/entrega. Ex: {cep:\"01001000\"}. Retorna logradouro, bairro, cidade, UF. CEP inválido (≠8 dígitos) falha.",
+  description: "Busca CEP brasileiro (ViaCEP, cache 24h, com retry). Quando usar: endereço de cliente/entrega. Ex: {cep:\"01001000\"}. Retorna logradouro, bairro, cidade, UF. CEP inválido (≠8 dígitos) falha.",
   inputSchema: {
     type: "object",
     properties: {
-      cep: { type: "string", description: "8-digit CEP, e.g. 01001000" },
+      cep: { type: "string", description: "CEP com 8 dígitos. Ex: 01001000" },
     },
     required: ["cep"],
   },
@@ -46,7 +95,7 @@ reg("n_cep", {
     const r = await cached(
       `cep:${c}`,
       24 * 60 * 60 * 1000,
-      () => httpJson(`https://viacep.com.br/ws/${c}/json/`),
+      () => fetchRetry(() => httpJson(`https://viacep.com.br/ws/${c}/json/`)),
       (x) => x.status === 200 && !x.data?.erro
     );
     if (r.status !== 200) return out(`ViaCEP failed (HTTP ${r.status})`, true);
@@ -58,11 +107,11 @@ reg("n_cep", {
 });
 
 reg("n_cnpj", {
-  description: "Consulta CNPJ (ReceitaWS, cache 24h, rate-limited). Quando usar: validar empresa/cliente. Ex: {cnpj:\"11444777000161\"}. Retorna razão, fantasia, status, atividade, endereço, sócios. Inválido (≠14 dígitos) falha.",
+  description: "Consulta CNPJ (ReceitaWS, cache 24h, rate-limited, com retry). Quando usar: validar empresa/cliente. Ex: {cnpj:\"11444777000161\"}. Retorna razão, fantasia, status, atividade, endereço, sócios. Inválido (≠14 dígitos) falha.",
   inputSchema: {
     type: "object",
     properties: {
-      cnpj: { type: "string", description: "14 digits, e.g. 11444777000161" },
+      cnpj: { type: "string", description: "CNPJ com 14 dígitos. Ex: 11444777000161" },
     },
     required: ["cnpj"],
   },
@@ -72,7 +121,7 @@ reg("n_cnpj", {
     const r = await cached(
       `cnpj:${c}`,
       24 * 60 * 60 * 1000,
-      () => httpJson(`https://www.receitaws.com.br/v1/cnpj/${c}`, { timeout: 60000 }),
+      () => fetchRetry(() => httpJson(`https://www.receitaws.com.br/v1/cnpj/${c}`, { timeout: 60000 })),
       (x) => x.status === 200 && !!x.data?.status
     );
     if (r.status !== 200 || !r.data?.status) return out(`ReceitaWS failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`, true);
@@ -84,11 +133,11 @@ reg("n_cnpj", {
 });
 
 reg("n_ipinfo", {
-  description: "Geolocalização IP (ip-api.com, 45 req/min, cache 10min). Omitir IP = seu IP. Quando usar: debug rede/região. Ex: {ip:\"8.8.8.8\"} ou {}. Retorna país, região, cidade, ISP, lat/lon.",
+  description: "Geolocalização de IP (ip-api.com, 45 req/min, cache 10min, com retry). Omitir IP = seu IP. Quando usar: debug de rede/região. Ex: {ip:\"8.8.8.8\"} ou {}. Retorna país, região, cidade, ISP, lat/lon.",
   inputSchema: {
     type: "object",
     properties: {
-      ip: { type: "string", description: "IPv4 (default: current IP)" },
+      ip: { type: "string", description: "Endereço IPv4 a consultar (padrão: seu IP atual)" },
     },
     required: [],
   },
@@ -98,7 +147,7 @@ reg("n_ipinfo", {
     const r = await cached(
       key,
       10 * 60 * 1000,
-      () => httpJson(url, { timeout: 20000 }),
+      () => fetchRetry(() => httpJson(url, { timeout: 20000 })),
       (x) => x.status === 200 && x.data?.status === "success"
     );
     if (r.status !== 200 || !r.data || r.data.status !== "success") {
@@ -111,24 +160,28 @@ reg("n_ipinfo", {
 });
 
 reg("n_weather", {
-  description: "Previsão tempo (Open-Meteo, cache 30min, lat/lon, 1-7 dias). Quando usar: planejamento logística. Ex: {latitude:-23.55, longitude:-46.63, days:3}. Retorna max/min °C, chuva %, código tempo em pt-BR.",
+  description: "Previsão do tempo (Open-Meteo, cache 30min, lat/lon, 1-7 dias, com retry). Quando usar: planejamento e logística. Ex: {latitude:-23.55, longitude:-46.63, days:3, alert:true}. Retorna máx/mín °C, chuva %, tempo em pt-BR; com alert:true avisa no resumo se chuva>70% ou máx>35°C.",
   inputSchema: {
     type: "object",
     properties: {
-      latitude: { type: "number" },
-      longitude: { type: "number" },
-      days: { type: "number", description: "Forecast days (default 3, max 7)" },
+      latitude: { type: "number", description: "Latitude do local. Ex: -23.55" },
+      longitude: { type: "number", description: "Longitude do local. Ex: -46.63" },
+      days: { type: "number", description: "Dias de previsão (padrão 3, máx 7)" },
+      alert: { type: "boolean", description: "Se true (padrão), emite ALERTA no resumo quando chuva>70% ou máx>35°C", default: true },
     },
     required: ["latitude", "longitude"],
   },
-  run: async ({ latitude, longitude, days }) => {
+  run: async ({ latitude, longitude, days, alert }) => {
     const n = Math.min(Math.max(Number(days) || 3, 1), 7);
+    const withAlert = alert !== false;
     const r = await cached(
       `wx:${latitude}:${longitude}:${n}`,
       30 * 60 * 1000,
       () =>
-        httpJson(
-          `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&forecast_days=${n}&timezone=auto`
+        fetchRetry(() =>
+          httpJson(
+            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&forecast_days=${n}&timezone=auto`
+          )
         ),
       (x) => x.status === 200 && !!x.data?.daily
     );
@@ -136,22 +189,33 @@ reg("n_weather", {
     const d = r.data.daily;
     const codes = { 0: "céu limpo", 1: "maiormente limpo", 2: "parcialmente nublado", 3: "encoberto", 45: "névoa", 48: "névoa congelante", 51: "garoa", 61: "chuva leve", 63: "chuva", 65: "chuva forte", 71: "neve leve", 73: "neve", 75: "neve forte", 80: "pancadas leves", 81: "pancadas", 82: "pancadas fortes", 95: "trovoada" };
     const lines = [`Previsão ${d.time[0]}..${d.time.at(-1)} (${d.time.length} dias)`];
+    const alerts = [];
     d.time.forEach((date, i) => {
-      lines.push(`${date}: ${d.temperature_2m_min[i]}°C..${d.temperature_2m_max[i]}°C | chuva ${d.precipitation_probability_max[i]}% | ${codes[d.weathercode[i]] || d.weathercode[i]}`);
+      const tmin = d.temperature_2m_min[i];
+      const tmax = d.temperature_2m_max[i];
+      const rain = d.precipitation_probability_max[i];
+      lines.push(`${date}: ${tmin}°C..${tmax}°C | chuva ${rain}% | ${codes[d.weathercode[i]] || d.weathercode[i]}`);
+      if (withAlert) {
+        const motivos = [];
+        if (rain != null && rain > 70) motivos.push(`chuva ${rain}%`);
+        if (tmax != null && tmax > 35) motivos.push(`máx ${tmax}°C`);
+        if (motivos.length) alerts.push(`⚠ ALERTA ${date}: ${motivos.join(" + ")}`);
+      }
     });
+    if (withAlert && alerts.length) lines.push(...alerts);
     return out(lines.join("\n"));
   },
 });
 
 reg("n_github", {
-  description: "GitHub API (60 req/h unauthenticated, cache 10min). repo|releases|commits. Quando usar: verificar repo/lib. Ex: {owner:\"vitejs\", repo:\"vite\", kind:\"releases\", limit:3}. Retorna stars, forks, issues, linguagem, license.",
+  description: "API do GitHub (60 req/h sem token, cache 10min, com retry). repo|releases|commits|issues. Quando usar: verificar repo/lib. Ex: {owner:\"vitejs\", repo:\"vite\", kind:\"releases\", limit:3}. kind=issues lista top 5 issues abertas (título + #número). Retorna stars, forks, issues, linguagem, licença.",
   inputSchema: {
     type: "object",
     properties: {
-      owner: { type: "string" },
-      repo: { type: "string" },
-      kind: { type: "string", enum: ["repo", "releases", "commits"], default: "repo" },
-      limit: { type: "number", default: 5 },
+      owner: { type: "string", description: "Dono do repositório. Ex: vitejs" },
+      repo: { type: "string", description: "Nome do repositório. Ex: vite" },
+      kind: { type: "string", enum: ["repo", "releases", "commits", "issues"], description: "Tipo de consulta: repo (detalhes), releases, commits ou issues (abertas top N). Padrão repo.", default: "repo" },
+      limit: { type: "number", description: "Qtd de itens p/ releases/commits/issues (padrão 5, máx 30)", default: 5 },
     },
     required: ["owner", "repo"],
   },
@@ -159,13 +223,13 @@ reg("n_github", {
     const k = kind || "repo";
     const n = Math.min(Math.max(Number(limit) || 5, 1), 30);
     const base = `https://api.github.com/repos/${owner}/${repo}`;
-    const url = k === "repo" ? base : `${base}/${k}?per_page=${n}`;
+    const url = k === "repo" ? base : k === "issues" ? `${base}/issues?state=open&per_page=${n}` : `${base}/${k}?per_page=${n}`;
     const ghToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     const headers = ghToken ? { authorization: `Bearer ${ghToken}` } : {};
     const r = await cached(
       `gh:${k}:${owner}/${repo}:${n}`,
       10 * 60 * 1000,
-      () => httpJson(url, { headers }),
+      () => fetchRetry(() => httpJson(url, { headers })),
       (x) => x.status === 200
     );
     if (r.status === 403) return out("GitHub rate limit exceeded (60 req/h sem token). Defina GITHUB_TOKEN/GH_TOKEN para mais.", true);
@@ -174,18 +238,22 @@ reg("n_github", {
       const d = r.data;
       return out(`${d.full_name} — ${d.description || "sem descrição"}\nstars: ${d.stargazers_count} | forks: ${d.forks_count} | open issues: ${d.open_issues_count}\nlanguage: ${d.language} | license: ${d.license?.spdx_id || "-"}\nupdated: ${d.updated_at}\nurl: ${d.html_url}`);
     }
-    const items = Array.isArray(r.data) ? r.data : [];
-    return out(items.length ? items.map((it, i) => `${i + 1}. ${it.tag_name || it.name || (it.commit?.message || "").split("\n")[0]} (${it.published_at || it.created_at || it.commit?.author?.date || "-"})`).join("\n") : `no ${k} found`);
+    const items = Array.isArray(r.data) ? r.data.slice(0, n) : [];
+    if (!items.length) return out(`no ${k} found`);
+    if (k === "issues") {
+      return out(items.map((it, i) => `${i + 1}. #${it.number} ${it.title} (${it.state || "open"} · ${it.comments ?? 0} comentários · ${it.created_at || "-"})`).join("\n"));
+    }
+    return out(items.map((it, i) => `${i + 1}. ${it.tag_name || it.name || (it.commit?.message || "").split("\n")[0]} (${it.published_at || it.created_at || it.commit?.author?.date || "-"})`).join("\n"));
   },
 });
 
 reg("n_npm", {
-  description: "npm registry info (cache 1h). Quando usar: checar lib antes de instalar. Retorna versão, licença, deps e downloads do ÚLTIMO MÊS (sem size).",
+  description: "Info do pacote npm (cache 1h, com retry). Quando usar: checar lib antes de instalar. Ex: {package:\"vite\"}. Retorna versão, descrição, licença, deps e downloads do ÚLTIMO MÊS.",
   inputSchema: {
     type: "object",
     properties: {
-      package: { type: "string", description: "Package name, e.g. vite" },
-      scope: { type: "string", description: "Optional scope, e.g. @opencode-ai" },
+      package: { type: "string", description: "Nome do pacote. Ex: vite" },
+      scope: { type: "string", description: "Escopo opcional. Ex: @opencode-ai" },
     },
     required: ["package"],
   },
@@ -195,10 +263,12 @@ reg("n_npm", {
       `npm:${name}`,
       60 * 60 * 1000,
       () =>
-        Promise.all([
-          httpJson(`https://registry.npmjs.org/${encodeURIComponent(name)}/latest`),
-          httpJson(`https://api.npmjs.org/downloads/point/last-month/${encodeURIComponent(name)}`),
-        ]),
+        fetchRetry(() =>
+          Promise.all([
+            httpJson(`https://registry.npmjs.org/${encodeURIComponent(name)}/latest`),
+            httpJson(`https://api.npmjs.org/downloads/point/last-month/${encodeURIComponent(name)}`),
+          ])
+        ),
       (x) => x[0].status === 200
     );
     if (meta.status !== 200 || !meta.data) return out(`npm registry failed (HTTP ${meta.status})`, true);

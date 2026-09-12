@@ -56,8 +56,11 @@ reg("n_ubrowser_act", {
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["goto", "back", "forward", "reload", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "cursor", "new", "scan"] },
+      action: { type: "string", enum: ["goto", "back", "forward", "reload", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "cursor", "new", "scan", "count", "attr"] },
       tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, url: { type: "string" }, selector: { type: "string" }, text: { type: "string" },
+      name: { type: "string", description: "atributo p/ attr (href/src/value/text/html)" },
+      container: { type: "string", description: "selector do container p/ scan/scroll" },
+      confirmLogin: { type: "boolean", description: "obrigatório p/ fill em campo type=password" },
       value: { type: "string", description: "valor p/ select (match por texto ou value da option)" },
       timeoutMs: { type: "number", description: "teto p/ waittext (default 8000, máx 20000)" },
       key: { type: "string" }, js: { type: "string" }, ms: { type: "number" },
@@ -76,7 +79,7 @@ reg("n_ubrowser_act", {
     if (risk === "high" && !(a.confirm && a.confirm.trim().length >= 4))
       return devOut({ status: "error", summary: `BLOQUEADO (alto risco: pagamento/senha/excluir/apagar). Só com pedido EXPLÍCITO + confirm="<frase do dono>". Ação: ${a.action} ${a.selector || a.url || ""}`, data: { action: a.action, risk }, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (a.action === "wait") { await new Promise((r) => setTimeout(r, Math.min(Number(a.ms) || 2000, 15000))); return devOut({ summary: "wait ok", data: { action: "wait" }, telemetry: { execution_time_ms: Date.now() - t0 } }); }
-    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", cursor: "tab.cursor", new: "tab.new", scan: "tab.scan" };
+    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", cursor: "tab.cursor", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr" };
     const r = await ubSend(map[a.action], { ...a });
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF : "timeout 60s", data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
