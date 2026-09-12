@@ -365,10 +365,18 @@ async function handle(cmd, a = {}) {
     return await withTimeout(scanJob, 60000, "tab.scan");
   }
   // ---- WhatsApp Web dedicado (seletores data-testid estáveis; sem classes minificadas) ----
-  async function waExec(id, func, args = []) {
-    const [r] = await withTimeout(chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func, args }), 20000, "wa (página ocupada?)");
-    if (r?.error || r?.exceptionDetails) throw new Error("wa falhou: " + JSON.stringify(r.error || r.exceptionDetails).slice(0, 200));
-    return r?.result;
+  // ---- Store interno do WhatsApp (padrão venom/wppconnect): funcs estáticas, sem eval ----
+  // (waExec legado com func inline removido — tudo via wa-hook.js + waStore)
+  async function waStore(id, op, args = {}) {
+    await withTimeout(chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", files: ["wa-hook.js"] }), 15000, "injetar wa-hook");
+    const [r] = await withTimeout(
+      chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func: (o, a) => (window.__ubWA ? window.__ubWA.cmd(o, a) : { error: "hook-off" }), args: [op, args] }),
+      25000,
+      "wa store " + op
+    );
+    if (!r) throw new Error("wa sem resposta");
+    if (r.error) throw new Error(r.error);
+    return r.result;
   }
   async function waTab(a) {
     if (a.tabId) return a.tabId;
@@ -383,9 +391,16 @@ async function handle(cmd, a = {}) {
     return await activeTabId();
   }
   if (["tab.wa_state", "tab.wa_chats", "tab.wa_open", "tab.wa_read", "tab.wa_send"].includes(cmd)) {
-    // via content script (confiável; executeScript MAIN trava em CSP rígida)
+    // Store interno primeiro (padrão venom/wppconnect: sem eval, sem clique); DOM como fallback
     const id = await waTab(a);
     const sub = { "tab.wa_state": "wa_state", "tab.wa_chats": "wa_chats", "tab.wa_open": "wa_open", "tab.wa_read": "wa_read", "tab.wa_send": "wa_send" }[cmd];
+    const op = { "tab.wa_state": "state", "tab.wa_chats": "chats", "tab.wa_open": "open", "tab.wa_read": "read", "tab.wa_send": "send" }[cmd];
+    try {
+      const r = await waStore(id, op, { name: a.name, text: a.text, limit: a.limit, chatName: a.name });
+      if (r && !r.error) return r;
+    } catch (e) {
+      diag.lastError = "wa-store: " + String(e.message || e).slice(0, 100);
+    }
     return await ask(id, sub, a);
   }
   if (cmd === "tab.evaluate") {

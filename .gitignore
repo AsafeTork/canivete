@@ -1,0 +1,8 @@
+node_modules/
+wa-gateway/node_modules/
+wa-gateway/auth/
+wa-gateway/inbox.json
+token.txt
+**/token.txt
+*.log
+.DS_Store
