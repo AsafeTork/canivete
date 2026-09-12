@@ -14,7 +14,19 @@ const UA = "Mozilla/5.0 (X11; Linux x86_64) FinanciaNative/1.0";
 
 const TOOLS = new Map();
 
+const CTX = { calls: 0, chars: 0, byTool: new Map(), t0: Date.now() };
+const CTX_BUDGET = Number(process.env.CANIVETE_CTX_BUDGET) || 200000; // chars de saída nesta sessão
 function reg(name, definition) {
+  const orig = definition.run;
+  definition.run = async (args) => {
+    const r = await orig(args);
+    try {
+      CTX.calls++;
+      CTX.chars += JSON.stringify(r).length;
+      CTX.byTool.set(name, (CTX.byTool.get(name) || 0) + 1);
+    } catch {}
+    return r;
+  };
   TOOLS.set(name, { name, ...definition });
 }
 
@@ -145,4 +157,4 @@ function sendToHost(obj) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...obj }) + "\n");
 }
 
-export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, estTokens, WALK_CAP, isSkippable };
+export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, estTokens, WALK_CAP, isSkippable, CTX, CTX_BUDGET };

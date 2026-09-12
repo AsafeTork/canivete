@@ -3,7 +3,7 @@
 // Modo remoto (sem restart do host p/ trocar código): node src/server.mjs --http 19423
 import { createInterface } from "node:readline";
 import { join } from "node:path";
-import { TOOLS, reg, out, sendToHost } from "./lib/ctx.mjs";
+import { TOOLS, reg, out, sendToHost, CTX, CTX_BUDGET } from "./lib/ctx.mjs";
 import { sweepTask, safeTaskIds, readJson, TASKS_DIR } from "./lib/tasks.mjs";
 import { ubEnsure } from "./lib/ubridge.mjs";
 import "./lib/fs.mjs";
@@ -43,9 +43,19 @@ reg("n_tools_info", {
       "-- DevEngine AI-Native (8): arquitetura sem varrer, investigar causa (12→1), impacto, patch AST, testes afetados, bg proc, UI state, DAG --",
       g(["n_get_architecture_summary", "n_investigate_issue", "n_analyze_change_impact", "n_apply_semantic_patch", "n_execute_targeted_tests", "n_manage_background_process", "n_inspect_ui_state", "n_orchestrate_task"]),
       "",
-      "-- Meta (5): catálogo, pergunta humana, skill, plan, report --",
-      g(["n_tools_info", "n_question", "n_skill", "n_plan", "n_report"]),
+      "-- Meta (6): catálogo, pergunta humana, skill, plan, report, contexto --",
+      g(["n_tools_info", "n_question", "n_skill", "n_plan", "n_report", "n_ctx_status"]),
     ].join("\n"));
+  },
+});
+
+reg("n_ctx_status", {
+  description: "A LLM manipula o próprio contexto: mostra gasto da sessão (calls, chars, ~tokens por tool) vs orçamento CANIVETE_CTX_BUDGET. Quando usar: antes de dumps grandes; se estourar, prefira destilados/compact/max menores.",
+  inputSchema: { type: "object", properties: {}, required: [] },
+  run: () => {
+    const top = [...CTX.byTool.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([n, c]) => `${n}:${c}`).join(" ");
+    const pct = Math.round((100 * CTX.chars) / CTX_BUDGET);
+    return out(`CTX calls=${CTX.calls} chars=${CTX.chars} (~${Math.round(CTX.chars / 4)} tokens) orçamento=${CTX_BUDGET} uso=${pct}% top=[${top || "-"}]${pct >= 90 ? " | ACIMA DE 90%: use mode distill/compact/max menores" : ""}`);
   },
 });
 
