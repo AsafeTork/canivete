@@ -88,7 +88,7 @@ function findEl(sel) {
   }
 }
 
-const ubSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+var ubSleep = (ms) => new Promise((r) => setTimeout(r, ms)); // var: reinjeção (hot-update) reexecuta sem SyntaxError
 // ubSettle: espera POR EVENTO (MutationObserver) com teto. Resolve true
 // quiet ms após a última mutação; resolve false no teto. Sem rAF
 // (aba em fundo não dispara rAF). Erro retorna imediato no caller.
@@ -141,8 +141,10 @@ async function findElResilient(sel) {
 // ---- cursor INDEPENDENTE (overlay roxo: não rouba o mouse do dono) ----
 // PERSISTENTE: registrado via scripting.registerContentScripts (toda página http/https,
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
-let ubCursor = null, ubCX = 0, ubCY = 0;
-const UB_V = "7";
+var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
+var UB_V = "8"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
+globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
   if (ubCursor && ubCursor.isConnected) return ubCursor;
   if (!document.getElementById("ubrowser-kf")) {
@@ -299,7 +301,8 @@ function ubDistill(maxChars = 4000) {
   return { title: document.title, url: location.href, markdown, stats: { linhas: lines.length, descartadas, chars: markdown.length } };
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {
+  if (myN !== globalThis.__ubLatestN) return; // injeção antiga: silenciosa (evita resposta dupla)
   (async () => {
     const a = msg.args || {};
     if (msg.cmd === "ping") { reply({ ok: true, data: { v: UB_V } }); return; }
@@ -595,4 +598,4 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     }
   })();
   return true; // resposta assíncrona
-});
+})(__ubN));
