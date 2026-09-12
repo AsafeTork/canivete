@@ -42,6 +42,19 @@ function withTimeout(p, ms, what) {
   ]);
 }
 
+// robustez: aba pode fechar no meio da ação — traduz "No tab with id" p/ erro claro
+function isNoTabErr(e) {
+  return /no tab with id/i.test(String(e?.message || e || ""));
+}
+async function getTabOrThrow(id) {
+  try {
+    return await chrome.tabs.get(id);
+  } catch (e) {
+    if (isNoTabErr(e)) throw new Error("aba fechou no meio da ação — reliste tabs");
+    throw e;
+  }
+}
+
 async function ensureContent(tabId) {
   // 1) ping (registro permanente cobre http/https); 2) fallback: injeção manual 1x/sessão; 3) erro claro
   let lastErr = "sem resposta";
@@ -124,11 +137,20 @@ async function handle(cmd, a = {}) {
   }
   if (cmd === "tab.goto") {
     if (!a.url) throw new Error("url obrigatória");
+    const rawUrl = String(a.url).trim();
+    if (!/^(https?:\/\/|about:)/i.test(rawUrl))
+      throw new Error(`url inválida "${rawUrl.slice(0, 120)}" — use http(s):// ou about: (navegação bloqueada antes de navegar)`);
     const id = a.tabId || (await activeTabId());
+    await getTabOrThrow(id);
     const max = normWait(a);
     const t0 = Date.now();
     const loadedP = waitLoad(id, max); // listener antes de navegar p/ não perder o evento
-    await chrome.tabs.update(id, { url: a.url }); // erro de navegação retorna na hora
+    try {
+      await chrome.tabs.update(id, { url: rawUrl }); // erro de navegação retorna na hora
+    } catch (e) {
+      if (isNoTabErr(e)) throw new Error("aba fechou no meio da ação — reliste tabs");
+      throw e;
+    }
     await loadedP; // evento complete ou teto
     const resto = max - (Date.now() - t0);
     if (resto > 0) await ask(id, "settle", { timeoutMs: resto }).catch(() => {}); // aquieta DOM, best-effort
@@ -167,17 +189,82 @@ async function handle(cmd, a = {}) {
     if (resto > 0) await ask(id, "settle", { timeoutMs: resto }).catch(() => {});
     return await ask(id, "state", {}); // dieta: só título+url
   }
-  if (["tab.read", "tab.snapshot", "tab.click", "tab.fill", "tab.press", "tab.scroll"].includes(cmd)) {    const id = a.tabId || (await activeTabId());
+  if (cmd === "tab.scroll" && a.text) {
+    // rola até elemento com texto (via MAIN): encontra por innerText includes, scrollIntoView
+    const id = a.tabId || (await activeTabId());
+    const [sr] = await withTimeout(chrome.scripting.executeScript({
+      target: { tabId: id },
+      world: "MAIN",
+      func: (q) => {
+        const needle = String(q).toLowerCase();
+        const els = [...document.querySelectorAll("*")].filter((e) => {
+          const t = (e.innerText || "").toLowerCase();
+          return t && t.includes(needle);
+        });
+        if (!els.length) return { scrolled: false, found: false };
+        els.sort((x, y) => (x.innerText.length || 0) - (y.innerText.length || 0));
+        const el = els[0];
+        try { el.scrollIntoView({ block: "center", behavior: "instant" }); } catch { el.scrollIntoView(); }
+        return { scrolled: true, found: true };
+      },
+      args: [String(a.text)],
+    }), 15000, "content tab.scroll");
+    return sr?.result || { scrolled: false, found: false };
+  }
+  if (["tab.read", "tab.snapshot", "tab.click", "tab.fill", "tab.press", "tab.scroll"].includes(cmd)) {
+    const id = a.tabId || (await activeTabId());
+    if (cmd === "tab.fill" && a?.confirmLogin !== true) {
+      // anti-vazamento acidental: password exige confirmação explícita
+      let inputType = null;
+      try {
+        if (a.selector) {
+          const [r] = await chrome.scripting.executeScript({
+            target: { tabId: id },
+            world: "MAIN",
+            func: (sel) => {
+              try {
+                const el = document.querySelector(sel);
+                return el ? String(el.type || el.tagName || "").toLowerCase() : null;
+              } catch { return null; }
+            },
+            args: [String(a.selector)],
+          });
+          inputType = r?.result || null;
+        }
+      } catch {}
+      const selHint = String(a.selector || "").toLowerCase();
+      const isPw = inputType === "password"
+        || selHint.includes("password")
+        || selHint.includes('type="password"')
+        || selHint.includes("type='password'");
+      if (isPw)
+        throw new Error("campo type=password exige a.confirmLogin:true explícito (anti-vazamento acidental; com confirmLogin:true o login normal continua permitido e NÃO é alto risco)");
+    }
     // destilado por padrão (só-necessário); raw opt-out
-    if (cmd === "tab.read" && (a.mode || "distill") === "distill") return await ask(id, "distill", a);
+    if (cmd === "tab.read" && (a.mode || "distill") === "distill") {
+      const d = await ask(id, "distill", a);
+      if (a.headingsOnly === true && d && typeof d.markdown === "string") {
+        const kept = d.markdown.split("\n").filter((ln) => /^#\s/.test(ln) || /\[.+?\]\(.+?\)/.test(ln));
+        const md = kept.join("\n").slice(0, 2000); // <500 tokens: só h1-h6 + links p/ mapear página gigante
+        return { ...d, markdown: md, stats: { ...(d.stats || {}), linhas: kept.length, headingsOnly: true, chars: md.length } };
+      }
+      return d;
+    }
+    if (cmd === "tab.read" && a.links === false) a.maxLinks = 0; // dica p/ content pular coleta
     const map = {
       "tab.read": "read", "tab.snapshot": "snapshot", "tab.click": "click",
       "tab.fill": "fill", "tab.press": "press", "tab.scroll": "scroll",
     };
     const data = await ask(id, map[cmd], a); // content já faz settle antes de responder — sem sleep
+    if (cmd === "tab.read" && a.links === false && data && typeof data === "object" && !Array.isArray(data)) {
+      const { links, ...rest } = data; // raw sem links: só título+texto (~40% menos)
+      return rest;
+    }
     if (cmd === "tab.snapshot" && Array.isArray(data)) {
       const off = Math.max(Number(a.offset) || 0, 0);
-      return data.slice(off, off + Math.min(Math.max(Number(a.max) || 50, 5), 120));
+      const page = data.slice(off, off + Math.min(Math.max(Number(a.max) || 50, 5), 120));
+      if (a.compact === true) return page.map((it) => ({ ref: it.ref, tag: it.tag, text: it.text, x: it.x, y: it.y })); // sem selector/type/w/h (~60% menos, espelha headless)
+      return page;
     }
     if (cmd === "tab.click" || cmd === "tab.fill") return await ask(id, "state", {}); // dieta: sem texto
     return data;
@@ -185,6 +272,7 @@ async function handle(cmd, a = {}) {
   if (cmd === "tab.cursor") {
     // cursor INDEPENDENTE: {x,y} na viewport (+click opcional) ou {selector} (+click)
     const id = a.tabId || (await activeTabId());
+    await getTabOrThrow(id);
     if (a.selector) return await ask(id, "cursor_sel", a);
     const data = await ask(id, "cursor", a); // content já faz settle antes de responder — sem sleep
     if (a.click) return { ...data, ...(await ask(id, "state", {})) };
@@ -276,6 +364,127 @@ async function handle(cmd, a = {}) {
     })();
     return await withTimeout(scanJob, 60000, "tab.scan");
   }
+  // ---- WhatsApp Web dedicado (seletores data-testid estáveis; sem classes minificadas) ----
+  async function waExec(id, func, args = []) {
+    const [r] = await withTimeout(chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func, args }), 20000, "wa (página ocupada?)");
+    if (r?.error || r?.exceptionDetails) throw new Error("wa falhou: " + JSON.stringify(r.error || r.exceptionDetails).slice(0, 200));
+    return r?.result;
+  }
+  async function waTab(a) {
+    if (a.tabId) return a.tabId;
+    if (a.tab) {
+      const needle = String(a.tab).toLowerCase();
+      const all = await chrome.tabs.query({});
+      const f = all.find((t) => ((t.title || "") + " " + (t.url || "")).toLowerCase().includes(needle) || (t.url || "").includes("web.whatsapp.com"));
+      if (f) return f.id;
+    }
+    const all = await chrome.tabs.query({ url: ["*://web.whatsapp.com/*"] });
+    if (all.length) return all[0].id;
+    return await activeTabId();
+  }
+  if (cmd === "tab.wa_state") {
+    const id = await waTab(a);
+    return await waExec(id, () => ({
+      logged: !!document.querySelector('[data-testid="chat-list-search"], #side'),
+      qr: !!document.querySelector('canvas[aria-label="Scan me!"], div[data-testid="qrcode"]'),
+      title: document.title,
+    }));
+  }
+  if (cmd === "tab.wa_chats") {
+    const id = await waTab(a);
+    const limit = Math.min(Math.max(Number(a.limit) || 20, 1), 50);
+    return await waExec(id, (lim) => {
+      const rows = [...document.querySelectorAll('div[data-testid^="list-item-"], div[role="listitem"], div[role="row"]')].slice(0, lim);
+      return rows.map((r) => ({
+        name: ((r.querySelector("span[dir]") || {}).innerText || r.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80),
+        preview: (r.innerText || "").replace(/\s+/g, " ").trim().slice(0, 120),
+      }));
+    }, [limit]);
+  }
+  if (cmd === "tab.wa_open") {
+    if (!a.name) throw new Error("name obrigatório (nome do chat/grupo)");
+    const id = await waTab(a);
+    const opened = await waExec(id, async (name) => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      const setNative = (el, v) => {
+        try {
+          const proto = Object.getPrototypeOf(el);
+          const desc = Object.getOwnPropertyDescriptor(proto, "value") || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+          if (desc && desc.set) desc.set.call(el, v);
+          else el.value = v;
+        } catch { try { el.value = v; } catch {} }
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      const box = document.querySelector('#side div[contenteditable="true"][data-tab="3"]') || document.querySelector('#side div[contenteditable="true"]') || document.querySelector('div[title="Search input textbox"]')
+        || document.querySelector('#side input[placeholder*="Pesquisar"]') || document.querySelector('#side input[placeholder*="Search"]') || document.querySelector('input[placeholder*="Pesquisar"]');
+      if (!box) return { opened: false, reason: "search-box-not-found" };
+      box.focus();
+      if (box.tagName === "INPUT") setNative(box, name);
+      else {
+        document.execCommand("selectAll", false, null);
+        document.execCommand("insertText", false, name);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await sleep(2000);
+      // alvos reais (inspecionado): div[data-testid="cell-frame-container"] + span[title] + text-highlight
+      const rows = [...document.querySelectorAll('div[data-testid="cell-frame-container"]')];
+      const byTitle = (nm) => rows.find((r) => {
+        const t = r.querySelector('[data-testid="cell-frame-title"] span[title]') || r.querySelector('span[title]');
+        return t && (t.getAttribute("title") || "").toLowerCase().includes(nm.toLowerCase());
+      });
+      let target = byTitle(name);
+      if (!target) {
+        const hits = [...document.querySelectorAll('span[data-testid="text-highlight"]')];
+        const hl = hits.find((s) => (s.innerText || "").toLowerCase() && ((s.closest('[data-testid="cell-frame-container"]')?.innerText) || "").toLowerCase().includes(name.toLowerCase()));
+        target = hl ? hl.closest('div[data-testid="cell-frame-container"]') : null;
+      }
+      if (!target) target = rows[0];
+      if (!target) return { opened: false, reason: "no-result" };
+      target.click();
+      await sleep(1500);
+      const head = document.querySelector('#main header span[dir="auto"], header span[data-testid="conversation-info-header-chat-title"]');
+      const compose = document.querySelector('#main [data-testid="conversation-compose-box-input"], #main footer div[contenteditable="true"]');
+      return { opened: !!(head && compose), title: (head?.innerText || "").trim().slice(0, 80) };
+    }, [String(a.name)]);
+    return opened;
+  }
+  if (cmd === "tab.wa_read") {
+    const id = await waTab(a);
+    const limit = Math.min(Math.max(Number(a.limit) || 20, 1), 100);
+    return await waExec(id, (lim) => {
+      const bubbles = [...document.querySelectorAll('#main [data-pre-plain-text]')].slice(-lim);
+      return bubbles.map((b) => {
+        const meta = b.getAttribute("data-pre-plain-text") || "";
+        const m = meta.match(/^\[([^\]]+)\]\s*(.+?):\s*$/);
+        const dir = b.closest(".message-out") ? "out" : b.closest(".message-in") ? "in" : "?";
+        const spans = [...b.querySelectorAll("span[dir]")].filter((s) => !s.querySelector("span[dir]"));
+        let text = spans.map((s) => s.innerText || "").join(" ").replace(/\s+/g, " ").trim();
+        if (!text) text = (b.innerText || "").replace(/\s+/g, " ").trim().slice(0, 500);
+        return { at: m ? m[1] : "", from: m ? m[2] : "", dir, text: text.slice(0, 500) };
+      });
+    }, [limit]);
+  }
+  if (cmd === "tab.wa_send") {
+    if (!a.text || !String(a.text).trim()) throw new Error("text obrigatório e não-vazio");
+    const id = await waTab(a);
+    return await waExec(id, async (msg) => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const box = document.querySelector('#main [data-testid="conversation-compose-box-input"]') || document.querySelector('#main footer div[contenteditable="true"][role="textbox"]') || document.querySelector('#main div[data-lexical-editor="true"]') || document.querySelector('#main footer div[contenteditable="true"]');
+      if (!box) return { sent: false, reason: "compose-not-found (abra o chat com wa_open primeiro)" };
+      box.focus();
+      document.execCommand("insertText", false, msg);
+      await sleep(400);
+      const before = document.querySelectorAll('#main div[data-testid="msg-container"]').length;
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+      await sleep(1500);
+      const outs = [...document.querySelectorAll('#main div.message-out [data-pre-plain-text]')];
+      const last = outs.length ? (outs[outs.length - 1].innerText || "") : "";
+      const after = document.querySelectorAll('#main div[data-testid="msg-container"]').length;
+      return { sent: after > before || last.includes(msg.slice(0, 30)), count: after };
+    }, [String(a.text).slice(0, 2000)]);
+  }
   if (cmd === "tab.evaluate") {
     if (!a.js) throw new Error("js obrigatório");
     const id = a.tabId || (await activeTabId());
@@ -302,9 +511,42 @@ async function handle(cmd, a = {}) {
     const id = a.tabId || (await activeTabId());
     const cur = await activeTabId().catch(() => null);
     if (cur && cur !== id) throw new Error("print só na aba VISÍVEL (fundo: use read/snapshot) — foco é intocável");
-    const t = await chrome.tabs.get(id);
+    const t = await getTabOrThrow(id);
     const url = await chrome.tabs.captureVisibleTab(t.windowId, { format: "png" });
     return { dataUrl: url, tab: { id, title: t.title, url: t.url } };
+  }
+  if (cmd === "tab.count") {
+    if (!a.selector) throw new Error("selector obrigatório");
+    const id = a.tabId || (await activeTabId());
+    const [sr] = await withTimeout(chrome.scripting.executeScript({
+      target: { tabId: id },
+      world: "MAIN",
+      func: (sel) => document.querySelectorAll(sel).length,
+      args: [String(a.selector)],
+    }), 15000, "content tab.count");
+    return { count: sr?.result ?? 0 };
+  }
+  if (cmd === "tab.attr") {
+    if (!a.selector) throw new Error("selector obrigatório");
+    if (!a.name) throw new Error("name obrigatório");
+    const id = a.tabId || (await activeTabId());
+    const [sr] = await withTimeout(chrome.scripting.executeScript({
+      target: { tabId: id },
+      world: "MAIN",
+      func: (sel, name) => {
+        const el = document.querySelector(sel);
+        if (!el) return { found: false, value: null };
+        let v = null;
+        if (name === "text") v = el.innerText ?? el.textContent ?? "";
+        else if (name === "html") v = (el.outerHTML || "").slice(0, 4000);
+        else if (name === "value" && "value" in el) v = el.value;
+        else v = el.getAttribute(name) ?? el[name] ?? null;
+        if (typeof v === "string") v = v.slice(0, 4000);
+        return { found: true, value: v };
+      },
+      args: [String(a.selector), String(a.name)],
+    }), 15000, "content tab.attr");
+    return sr?.result || { found: false, value: null };
   }
   if (cmd.startsWith("tab.")) {
     const id = a.tabId || (await activeTabId());

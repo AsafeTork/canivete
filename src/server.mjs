@@ -13,6 +13,7 @@ import "./lib/tasks.mjs";
 import "./lib/devengine.mjs";
 import "./lib/tools-browser.mjs";
 import "./lib/tools-owner.mjs";
+import "./lib/tools-whatsapp.mjs";
 import "./lib/feedback.mjs";
 
 reg("n_tools_info", {
@@ -45,6 +46,9 @@ reg("n_tools_info", {
       "",
       "-- Meta (6): catálogo, pergunta humana, skill, plan, report, contexto --",
       g(["n_tools_info", "n_question", "n_skill", "n_plan", "n_report", "n_ctx_status"]),
+      "",
+      "-- WhatsApp dedicado (1): state|chats|open|read|send no Chrome logado --",
+      g(["n_whatsapp"]),
     ].join("\n"));
   },
 });
