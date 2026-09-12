@@ -16,7 +16,7 @@ chrome.storage.onChanged.addListener((ch, area) => {
   if (ch.url) settings.url = ch.url.newValue || DEFAULT_URL;
 });
 
-const UB_EXPECTED = "6"; // versão do content.js — mismatch = F5 na página
+const UB_EXPECTED = "7"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 const injectedTabs = new Set(); // fallback manual 1x por aba/sessão (registro cobre o resto)
 
 // registra content.js permanente: injeta sozinho em toda página http/https (sobrevive a F5/navegação)
@@ -56,34 +56,33 @@ async function getTabOrThrow(id) {
 }
 
 async function ensureContent(tabId) {
-  // 1) ping (registro permanente cobre http/https); 2) fallback: injeção manual 1x/sessão; 3) erro claro
+  // hot-update: disco é a verdade; mismatch de versão = reinjeta sozinho (nunca pede F5/reload)
   let lastErr = "sem resposta";
+  let stale = false;
   for (let i = 0; i < 4; i++) {
     try {
       const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd: "ping" }), 4000, "content ping");
       if (r?.ok && r?.data?.v === UB_EXPECTED) return;
-      if (r?.ok) throw new Error("conteúdo v" + (r?.data?.v || "?") + " desatualizado — F5 na página");
+      if (r?.ok) { stale = true; lastErr = "conteúdo v" + (r?.data?.v || "?") + " (reinjetando v" + UB_EXPECTED + ")"; break; }
       throw new Error(r?.error || "sem content");
     } catch (e) {
       lastErr = e.message || String(e);
-      if (/desatualizado|chrome:\/\/|cannot access|no tab|F5/i.test(lastErr)) throw new Error(lastErr);
+      if (/chrome:\/\/|cannot access|no tab/i.test(lastErr)) throw new Error(lastErr);
       await new Promise((r) => setTimeout(r, 250)); // espaçamento entre retries, não espera de processo
     }
   }
-  if (!injectedTabs.has(tabId)) {
-    try {
-      await withTimeout(chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }), 12000, "injetar content");
-      injectedTabs.add(tabId);
-      await new Promise((r) => setTimeout(r, 250)); // espaçamento p/ content inicializar após injeção
-      const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd: "ping" }), 4000, "content ping2");
-      if (r?.ok) return;
-    } catch (e) { lastErr = e.message || String(e); }
-  }
+  injectedTabs.delete(tabId); // garante reinjeção (mesmo se já injetado antes)
+  try {
+    await withTimeout(chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }), 12000, "injetar content");
+    injectedTabs.add(tabId);
+    await new Promise((r) => setTimeout(r, 250)); // espaçamento p/ content inicializar após injeção
+    const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd: "ping" }), 4000, "content ping2");
+    if (r?.ok) return; // aceita a versão do disco (verdade atual)
+  } catch (e) { lastErr = e.message || String(e); }
   throw new Error("página sem responder (" + lastErr.slice(0, 100) + ") — recarregue a página (F5)");
 }
 
-async function ask(tabId, cmd, args) {
-  await ensureContent(tabId);
+async function ask(tabId, cmd, args) {  await ensureContent(tabId);
   const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd, args }), 15000, "content " + cmd);
   if (!r?.ok) throw new Error(r?.error || "content falhou");
   return r.data;
@@ -402,6 +401,15 @@ async function handle(cmd, a = {}) {
       diag.lastError = "wa-store: " + String(e.message || e).slice(0, 100);
     }
     return await ask(id, sub, a);
+  }
+  if (cmd === "tab.reinject") {
+    // hot-update forçado: reinjeta content.js do disco e retorna a versão ativa (sem reload, sem tela)
+    const id = a.tabId || (await activeTabId());
+    injectedTabs.delete(id);
+    await withTimeout(chrome.scripting.executeScript({ target: { tabId: id }, files: ["content.js"] }), 12000, "reinjetar content");
+    await new Promise((r) => setTimeout(r, 300));
+    const r = await withTimeout(chrome.tabs.sendMessage(id, { cmd: "ping" }), 4000, "content ping-reinject");
+    return { reinjected: true, v: r?.data?.v || "?" };
   }
   if (cmd === "tab.evaluate") {
     if (!a.js) throw new Error("js obrigatório");

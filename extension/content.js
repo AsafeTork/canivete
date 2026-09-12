@@ -142,7 +142,7 @@ async function findElResilient(sel) {
 // PERSISTENTE: registrado via scripting.registerContentScripts (toda página http/https,
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 let ubCursor = null, ubCX = 0, ubCY = 0;
-const UB_V = "6";
+const UB_V = "7";
 function ubShowCursor() {
   if (ubCursor && ubCursor.isConnected) return ubCursor;
   if (!document.getElementById("ubrowser-kf")) {
