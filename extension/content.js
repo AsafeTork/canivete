@@ -374,13 +374,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         el.dispatchEvent(new Event("change", { bubbles: true }));
       };
       const box = document.querySelector('#side div[contenteditable="true"][data-tab="3"]') || document.querySelector('#side div[contenteditable="true"]') || document.querySelector('div[title="Search input textbox"]')
-        || document.querySelector('#side input[type="text"]') || document.querySelector('#side input') || document.querySelector('#side input[placeholder*="Pesquisar"]') || document.querySelector('#side input[placeholder*="Search"]') || document.querySelector('input[placeholder*="Pesquisar"]');
+        || document.querySelector('#side input[aria-label]') || document.querySelector('#side input[type="text"]') || document.querySelector('#side input') || document.querySelector('#side input[placeholder*="Pesquisar"]') || document.querySelector('#side input[placeholder*="Search"]') || document.querySelector('input[placeholder*="Pesquisar"]');
       if (!box) return reply({ ok: false, error: "search-box-not-found" });
       box.focus();
       if (box.tagName === "INPUT") setNative(box, name);
       else { document.execCommand("selectAll", false, null); document.execCommand("insertText", false, name); box.dispatchEvent(new Event("input", { bubbles: true })); }
       await ubSleep(2000);
-      const rows = [...document.querySelectorAll('div[data-testid="cell-frame-container"]')];
+      const rows = [...document.querySelectorAll('#pane-side div[role="row"], div[data-testid^="list-item-"], div[data-testid="cell-frame-container"]')];
       const byTitle = (nm) => rows.find((r) => {
         const t = r.querySelector('[data-testid="cell-frame-title"] span[title]') || r.querySelector('span[title]');
         return t && (t.getAttribute("title") || "").toLowerCase().includes(nm.toLowerCase());
