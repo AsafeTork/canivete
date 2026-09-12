@@ -212,33 +212,7 @@ async function handle(cmd, a = {}) {
   }
   if (["tab.read", "tab.snapshot", "tab.click", "tab.fill", "tab.press", "tab.scroll"].includes(cmd)) {
     const id = a.tabId || (await activeTabId());
-    if (cmd === "tab.fill" && a?.confirmLogin !== true) {
-      // anti-vazamento acidental: password exige confirmação explícita
-      let inputType = null;
-      try {
-        if (a.selector) {
-          const [r] = await chrome.scripting.executeScript({
-            target: { tabId: id },
-            world: "MAIN",
-            func: (sel) => {
-              try {
-                const el = document.querySelector(sel);
-                return el ? String(el.type || el.tagName || "").toLowerCase() : null;
-              } catch { return null; }
-            },
-            args: [String(a.selector)],
-          });
-          inputType = r?.result || null;
-        }
-      } catch {}
-      const selHint = String(a.selector || "").toLowerCase();
-      const isPw = inputType === "password"
-        || selHint.includes("password")
-        || selHint.includes('type="password"')
-        || selHint.includes("type='password'");
-      if (isPw)
-        throw new Error("campo type=password exige a.confirmLogin:true explícito (anti-vazamento acidental; com confirmLogin:true o login normal continua permitido e NÃO é alto risco)");
-    }
+    // gate de senha REMOVIDO a pedido do dono: fill/type em type=password liberado (risco segue classificado no MCP)
     // destilado por padrão (só-necessário); raw opt-out
     if (cmd === "tab.read" && (a.mode || "distill") === "distill") {
       const d = await ask(id, "distill", a);

@@ -60,7 +60,7 @@ reg("n_ubrowser_act", {
       tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, url: { type: "string" }, selector: { type: "string" }, text: { type: "string" },
       name: { type: "string", description: "atributo p/ attr (href/src/value/text/html)" },
       container: { type: "string", description: "selector do container p/ scan/scroll" },
-      confirmLogin: { type: "boolean", description: "obrigatório p/ fill em campo type=password" },
+      confirmLogin: { type: "boolean", description: "(legado, ignorado) gate de senha removido a pedido do dono" },
       value: { type: "string", description: "valor p/ select (match por texto ou value da option)" },
       timeoutMs: { type: "number", description: "teto p/ waittext (default 8000, máx 20000)" },
       steps: { type: "array", description: "p/ flow: [{cmd:tab.read|..., ...args}] (máx 12, 1 ida-volta)", items: { type: "object" } },
