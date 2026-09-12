@@ -374,7 +374,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         el.dispatchEvent(new Event("change", { bubbles: true }));
       };
       const box = document.querySelector('#side div[contenteditable="true"][data-tab="3"]') || document.querySelector('#side div[contenteditable="true"]') || document.querySelector('div[title="Search input textbox"]')
-        || document.querySelector('#side input[placeholder*="Pesquisar"]') || document.querySelector('#side input[placeholder*="Search"]') || document.querySelector('input[placeholder*="Pesquisar"]');
+        || document.querySelector('#side input[type="text"]') || document.querySelector('#side input') || document.querySelector('#side input[placeholder*="Pesquisar"]') || document.querySelector('#side input[placeholder*="Search"]') || document.querySelector('input[placeholder*="Pesquisar"]');
       if (!box) return reply({ ok: false, error: "search-box-not-found" });
       box.focus();
       if (box.tagName === "INPUT") setNative(box, name);
@@ -391,12 +391,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         const hl = hits.find((s) => (s.innerText || "").toLowerCase() && ((s.closest('[data-testid="cell-frame-container"]')?.innerText) || "").toLowerCase().includes(name.toLowerCase()));
         target = hl ? hl.closest('div[data-testid="cell-frame-container"]') : null;
       }
-      if (!target) target = rows[0];
-      if (!target) return reply({ ok: false, error: "no-result" });
+      if (!target) {
+        // sem fallback rows[0]: abrir o chat errado é pior que falhar (incidente IBL)
+        try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch {}
+        return reply({ ok: false, error: `no-match: "${name}"` });
+      }
+      target.scrollIntoView({ block: "center" });
+      await ubSleep(400);
       target.click();
       const want = name.toLowerCase().split(" ")[0];
-      for (let i = 0; i < 12; i++) {
-        await ubSleep(1000);
+      for (let i = 0; i < 20; i++) {
+        await ubSleep(500);
         const head = document.querySelector('#main header span[dir="auto"], header span[data-testid="conversation-info-header-chat-title"]');
         const compose = document.querySelector('#main [data-testid="conversation-compose-box-input"], #main footer div[contenteditable="true"]');
         const title = ((head && head.innerText) || "").trim();

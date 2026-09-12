@@ -61,10 +61,11 @@ reg("n_whatsapp", {
         }
         if (a.action === "read") {
           const c = await waGw("/wa/read", "POST", { jid: a.to, name: a.name, limit: a.limit || 20 });
-          if (c.ok) {
+          if (c.ok && (c.messages || []).length) {
             const msgs = c.messages || [];
             return devOut({ summary: `${msgs.length} mensagem(ns) via gateway` + (msgs.length ? ` — última: ${(msgs[msgs.length - 1].text || "").slice(0, 100)}` : ""), data: { via: "gateway", messages: msgs }, telemetry: { execution_time_ms: ms() } });
           }
+          // vazio/falha → cai p/ browser abaixo
         }
         if (a.action === "send") {
           if (!(a.text && String(a.text).trim())) return devOut({ status: "error", summary: "send exige text explícito do dono", data: {}, telemetry: { execution_time_ms: ms() } });

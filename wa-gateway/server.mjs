@@ -3,7 +3,7 @@
 // Uso: node server.mjs  (porta via WA_PORT)
 import { createServer } from "node:http";
 import { readFileSync, writeFileSync } from "node:fs";
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from "@whiskeysockets/baileys";
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } from "@whiskeysockets/baileys";
 const pkg = { default: makeWASocket };
 
 const PORT = Number(process.env.WA_PORT) || 19424;
@@ -25,7 +25,15 @@ function authed() { return sock && connState === "open"; }
 async function connect() {
   const { state, saveCreds } = await useMultiFileAuthState("./auth");
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: undefined }));
-  sock = makeWASocket({ auth: state, version, printQRInTerminal: false, browser: ["Canivete", "Chrome", "1.0"], syncFullHistory: true });
+  sock = makeWASocket({
+    auth: state, version, printQRInTerminal: false,
+    browser: ["Canivete", "Chrome", "1.0"], // preset original que pareou OK (Desktop derruba o login nesta conta)
+    syncFullHistory: true,
+    getMessage: async (key) => {
+      const hit = [...inbox].reverse().find((e) => e.msgId === key.id);
+      return hit?.raw || undefined;
+    },
+  });
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("connection.update", (u) => {
     if (u.qr) {
@@ -44,12 +52,21 @@ async function connect() {
       setTimeout(connect, 5000); // reconecta sozinho
     }
   });
+  const pushMsg = (m, type) => {
+    const text = (m.message?.conversation || m.message?.extendedTextMessage?.text || m.message?.imageMessage?.caption || "").slice(0, 500);
+    inbox.push({ jid: m.key?.remoteJid, msgId: m.key?.id, fromMe: !!m.key?.fromMe, sender: m.key?.participant || "", at: new Date((Number(m.messageTimestamp) || 0) * 1000).toISOString(), text, type });
+    if (inbox.length > 5000) inbox = inbox.slice(-5000);
+  };
   sock.ev.on("messages.upsert", ({ messages, type }) => {
-    for (const m of messages || []) {
-      inbox.push({ jid: m.key?.remoteJid, fromMe: !!m.key?.fromMe, at: new Date((Number(m.messageTimestamp) || 0) * 1000).toISOString(), text: (m.message?.conversation || m.message?.extendedTextMessage?.text || m.message?.imageMessage?.caption || "").slice(0, 500), type });
-      if (inbox.length > 2000) inbox = inbox.slice(-2000);
-    }
+    for (const m of messages || []) pushMsg(m, type);
     saveInbox();
+  });
+  // HISTÓRICO: chega aqui (doc history-sync) — persistir p/ /wa/read + getMessage
+  sock.ev.on("messaging-history.set", ({ chats, contacts, messages, syncType }) => {
+    for (const m of messages || []) pushMsg(m, `history:${syncType || "?"}`);
+    saveInbox();
+    inbox.push({ sys: true, at: new Date().toISOString(), text: `history-set: ${syncType} chats=${(chats || []).length} msgs=${(messages || []).length}` });
+    if (inbox.length > 5000) inbox = inbox.slice(-5000);
   });
   sock.ev.on("messaging-history.status", (s) => { inbox.push({ sys: true, at: new Date().toISOString(), text: `history-sync: ${JSON.stringify(s).slice(0, 200)}` }); });
 }
@@ -123,14 +140,19 @@ createServer(async (req, res) => {
       if (!authed()) return J({ ok: false, error: "desconectado", state: connState }, 409);
       const jid = await resolveJid(body.jid || body.to || body.name).catch((e) => null);
       if (!jid) return J({ ok: false, error: `chat "${body.name || body.jid || body.to}" não achado` }, 404);
-      let msgs = [];
-      try {
-        const hist = await sock.fetchMessageHistory(jid, Math.min(Number(body.limit) || 20, 50));
-        msgs = (hist || []).map((m) => ({ at: new Date((Number(m.messageTimestamp) || 0) * 1000).toISOString(), fromMe: !!m.key?.fromMe, text: textOf(m) })).filter((m) => m.text);
-      } catch (e) {
-        msgs = inbox.filter((m) => m.jid === jid).slice(-(Number(body.limit) || 20)).map((m) => ({ at: m.at, fromMe: m.fromMe, text: m.text }));
+      const limit = Math.min(Number(body.limit) || 20, 50);
+      let msgs = inbox.filter((m) => m.jid === jid && m.text).slice(-limit);
+      if (!msgs.length) {
+        // on-demand: pede ao celular e aguarda o history-set chegar (doc history-sync)
+        try {
+          const seed = [...inbox].reverse().find((m) => m.jid === jid && m.msgId);
+          const key = seed ? { remoteJid: jid, fromMe: seed.fromMe, id: seed.msgId } : { remoteJid: jid, fromMe: false, id: "0000000000000000" };
+          await sock.fetchMessageHistory(50, key, Date.now());
+          for (let i = 0; i < 45 && !inbox.some((m) => m.jid === jid && m.text); i++) await new Promise((r) => setTimeout(r, 2000));
+          msgs = inbox.filter((m) => m.jid === jid && m.text).slice(-limit);
+        } catch (e) { return J({ ok: true, jid, messages: [], via: "on-demand-falhou", error: String(e.message || e).slice(0, 150) }); }
       }
-      return J({ ok: true, jid, messages: msgs });
+      return J({ ok: true, jid, messages: msgs.map((m) => ({ at: m.at, fromMe: m.fromMe, sender: m.sender, text: m.text })) });
     }
     if (u.pathname === "/wa/send" && req.method === "POST") {
       if (!authed()) return J({ ok: false, error: "desconectado", state: connState }, 409);
