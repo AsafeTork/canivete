@@ -69,7 +69,7 @@ function ubEnsure() {
             res.end(JSON.stringify({ ok: false, error: `BLOQUEADO (alto risco). Só com pedido EXPLÍCITO + confirm. Ação: ${p.cmd}` }));
             return;
           }
-          const map = { status: null, diag: "tab.diag", tabs: "tabs.list", read: "tab.read", snapshot: "tab.snapshot", scan: "tab.scan", shot: "tab.shot", goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", click: "tab.click", fill: "tab.fill", press: "tab.press", scroll: "tab.scroll", wait: "tab.wait", evaluate: "tab.evaluate", cursor: "tab.cursor", new: "tab.new", select: "tab.select", highlight: "tab.highlight", waittext: "tab.waittext", type: "tab.type" };
+          const map = { status: null, diag: "tab.diag", tabs: "tabs.list", read: "tab.read", snapshot: "tab.snapshot", scan: "tab.scan", shot: "tab.shot", goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", click: "tab.click", fill: "tab.fill", press: "tab.press", scroll: "tab.scroll", wait: "tab.wait", evaluate: "tab.evaluate", cursor: "tab.cursor", new: "tab.new", select: "tab.select", highlight: "tab.highlight", waittext: "tab.waittext", type: "tab.type", count: "tab.count", attr: "tab.attr" };
           // fallthrough: qualquer tab.* futuro encaminha cru (a extensão valida e responde)
           const bridged = map[p.cmd] || (String(p.cmd || "").startsWith("tab.") ? p.cmd : null);
           if (p.cmd === "status") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, data: { connected: ubConnected(), lastPollAgoMs: ubLastPoll ? Date.now() - ubLastPoll : -1, queued: ubQueue.length, ext: ubExtInfo } })); return; }
