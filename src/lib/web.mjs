@@ -367,7 +367,149 @@ function snippetDateMs(snippet) {
   return null;
 }
 
-function dedupeItems(groups) {
+// ── helpers puros: dedupe excerpts / rank por query / resumo extrativo / cap domínio (sem rede, sem ENV) ──
+// Normaliza p/ comparação: lower + sem acento + sem pontuação + espaços colapsados.
+function normExcerpt(s) {
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+// Trigramas de palavras (shingles, n=3) sobre o texto normalizado.
+function excerptTrigrams(s) {
+  const toks = normExcerpt(s).split(" ").filter(Boolean);
+  if (!toks.length) return new Set();
+  if (toks.length < 3) return new Set([toks.join(" ")]);
+  const set = new Set();
+  for (let i = 0; i + 2 < toks.length; i++) set.add(`${toks[i]} ${toks[i + 1]} ${toks[i + 2]}`);
+  return set;
+}
+function jaccardSets(a, b) {
+  if (!a.size && !b.size) return 1;
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  const small = a.size <= b.size ? a : b;
+  const big = a.size <= b.size ? b : a;
+  for (const x of small) if (big.has(x)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+// Duplicado se normalizado igual OU Jaccard(trigramas) >= threshold (default 0.8).
+function excerptSimilar(a, b, threshold = 0.8) {
+  const na = normExcerpt(a);
+  const nb = normExcerpt(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  // fast-path: bloco de instalação repetido com prefixo/sufixo distinto (um contém ~90% do outro)
+  if (na.length > 80 && nb.length > 80) {
+    const short = na.length <= nb.length ? na : nb;
+    const long = na.length <= nb.length ? nb : na;
+    if (long.includes(short.slice(0, Math.floor(short.length * 0.9)))) return true;
+  }
+  const ta = excerptTrigrams(a);
+  const tb = excerptTrigrams(b);
+  if (!ta.size || !tb.size) return false;
+  return jaccardSets(ta, tb) >= threshold;
+}
+// Termos distintos da query (lower, >=2 chars) p/ rank por cobertura.
+function queryTerms(q) {
+  return [...new Set(String(q || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9\s]/g, " ").split(/\s+/).map((s) => s.trim()).filter((s) => s.length >= 2))];
+}
+// Cobertura: nº de termos distintos da query presentes no snippet (case-insensitive).
+function excerptScore(snippet, terms) {
+  if (!terms || !terms.length) return 0;
+  const low = String(snippet || "").toLowerCase();
+  let hit = 0;
+  for (const t of terms) if (low.includes(t)) hit++;
+  return hit;
+}
+// Melhor excerpt: maior cobertura; empate => mais longo (sem query cai no comportamento antigo).
+function bestSnippet(current, candidate, terms) {
+  if (!candidate) return current || "";
+  if (!current) return candidate;
+  const sc = excerptScore(current, terms);
+  const sn = excerptScore(candidate, terms);
+  if (sn !== sc) return sn > sc ? candidate : current;
+  return candidate.length > current.length ? candidate : current;
+}
+function splitSentences(text) {
+  return String(text || "").replace(/\s+/g, " ").split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.length >= 25 && s.length <= 400);
+}
+// Resumo extrativo: top N frases (de títulos+snippets, dedupadas por norm/Jaccard>=0.8), rank por cobertura da query.
+function buildQuickSummary(items, query, max = 5) {
+  const terms = queryTerms(query);
+  const seen = [];
+  for (const it of items || []) {
+    const cands = [...splitSentences(it.title), ...splitSentences(it.snippet)];
+    for (const sent of cands) {
+      const n = normExcerpt(sent);
+      if (!n) continue;
+      const tri = excerptTrigrams(sent);
+      let dup = false;
+      for (const s of seen) {
+        if (s.norm === n || jaccardSets(tri, s.tri) >= 0.8) { dup = true; break; }
+      }
+      if (dup) continue;
+      seen.push({ sent, norm: n, tri, score: excerptScore(sent, terms), len: sent.length });
+      if (seen.length > 200) break;
+    }
+    if (seen.length > 200) break;
+  }
+  seen.sort((a, b) => b.score - a.score || b.len - a.len);
+  return seen.slice(0, max).map((s) => s.sent);
+}
+function domainOf(u) {
+  try {
+    return new URL(String(u)).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return normSite(u);
+  }
+}
+// Cap por domínio: máx N por domínio (preserva ordem, conta omitidos).
+function capByDomain(items, maxPerDomain = 3) {
+  const per = new Map();
+  const kept = [];
+  let omitted = 0;
+  for (const it of items || []) {
+    const d = domainOf(it.url) || "-";
+    const c = per.get(d) || 0;
+    if (c < maxPerDomain) { per.set(d, c + 1); kept.push(it); }
+    else omitted++;
+  }
+  return { kept, omitted };
+}
+// Dedupe de excerpts ENTRE resultados: O(n²) com cap (só os top 60 entram no pairwise; resto passa intacto).
+// Mantém o 1º, troca duplicado por placeholder curto e conta omitted.
+function dedupeExcerpts(items, threshold = 0.8, cap = 60) {
+  const list = items || [];
+  const keptIdx = [];
+  const outItems = [];
+  let omitted = 0;
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i];
+    if (i >= cap) { outItems.push(it); continue; }
+    let dupOf = -1;
+    for (const k of keptIdx) {
+      if (excerptSimilar(it.snippet, list[k].snippet, threshold)) { dupOf = k; break; }
+    }
+    if (dupOf >= 0) {
+      omitted++;
+      outItems.push({ ...it, snippet: `(similar ao #${dupOf + 1} omitido)`, _dupOf: dupOf + 1 });
+    } else {
+      keptIdx.push(i);
+      outItems.push(it);
+    }
+  }
+  return { items: outItems, omitted };
+}
+function publishDateStr(snippet) {
+  const ms = snippetDateMs(snippet);
+  if (ms == null) return null;
+  try {
+    return new Date(ms).toISOString().slice(0, 10);
+  } catch {
+    return null;
+  }
+}
+
+function dedupeItems(groups, query = "") {
+  const terms = queryTerms(query);
   const map = new Map();
   for (const g of groups) {
     for (const it of g.items || []) {
@@ -378,8 +520,8 @@ function dedupeItems(groups) {
         map.set(key, { title: it.title, url: it.url, snippet: it.snippet || "", fontes: [g.source] });
       } else {
         if (!hit.fontes.includes(g.source)) hit.fontes.push(g.source);
-        // mantém o snippet mais informativo em caso de conflito
-        if ((it.snippet || "").length > (hit.snippet || "").length) hit.snippet = it.snippet;
+        // rank por cobertura dos termos da query: snippet exibido = melhor excerpt, não o primeiro (empate => mais longo)
+        hit.snippet = bestSnippet(hit.snippet, it.snippet || "", terms);
         if (!hit.title && it.title) hit.title = it.title;
       }
     }
@@ -499,9 +641,17 @@ reg("n_websearch", {
         .filter((g) => g.items.length);
     }
     if (!filtered.length) return out(`no results for "${q}"${siteNorm ? ` (site:${siteNorm})` : ""}${sinceDate ? ` (since:${sinceDate})` : ""}`);
-    // 3) dedupe por URL normalizada entre backends (mesma URL em 2 fontes => 1 item com fontes:[...])
-    const items = dedupeItems(filtered);
+    // 3) dedupe por URL normalizada entre backends (mesma URL em 2 fontes => 1 item com fontes:[...]);
+    //    em conflito o snippet exibido = melhor excerpt por cobertura da query (nao o primeiro; empate => mais longo)
+    const deduped = dedupeItems(filtered, qClean);
+    if (!deduped.length) return out(`no results for "${q}"`);
+    // 3b) cap por dominio (max 3 por dominio, preserva ordem) + dedupe de excerpts entre resultados
+    //     (normalize lower/sem pontuacao/espacos + Jaccard trigramas>=0.8; mantem 1o, conta omitidos; O(n2) cap top 60)
+    const { kept: capped, omitted: domainOmitted } = capByDomain(deduped, 3);
+    const { items, omitted: excerptOmitted } = dedupeExcerpts(capped, 0.8, 60);
     if (!items.length) return out(`no results for "${q}"`);
+    // 3c) resumo extrativo no topo: top 5 frases (de todos os excerpts, dedupadas) como resposta rapida
+    const quick = buildQuickSummary(capped, qClean, 5);
     // 4) PAGINAÇÃO REAL pós-dedupe (numResults segue POR FONTE; total preservado, acesso a tudo via page/perPage)
     const total = items.length;
     const pp = Math.min(Math.max(Number(perPage) || 30, 1), 200);
@@ -512,9 +662,14 @@ reg("n_websearch", {
     const counts = filtered.map((g) => `${g.source}: ${(g.items || []).length}`).join(", ");
     const srcs = [...new Set(filtered.map((g) => g.source))].join(", ");
     const cacheTag = fresh ? "fresh" : "cached 10min";
-    const blocks = shown.map((it, i) => `${startIdx + i + 1}. ${it.title}\n   ${it.url}\n   ${it.snippet}\n   fontes: [${it.fontes.join(", ")}]\n`).join("");
+    const omitTag = `${excerptOmitted ? ` +${excerptOmitted} similares omitidos` : ""}${domainOmitted ? ` +${domainOmitted} além do cap 3/domínio` : ""}`;
+    const quickBlock = quick.length ? `Resposta rápida (extrativo, top 5 frases dedupadas):\n${quick.map((s) => `- ${s}`).join("\n")}\n` : "";
+    const blocks = shown.map((it, i) => {
+      const pub = publishDateStr(it.snippet) || publishDateStr(it.title);
+      return `${startIdx + i + 1}. ${it.title}\n   ${it.url}\n   ${it.snippet}${pub ? `\n   publish_date: ${pub}` : ""}\n   fontes: [${it.fontes.join(", ")}]\n`;
+    }).join("");
     const nextLine = pg < totalPages ? `...[página ${pg}/${totalPages} — next: n_websearch({query:${JSON.stringify(q)}, page:${pg + 1}, perPage:${pp}})]\n` : "";
-    return out(`${total} results for "${q}" (${cacheTag}, sources: ${srcs}${siteNorm ? `, site:${siteNorm}` : ""}${sinceDate ? `, since:${sinceDate}` : ""})\npor backend: ${counts} | mostrando ${shown.length}/${total} (página ${pg}/${totalPages}, perPage ${pp})\n` + blocks + nextLine + `\nAviso: preço em snippet pode estar desatualizado, confirme com n_browser_navigate.\nTip: use n_webfetch to read a page's main content (maxChars caps token cost).`);
+    return out(`${total} results for "${q}" (${cacheTag}, sources: ${srcs}${siteNorm ? `, site:${siteNorm}` : ""}${sinceDate ? `, since:${sinceDate}` : ""}${omitTag})\npor backend: ${counts} | mostrando ${shown.length}/${total} (página ${pg}/${totalPages}, perPage ${pp})\n` + quickBlock + blocks + nextLine + `\nAviso: preço em snippet pode estar desatualizado, confirme com n_browser_navigate.\nTip: use n_webfetch to read a page's main content (maxChars caps token cost).`);
   },
 });
 
@@ -542,4 +697,4 @@ function collapseHtml(s) {
   return s.replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/g, " ").replace(/\s+/g, " ").trim();
 }
 
-export { probeMeta, mainContent, cached, extractPriceAndJsonld, fetchRetry, normUrl, dedupeItems };
+export { probeMeta, mainContent, cached, extractPriceAndJsonld, fetchRetry, normUrl, dedupeItems, normExcerpt, excerptTrigrams, jaccardSets, excerptSimilar, queryTerms, excerptScore, bestSnippet, splitSentences, buildQuickSummary, domainOf, capByDomain, dedupeExcerpts, publishDateStr };
