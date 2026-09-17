@@ -11,6 +11,7 @@
 import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
+import { userInfo } from "node:os";
 import { reg, out, trimOut, fpath, exec, walkFiles, humanSize, escapeRe, CWD, SKIP_DIRS } from "./ctx.mjs";
 
 function globToRegex(pattern) {
@@ -42,8 +43,12 @@ function globToRegex(pattern) {
 }
 
 function fail(tool, msg, hint) {
-  return `ERRO ${tool}: ${msg} | dica: ${hint}`;
+  return hint ? `ERRO ${tool}: ${msg} | dica: ${hint}` : `ERRO ${tool}: ${msg}`;
 }
+
+// Identidade de execução (auditoria: split de usuário indocumentado). Cache no load.
+let RUN_AS = "?";
+try { RUN_AS = userInfo().username || "?"; } catch {}
 
 // --- custo: symbols/rank/collapse. Custo zero quando opt-in ausente (fast-path) ---
 const SYM_KW = new Set(["if", "for", "while", "switch", "catch", "with", "else", "do", "try", "finally", "return", "import", "export", "function", "class", "const", "let", "var", "new", "typeof", "await", "async", "yield", "case", "break", "continue", "throw", "delete", "in", "of", "instanceof", "void"]);
@@ -199,7 +204,7 @@ function listDir(p, depth, maxLines = 1500, sort = "name") {
 
 // ---- n_read ----
 reg("n_read", {
-  description: "Lê arquivo texto com números de linha (offset/limit, raw, maxChars até 100k) ou lista diretório simples. Quando usar: inspecionar código/config antes de editar. Retorna corpo numerado (raw tira números); binário/ausente retorna isError; grande trunca com marker explícito (nunca silent). symbols:true = outline (funções/classes/tools+linha, navegação sem ler tudo).",
+  description: "Lê arquivo texto com números de linha (offset/limit, raw, maxChars até 100k) ou lista diretório simples. Roda como o usuário do servidor (EACCES = confira `as:` do n_bash). Quando usar: inspecionar código/config antes de editar. Retorna corpo numerado (raw tira números); binário/ausente retorna isError; grande trunca com marker explícito (nunca silent). symbols:true = outline (funções/classes/tools+linha, navegação sem ler tudo).",
   inputSchema: {
     type: "object",
     properties: {
@@ -349,7 +354,7 @@ reg("n_list", {
 
 // ---- n_write ----
 reg("n_write", {
-  description: "Cria/sobrescreve arquivo (cria pastas). Quando usar: arquivo novo ou rewrite total; para troca pontual prefira n_edit/n_apply_semantic_patch (AST). Retorna bytes escritos. Ex: {filePath:\"/tmp/x.txt\", content:\"...\"}.",
+  description: "Cria/sobrescreve arquivo (cria pastas) como o usuário do servidor (veja `as:` no output; confira com `as:` do n_bash antes de misturar com shell). Quando usar: arquivo novo ou rewrite total; para troca pontual prefira n_edit/n_apply_semantic_patch (AST). Retorna bytes escritos. Ex: {filePath:\"/tmp/x.txt\", content:\"...\"}.",
   inputSchema: {
     type: "object",
     properties: {
@@ -359,10 +364,11 @@ reg("n_write", {
       append: { type: "boolean", description: "Anexa ao fim em vez de sobrescrever" },
       backup: { type: "boolean", description: "Salva .bak antes de gravar" },
       dryRun: { type: "boolean", description: "Não grava; retorna bytes/preview" },
+      owner: { type: "string", description: "Dono pós-escrita via chown (ex: \"tork\" ou \"tork:tork\"). Útil quando outro usuário precisa mexer via shell. Falha de chown vira aviso, não erro." },
     },
     required: ["filePath", "content"],
   },
-  run: async ({ filePath, content, mkdirs, append, backup, dryRun }) => {
+  run: async ({ filePath, content, mkdirs, append, backup, dryRun, owner }) => {
     const p = fpath(filePath);
     const bytes = Buffer.byteLength(content);
     if (dryRun) return out(`dryRun ${append ? "append" : "write"} ${p} (${bytes} bytes) preview: ${content.slice(0, 500)}${content.length > 500 ? `...[+${content.length - 500} chars]` : ""}`);
@@ -371,7 +377,12 @@ reg("n_write", {
       if (backup && existsSync(p)) await writeFile(`${p}.bak`, readFileSync(p));
       if (append) await writeFile(p, content, { encoding: "utf8", flag: "a" });
       else await writeFile(p, content, "utf8");
-      return out(`${append ? "appended" : "wrote"} ${p} (${bytes} bytes)${backup ? " backup=.bak" : ""}`);
+      let ownNote = "";
+      if (owner) {
+        const cr = await exec("chown", [String(owner), p], { timeout: 15000 });
+        ownNote = cr.code === 0 ? ` owner=${owner}` : ` (owner ${owner} falhou: ${(cr.se || cr.error || `exit ${cr.code}`).trim().slice(0, 120)})`;
+      }
+      return out(`${append ? "appended" : "wrote"} ${p} (${bytes} bytes, as ${RUN_AS})${backup ? " backup=.bak" : ""}${ownNote}`);
     } catch (e) {
       return out(fail("n_write", `write failed: ${e.message}`, "confira permissões e o filePath; use n_list p/ validar a pasta"), true);
     }
@@ -380,7 +391,7 @@ reg("n_write", {
 
 // ---- n_edit ----
 reg("n_edit", {
-  description: "Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). Quando usar: edição pontual com contexto; para validar sintaxe use n_apply_semantic_patch. Limite: default substitui TODAS as ocorrências; ambíguo só falha com replaceAll=false; 0 matches sempre falha.",
+  description: "Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). Roda como o usuário do servidor (EACCES = confira `as:` do n_bash; n_write tem `owner` p/ ajustar dono). Quando usar: edição pontual com contexto; para validar sintaxe use n_apply_semantic_patch. Limite: default substitui TODAS as ocorrências; ambíguo só falha com replaceAll=false; 0 matches sempre falha.",
   inputSchema: {
     type: "object",
     properties: {
@@ -481,13 +492,13 @@ reg("n_apply_patch", {
 
 // ---- n_bash ----
 reg("n_bash", {
-  description: "Executa shell (bash -lc) no repo root: git, npm, node, curl. Retorna exit+stdout (cap 20k, até 100k via maxOutput)+stderr. Colapsa repetições consecutivas ([xN]) e barras de progresso (tail/stderr integrais; sem repetição sai idêntico). Quando usar: comandos/validação/git; p/ ler arquivos prefira n_read/n_grep. Timeout 120s (até 600s); tarefa longa use n_manage_background_process. Suporta env/retries/workdir.",
+  description: "Executa shell (bash -lc) no repo root: git, npm, node, curl. Roda como o usuário do servidor (veja `as:` no output; file tools rodam como o mesmo usuário — confira `as:` em n_write). Retorna exit+stdout (cap 20k, até 100k via maxOutput)+stderr. Colapsa repetições consecutivas ([xN]) e barras de progresso (tail/stderr integrais; sem repetição sai idêntico). Quando usar: comandos/validação/git; p/ ler arquivos prefira n_read/n_grep. Timeout 120s (até 600s); tarefa longa use n_manage_background_process. Suporta env/retries/workdir.",
   inputSchema: {
     type: "object",
     properties: {
       command: { type: "string" },
       cwd: { type: "string", description: "Working directory (default: repo root)" },
-      workdir: { type: "string", description: "Alias de cwd — Working directory (default: repo root)" },
+      workdir: { type: "string", description: "Alias de cwd (mesma coisa; prefira cwd). Working directory (default: repo root)" },
       env: { type: "object", description: "Vars extras de ambiente (merge com process.env). Ex: {\"NODE_ENV\":\"test\"}" },
       retries: { type: "number", description: "0-2, re-tenta se exit!=0. Ex: 1 p/ comandos flaky" },
       timeout: { type: "number", description: "Timeout ms (default 120000, máx 600000). Ex: 30000 p/ comandos rápidos, 600000 p/ npm install/build; p/ mais que isso rode em background com n_manage_background_process" },
@@ -529,14 +540,15 @@ reg("n_bash", {
     const collapseNote = collapsed.saved > 0 ? `, collapsed ${r.so.length}→${soSrc.length}` : "";
     const so = soSrc.length > cap ? soSrc.slice(0, cap) + `\n...[truncated ${soSrc.length - cap} chars; run again with maxOutput=${cap} (máx 100000) ou use n_read/n_grep p/ arquivos]` : soSrc;
     const se = r.se.length > capErr ? r.se.slice(0, capErr) + `\n...[truncated ${r.se.length - capErr} chars]` : r.se;
-    let msg = `exit=${r.error ? "spawn-error" : r.killed ? "timeout" : r.code} (${elapsed}s, ${r.so.length} chars stdout${collapseNote})\n--- stdout ---\n${so}\n--- stderr ---\n${se}`;
+    let msg = `exit=${r.error ? `spawn-error: ${r.error} (cwd=${base})` : r.killed ? "timeout" : r.code} (as ${RUN_AS}, ${elapsed}s, ${r.so.length} chars stdout${collapseNote})\n--- stdout ---\n${so}\n--- stderr ---\n${se}`;
     if (tries > 0) msg += `\n(tentativa ${attempt + 1}/${tries + 1})`;
     if (r.killed) {
       msg += `\n--- progresso antes do timeout (${elapsed}s / ${Math.round(timeoutMs / 1000)}s, ${r.so.length} chars) ---\n${r.so.length ? r.so.slice(-800) : "(sem stdout)"}`;
       msg += `\ntimeout em ${Math.round(timeoutMs / 1000)}s — aumente com timeout até 600000 (10min) ou rode a tarefa longa em background sem bloquear: n_manage_background_process({action:"start", command:"..."}) e acompanhe com {action:"read_logs"}/{action:"stop"}; encadeie comandos dependentes com &&`;
     }
     const isErr = !!(r.error || r.killed || r.code !== 0);
-    return out(isErr ? fail("n_bash", msg, "tarefas longas: timeout até 600000 (10min) ou background via n_manage_background_process (start/read_logs/stop); comandos dependentes com &&; p/ arquivos use n_read/n_grep") : msg, isErr);
+    // dica curta e só em falha (nunca em sucesso; no timeout o bloco acima já orienta — sem duplicar)
+    return out(isErr ? fail("n_bash", msg, r.killed ? "" : "timeout até 600000 p/ tarefa longa ou background via n_manage_background_process; && p/ dependentes; p/ arquivos use n_read/n_grep") : msg, isErr);
   },
 });
 

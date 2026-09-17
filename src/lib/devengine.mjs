@@ -1,7 +1,7 @@
 // canivete — DevEngine: arquitetura, investigação, impacto, patch AST, testes, bg, UI, DAG
 import { spawn } from "node:child_process";
 import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
-import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { reg, out, devOut, trimOut, estTokens, fpath, exec, walkFiles, escapeRe, WALK_CAP, isSkippable, CWD, HOME, SKIP_DIRS } from "./ctx.mjs";
 import { tasks, taskId, persistTask, resolveTask } from "./tasks.mjs";
@@ -56,6 +56,46 @@ function buildSymbolIndex(limit = 300) {
   return syms;
 }
 const bgProcs = new Map();
+
+// Registro em disco p/ reanexar processos vivos cujo tracker se perdeu (ex: restart do servidor).
+const BG_REG_FILE = join(HOME, ".config/canivete/bg-procs.json");
+function bgRegLoad() {
+  try { return JSON.parse(readFileSync(BG_REG_FILE, "utf8")); } catch { return {}; }
+}
+function bgRegSave() {
+  try {
+    const o = {};
+    for (const [id, v] of bgProcs.entries()) {
+      const pid = v.child ? v.child.pid : v.pid;
+      if (pid) o[id] = { pid, command: v.command, env: v.env || {}, cwd: v.cwd || CWD, startedAt: v.startedAt };
+    }
+    mkdirSync(dirname(BG_REG_FILE), { recursive: true });
+    writeFileSync(BG_REG_FILE, JSON.stringify(o));
+  } catch {}
+}
+function bgRegDel(id) {
+  try {
+    const o = bgRegLoad();
+    if (o[id]) { delete o[id]; mkdirSync(dirname(BG_REG_FILE), { recursive: true }); writeFileSync(BG_REG_FILE, JSON.stringify(o)); }
+  } catch {}
+}
+function bgAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+function bgReattach(id) {
+  if (bgProcs.has(id)) return bgProcs.get(id);
+  const rec = bgRegLoad()[id];
+  if (!rec || !rec.pid || !bgAlive(rec.pid)) return null;
+  const entry = { pid: rec.pid, child: null, command: rec.command, env: rec.env || {}, cwd: rec.cwd || CWD, startedAt: rec.startedAt, logs: () => "", reattached: true };
+  bgProcs.set(id, entry);
+  return entry;
+}
+function bgKill(entry, sig = "SIGTERM") {
+  try {
+    if (entry.child) entry.child.kill(sig);
+    else if (entry.pid) process.kill(entry.pid, sig);
+  } catch {}
+}
 
 // ---- DevEngine tools ----
 
@@ -667,7 +707,7 @@ reg("n_execute_targeted_tests", {
 });
 
 reg("n_manage_background_process", {
-  description: "DevEngine: start/stop/restart/status/read_logs de servidores sem bloquear. Quando usar: dev server, build watch, worker. Ex: {action:\"start\", command:\"npm run dev\"}. restart reusa o command. Limite: stdin ignore — send NÃO escreve stdin; use env no start/restart.",
+  description: "DevEngine: start/stop/restart/status/read_logs de servidores sem bloquear. Quando usar: dev server, build watch, worker. Ex: {action:\"start\", command:\"npm run dev\", cwd:\"/proj/app\"}. restart reusa command+cwd. read_logs aceita tail (chars). Tracker reanexa processo vivo após restart do servidor (logs anteriores indisponíveis). Limite: stdin ignore — send NÃO escreve stdin; use env no start/restart.",
   inputSchema: {
     type: "object",
     properties: {
@@ -675,15 +715,21 @@ reg("n_manage_background_process", {
       command: { type: "string", description: "Comando shell para start (ex: npm run dev). No restart é reutilizado o command original." },
       process_id: { type: "string", description: "ID do processo (obrigatório para stop/restart/read_logs/send)" },
       env: { type: "object", description: "Variáveis de ambiente extras para start/restart (merge com process.env, ex: {PORT:\"3001\"})" },
+      cwd: { type: "string", description: "Diretório do processo (default: repo root). Ex: \"/tmp/app\". Vale p/ start e restart (override)." },
+      tail: { type: "number", description: "read_logs: últimos N chars (default 4000, máx 50000)." },
     },
     required: ["action"],
   },
-  run: async ({ action, command, process_id, env }) => {
+  run: async ({ action, command, process_id, env, cwd, tail }) => {
     const t0 = Date.now();
-    const startOne = (cmd, extraEnv) => {
+    const startOne = (cmd, extraEnv, cwdArg) => {
       const id = `bg${Date.now().toString(36)}`;
+      let base = CWD;
+      if (cwdArg) {
+        try { base = fpath(cwdArg); } catch (e) { return { error: `cwd inválido: ${e.message} (use caminho relativo ao repo ou absoluto válido)` }; }
+      }
       const mergedEnv = { ...process.env, ...(extraEnv || {}) };
-      const child = spawn("bash", ["-lc", cmd], { cwd: CWD, stdio: ["ignore", "pipe", "pipe"], detached: true, env: mergedEnv });
+      const child = spawn("bash", ["-lc", cmd], { cwd: base, stdio: ["ignore", "pipe", "pipe"], detached: true, env: mergedEnv });
       let logs = "";
       const appendLog = (d) => {
         logs += d;
@@ -691,41 +737,45 @@ reg("n_manage_background_process", {
       };
       child.stdout.on("data", appendLog);
       child.stderr.on("data", appendLog);
-      bgProcs.set(id, { child, command: cmd, env: { ...(extraEnv || {}) }, logs: () => logs, startedAt: new Date().toISOString() });
+      bgProcs.set(id, { child, command: cmd, env: { ...(extraEnv || {}) }, cwd: base, logs: () => logs, startedAt: new Date().toISOString() });
+      bgRegSave();
       child.unref();
-      return { id, child };
+      return { id, child, cwd: base };
     };
     if (action === "start") {
       if (!command) return devOut({ status: "error", summary: "command obrigatório para start (ex: npm run dev)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (env !== undefined && (typeof env !== "object" || env === null || Array.isArray(env))) return devOut({ status: "error", summary: "env deve ser objeto string→string (ex: {PORT:\"3001\"})", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-      const { id, child } = startOne(command, env);
-      return devOut({ summary: `Processo ${id} iniciado: ${command} (PID ${child.pid})`, data: { process_id: id, pid: child.pid, command, env: env || {} }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_inspect_ui_state", reason: "Validar UI em runtime" }], refs: [] });
+      const s = startOne(command, env, cwd);
+      if (s.error) return devOut({ status: "error", summary: s.error, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ summary: `Processo ${s.id} iniciado: ${command} (PID ${s.child.pid}, cwd ${s.cwd})`, data: { process_id: s.id, pid: s.child.pid, command, cwd: s.cwd, env: env || {} }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_inspect_ui_state", reason: "Validar UI em runtime" }], refs: [] });
     }
     if (action === "status") {
-      const all = [...bgProcs.entries()].map(([id, v]) => ({ id, pid: v.child.pid, killed: v.child.killed, exitCode: v.child.exitCode, command: v.command, startedAt: v.startedAt }));
+      const all = [...bgProcs.entries()].map(([id, v]) => ({ id, pid: v.child ? v.child.pid : v.pid, killed: v.child ? v.child.killed : undefined, exitCode: v.child ? v.child.exitCode : undefined, command: v.command, cwd: v.cwd, reattached: !!v.reattached, startedAt: v.startedAt }));
       return devOut({ summary: `${all.length} processo(s) em background`, data: { processes: all }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     if (action === "send") {
       return devOut({ status: "error", summary: `send indisponível: stdin é 'ignore' por design (spawn stdio ["ignore","pipe","pipe"]) para evitar bloqueio — escrita em stdin NÃO implementada; use restart/start com env para reconfigurar`, data: { process_id: process_id || null }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const id = process_id;
-    const entry = bgProcs.get(id);
-    if (!entry) return devOut({ status: "error", summary: `processo ${id} não encontrado — veja n_manage_background_process({action:\"status\"})`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    let entry = bgProcs.get(id) || bgReattach(id);
+    const wasReattached = !!entry?.reattached;
+    if (!entry) return devOut({ status: "error", summary: `processo ${id} não encontrado (nem vivo no registro) — veja n_manage_background_process({action:\"status\"})`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (action === "stop") {
-      try {
-        entry.child.kill("SIGTERM");
-      } catch {}
+      bgKill(entry);
       bgProcs.delete(id);
-      return devOut({ summary: `Processo ${id} encerrado`, data: { process_id: id }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      bgRegDel(id);
+      return devOut({ summary: `Processo ${id} encerrado${wasReattached ? " (reanexado — logs anteriores indisponíveis)" : ""}`, data: { process_id: id }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     if (action === "restart") {
       const cmd = entry.command;
+      let base = entry.cwd || CWD;
+      if (cwd) {
+        try { base = fpath(cwd); } catch (e) { return devOut({ status: "error", summary: `cwd inválido: ${e.message}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } }); }
+      }
       const mergedEnv = { ...(entry.env || {}), ...(env || {}) };
-      try {
-        entry.child.kill("SIGTERM");
-      } catch {}
+      bgKill(entry);
       bgProcs.delete(id);
-      const child = spawn("bash", ["-lc", cmd], { cwd: CWD, stdio: ["ignore", "pipe", "pipe"], detached: true, env: { ...process.env, ...mergedEnv } });
+      const child = spawn("bash", ["-lc", cmd], { cwd: base, stdio: ["ignore", "pipe", "pipe"], detached: true, env: { ...process.env, ...mergedEnv } });
       let logs = "";
       const appendLog = (d) => {
         logs += d;
@@ -733,13 +783,15 @@ reg("n_manage_background_process", {
       };
       child.stdout.on("data", appendLog);
       child.stderr.on("data", appendLog);
-      bgProcs.set(id, { child, command: cmd, env: mergedEnv, logs: () => logs, startedAt: new Date().toISOString() });
+      bgProcs.set(id, { child, command: cmd, env: mergedEnv, cwd: base, logs: () => logs, startedAt: new Date().toISOString() });
+      bgRegSave();
       child.unref();
-      return devOut({ summary: `Processo ${id} reiniciado: ${cmd} (PID ${child.pid})`, data: { process_id: id, pid: child.pid, command: cmd, env: mergedEnv }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ summary: `Processo ${id} reiniciado: ${cmd} (PID ${child.pid}, cwd ${base})`, data: { process_id: id, pid: child.pid, command: cmd, cwd: base, env: mergedEnv }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     if (action === "read_logs") {
-      const l = entry.logs().slice(-4000);
-      return devOut({ summary: `Logs ${id} (${l.length} chars)`, data: { process_id: id, logs: l }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      const n = Math.min(Math.max(Number(tail) || 4000, 100), 50000);
+      const l = entry.logs().slice(-n);
+      return devOut({ summary: `Logs ${id} (${l.length} chars${wasReattached ? "; reanexado — só logs pós-restart do servidor" : ""})`, data: { process_id: id, logs: l }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     return devOut({ status: "error", summary: "action inválida (use: start|stop|restart|status|read_logs|send)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
