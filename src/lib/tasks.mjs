@@ -379,10 +379,49 @@ reg("n_task", {
       ephemeral: { type: "boolean", description: "Se true, auto-exclui task/mailbox após done (para coletores só de info)" },
       depends_on: { type: "array", items: { type: "string" }, description: "Aguarda deps done/failed/timeout antes de spawnar; se alguma falhar vira skipped." },
       label: { type: "string", description: "Apelido curto exibido no status no lugar do id." },
+      items: { type: "array", items: { type: "string" }, description: "BATCH opt-in: N prompts em 1 processo opencode (1 PID). Quando presente, concatena em ÚNICO spawn com ### JOB i/N ### e o worker responde entre ### RESULT i ###; finalize fatia por item (fallback integral)." },
     },
-    required: ["prompt", "model"],
+    required: ["model"],
   },
-  run: async ({ description, subagent_type, prompt, model, timeout, background, ephemeral, depends_on, label }) => {
+  run: async ({ description, subagent_type, prompt, model, timeout, background, ephemeral, depends_on, label, items }) => {
+    // BATCH opt-in: N jobs em 1 processo opencode (1 PID). Sem items → caminho original abaixo, inalterado.
+    // Cada `opencode run` é 1 processo OS novo sem reuso (--session continua sessão mas ainda é processo novo),
+    // por isso N spawns = N×~200MB-1GB; batch = 1 spawn (~200MB-1GB totais, economia (N-1)×).
+    const _batchRaw = items;
+    const _isBatch = Array.isArray(_batchRaw) && _batchRaw.length > 0;
+    let _batchTotal = 0;
+    let _batchItems = null;
+    const _sliceBatch = (text, total) => {
+      const src = String(text ?? "");
+      const re = /###\s*RESULT\s+(\d+)\s*###/g;
+      const ms = [...src.matchAll(re)];
+      if (!ms.length) return Array.from({ length: total }, () => src.trim());
+      const outArr = Array.from({ length: total }, () => "");
+      for (let k = 0; k < ms.length; k++) {
+        const idx = Number(ms[k][1]) - 1;
+        const s = ms[k].index + ms[k][0].length;
+        const e = k + 1 < ms.length ? ms[k + 1].index : src.length;
+        const chunk = src.slice(s, e).trim();
+        if (idx >= 0 && idx < total && !outArr[idx]) outArr[idx] = chunk;
+      }
+      return outArr;
+    };
+    const _buildBatchPrompt = (shared, arr) => {
+      const total = arr.length;
+      const head = shared && String(shared).trim() ? `${String(shared).trim()}\n\n` : "";
+      return `${head}Você está em modo BATCH com ${total} jobs em 1 processo (economia ${total}×200MB→1×).\nResponda cada JOB separadamente entre marcadores ### RESULT i ### (exatamente um por job, na ordem).\nFormato obrigatório:\n### RESULT 1 ###\n<resposta do job 1>\n### RESULT 2 ###\n<resposta do job 2>\n...\nNão misture jobs no mesmo bloco. Não omita nenhum marcador.\n\n${arr.map((p, i) => `### JOB ${i + 1}/${total} ###\n${p}`).join("\n\n")}`;
+    };
+    if (_batchRaw !== undefined && _batchRaw !== null && !_isBatch) {
+      return out(`items inválido: esperado string[] não-vazio com os N prompts do batch.`, true);
+    }
+    if (_isBatch) {
+      if (_batchRaw.some((s) => typeof s !== "string" || !s.trim())) {
+        return out(`items inválido: todo item deve ser string não-vazia (recebido ${_batchRaw.length} item(ns)).`, true);
+      }
+      _batchItems = _batchRaw.map((s) => String(s));
+      _batchTotal = _batchItems.length;
+      prompt = _buildBatchPrompt(prompt, _batchItems);
+    }
     if (!model && isOpencode) {
       return out(`model é OBRIGATÓRIO — escolha explícita. Chame n_list_models para ver os disponíveis e passe um deles em n_task({model}).`, true);
     }
@@ -478,6 +517,7 @@ reg("n_task", {
       depends_on: deps,
       label: shortLabel,
     };
+    if (_isBatch) entry.batch = { total: _batchTotal, done: 0 };
     tasks.set(id, entry);
     await persistTask(entry);
     const missing = runnerMissing();
@@ -569,6 +609,12 @@ reg("n_task", {
         else entry.error = responseText.trim() ? null : `${modelTag} saiu 0 sem resposta${errTail}`;
         entry.result = responseText.trim();
         entry.tailRaw = responseText.slice(-8000);
+        if (_isBatch) {
+          try {
+            const _slices = _sliceBatch(entry.result, _batchTotal);
+            entry.batch = { total: _batchTotal, done: _slices.filter((s) => String(s || "").trim()).length, results: _slices };
+          } catch {}
+        }
         persistTask(entry);
         const summary = entry.error || (entry.result ? entry.result.slice(0, 200) : "");
         notifyMain(id, entry.status, description, chosenModel, summary).catch((e) => logWarn(`notifyMain falhou ${id}: ${e?.message || e}`));
@@ -629,6 +675,11 @@ reg("n_task", {
     });
     entry.donePromise = donePromise;
     await persistTask(entry); // garante pid no disco (fecha race pid:null → zombie imortal)
+    if (_isBatch && background) {
+      const eph = ephemeral ? " [ephemeral auto-exclui em 30s]" : "";
+      const tag = shortLabel ? `${shortLabel} (${id})` : id;
+      return out(`task ${tag} batch ${_batchTotal} jobs em 1 PID spawned in background (${agent} | ${chosenModel})${eph} — economia ${_batchTotal}×200MB→1×\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: n_task_send({ task_id: "${id}", message: "..." })\npara excluir: n_task_delete({task_id:"${id}"}) ou n_task_delete({task_id:"all"})`);
+    }
     if (background) {
       const eph = ephemeral ? " [ephemeral auto-exclui em 30s]" : "";
       const tag = shortLabel ? `${shortLabel} (${id})` : id;
@@ -660,6 +711,16 @@ reg("n_task", {
       const n = box && Array.isArray(box.msgs) ? box.msgs.length : 0;
       if (n) ownMb = `\n📬 ${n} notificação(ões) pendente(s) p/ ${fin.label || shortLabel || fin.id} — leia com n_task_recv({task_id:"${fin.id}"})`;
     } catch {}
+    if (_isBatch || fin.batch) {
+      const total = (fin.batch && fin.batch.total) || _batchTotal;
+      const slices = (fin.batch && Array.isArray(fin.batch.results) && fin.batch.results.length === total) ? fin.batch.results : _sliceBatch(fin.result || "", total);
+      const done = (fin.batch && typeof fin.batch.done === "number") ? fin.batch.done : slices.filter((s) => String(s || "").trim()).length;
+      const finTagB = fin.label ? `${fin.label} (${fin.id})` : (shortLabel ? `${shortLabel} (${fin.id})` : fin.id);
+      const headerB = `[${agent} ${fin.status} | ${fin.model || chosenModel}${fin.ephemeral ? " | ephemeral" : ""} | batch ${done}/${total} em 1 PID (economia ${total}×200MB→1×), exit ${fin.exitCode}] ${finTagB}\ntools usados: ${fin.tools.length ? fin.tools.join(", ") : "nenhum"}`;
+      if (fin.error && !fin.result) return out(`${headerB}\n${fin.error}` + ownMb + pendingHints());
+      const bodyB = slices.map((s, i) => `### RESULT ${i + 1} ###\n${String(s || "").trim() || "(sem resposta)"}`).join("\n\n");
+      return out(headerB + (fin.result ? `\n\n${trimOut(bodyB, 20000)}` : "\n(sem resposta)") + ownMb + pendingHints());
+    }
     return out((fin.error && !fin.result ? `${header}\n${fin.error}` : header + (fin.result ? `\n\n${trimOut(fin.result, 20000)}` : "\n(sem resposta)")) + ownMb + pendingHints());
   },
 });

@@ -10,6 +10,17 @@ const BASE_CDP_PORT = Number(process.env.CANIVETE_CDP_PORT || process.env.OPENCO
 let CDP_PORT = BASE_CDP_PORT;
 const CHROME_PROFILE = process.env.CANIVETE_CHROME_PROFILE || join(tmpdir(), "canivete-chrome-profile");
 let chromeChild = null;
+let lastUse = Date.now();
+
+// LOW-MEM: flags p/ Chrome comer menos RAM parado. Desativa com CANIVETE_CHROME_LOWMEM=0.
+function isLowMemEnabled() {
+  return !/^(0|false|no|off)$/i.test(String(process.env.CANIVETE_CHROME_LOWMEM ?? "1"));
+}
+const LOWMEM_FLAGS = [
+  "--renderer-process-limit=2",
+  "--disable-features=Translate,OptimizationHints,MediaRouter",
+  "--js-flags=--max-old-space-size=256",
+];
 
 // Timeout configurável (default mantido quando env ausente/inválido).
 const CDP_TIMEOUT_MS = Number(process.env.CANIVETE_CDP_TIMEOUT) || 25000;
@@ -100,6 +111,7 @@ async function ensureBrowser() {
         "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
         "--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking",
         "--blink-settings=imagesEnabled=false",
+        ...(isLowMemEnabled() ? LOWMEM_FLAGS : []),
         `--remote-debugging-port=${port}`,
         `--user-data-dir=${CHROME_PROFILE}`, "about:blank",
       ], { stdio: "ignore", detached: true });
@@ -162,6 +174,20 @@ function cdpSend(ws, id, method, params = {}, timeout = CDP_TIMEOUT_MS) {
 let cachedTab = null; // { id, wsUrl, ts }
 const TAB_TTL_MS = 60000;
 
+// idle-off: auto-desliga Chrome ocioso (próximo uso respawna via ensureBrowser).
+// Checa a cada 60s: ocioso > CANIVETE_CHROME_IDLE_MS (default 5min) → kill + limpa cache.
+const CHROME_IDLE_MS = Number(process.env.CANIVETE_CHROME_IDLE_MS) || 5 * 60 * 1000;
+const idleTimer = setInterval(() => {
+  try {
+    if (!chromeChild) return;
+    if (Date.now() - lastUse < CHROME_IDLE_MS) return;
+    try { chromeChild.kill(); } catch {}
+    chromeChild = null;
+    cachedTab = null;
+  } catch {}
+}, 60000);
+idleTimer.unref?.();
+
 async function openWs(wsUrl, tabHint = "?") {
   const ws = new WebSocket(wsUrl);
   const timeout = WS_OPEN_TIMEOUT_MS;
@@ -206,6 +232,7 @@ async function runOnWs(wsUrl, target, fn, { urlHint } = {}) {
 }
 
 async function withCdp(fn, { url } = {}) {
+  lastUse = Date.now();
   await ensureBrowser();
   // Reconnect 1x em queda/stale com backoff 1s.
   const staleRetry = async (firstErr) => {
