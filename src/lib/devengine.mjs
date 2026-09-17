@@ -120,7 +120,7 @@ reg("n_get_architecture_summary", {
 });
 
 reg("n_investigate_issue", {
-  description: "DevEngine: busca keyword OR (12 hits→8) com score por contagem + stack_trace opcional. Quando usar: bug/erro com symptom. Retorna candidatos ranqueados. Limite: NÃO é grafo de chamadas nem busca semântica — para caso simples prefira n_grep.",
+  description: "DevEngine: busca keyword OR (12 hits→3) com score por proximidade (mesma linha > mesmo arquivo) + bônus nome-arquivo/símbolo + penalidade vendor + porquê 1 linha. Quando usar: bug/erro com symptom. Retorna candidatos ranqueados. Limite: NÃO é grafo de chamadas nem busca semântica — para caso simples prefira n_grep.",
   inputSchema: {
     type: "object",
     properties: {
@@ -129,7 +129,7 @@ reg("n_investigate_issue", {
       max_depth: { type: "number", default: 3, description: "Profundidade (reservado)" },
       include: { type: "string", description: "Globs CSV p/ filtrar arquivos, ex *.{js,ts}" },
       exclude_dirs: { type: "string", description: "Dirs extras CSV além do SKIP_DIRS" },
-      context_lines: { type: "number", default: 1, description: "Linhas de contexto (0-5)" },
+      context_lines: { type: "number", default: 0, description: "Linhas de contexto (0-5)" },
     },
     required: ["symptom"],
   },
@@ -143,8 +143,8 @@ reg("n_investigate_issue", {
     } catch {
       rx = new RegExp(escapeRe(symptom.slice(0, 20)), "i");
     }
-    let ctxN = Math.round(Number(context_lines ?? 1));
-    if (!Number.isFinite(ctxN)) ctxN = 1;
+    let ctxN = Math.round(Number(context_lines ?? 0));
+    if (!Number.isFinite(ctxN)) ctxN = 0;
     ctxN = Math.max(0, Math.min(5, ctxN));
     const csvSplit = (s) => {
       const parts = [];
@@ -185,45 +185,153 @@ reg("n_investigate_issue", {
       return new RegExp("^" + re + "$");
     };
     const incRes = csvSplit(include).flatMap(expandBraces).map(globToRx);
-    const isTestFile = (f) => f.includes("__tests__") || /\.test\./.test(f);
+    const isTestFile = (f) => f.includes("__tests__") || /\.test\./.test(f) || /(^|\/)test\//.test(f) || /\.spec\./.test(f);
+    const isVendorLike = (f) => /(^|\/)(node_modules|dist|build|coverage|\.next|\.cache|vendor|out)(\/|$)/i.test(f) || /\.min\.(js|mjs|cjs|jsx|tsx?)$/i.test(f);
     const files = [];
     walkFiles(CWD, files);
+    const kwsLower = keywords.map((k) => k.toLowerCase());
+    const wholeRes = keywords.map((k) => {
+      try {
+        return new RegExp(`\\b${escapeRe(k)}\\b`, "i");
+      } catch {
+        return null;
+      }
+    });
+    const symDefRe = /(?:function\s+([A-Za-z_$][\w$]*)|class\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=)/g;
     const hits = [];
     const maxHits = 12;
     for (const f of files) {
       if (incRes.length) {
         const base = f.split("/").pop();
         if (!incRes.some((r) => r.test(f) || r.test(base))) continue;
-      } else if (!/\.(jsx?|tsx?|ts|js)$/.test(f)) continue;
+      } else if (!/\.(js|mjs|cjs|jsx|ts|mts|cts|tsx)$/i.test(f)) continue;
       if (SKIP_DIRS.has(f.split("/")[0])) continue;
       if (f.split("/").some((p) => extraDirs.has(p))) continue;
+      let txt;
       try {
-        const txt = readFileSync(join(CWD, f), "utf8");
+        if (statSync(join(CWD, f)).size > 1048576) continue; // >1MB: pula sem ler
+        txt = readFileSync(join(CWD, f), "utf8");
         if (txt.indexOf("\0") >= 0) continue; // binário
-        const lines = txt.split("\n");
-        for (let i = 0; i < lines.length && hits.length < maxHits; i++) {
-          if (rx.test(lines[i])) {
-            const ctx = lines.slice(Math.max(0, i - ctxN), i + 1 + ctxN).join(" | ").slice(0, 240);
-            const raw = keywords.filter((k) => lines[i].toLowerCase().includes(k.toLowerCase())).length;
-            const isT = isTestFile(f);
-            hits.push({ file: f, line: i + 1, snippet: lines[i].slice(0, 200), context: ctx, score: isT ? raw * 0.5 : raw, test: isT });
+      } catch {
+        continue;
+      }
+      const lines = txt.split("\n");
+      const baseLower = f.split("/").pop().toLowerCase();
+      const fileNameHits = kwsLower.filter((k) => baseLower.includes(k));
+      const lineInfos = [];
+      const fileTerms = new Set();
+      for (let i = 0; i < lines.length; i++) {
+        if (!rx.test(lines[i])) continue; // prefilter OR rápido
+        const ll = lines[i].toLowerCase();
+        const sub = [];
+        const whole = [];
+        for (let ki = 0; ki < keywords.length; ki++) {
+          const kl = kwsLower[ki];
+          if (ll.includes(kl)) {
+            sub.push(keywords[ki]);
+            fileTerms.add(kl);
+            const wrx = wholeRes[ki];
+            if (wrx && wrx.test(lines[i])) whole.push(keywords[ki]);
+          }
+        }
+        if (sub.length) lineInfos.push({ idx: i, sub, whole, text: lines[i] });
+        if (lineInfos.length > 200) break; // cap p/ arquivos gigantes
+      }
+      if (!lineInfos.length) {
+        if (!fileNameHits.length) continue;
+        const isT0 = isTestFile(f);
+        const vendor0 = isVendorLike(f);
+        let s0 = fileNameHits.length * 5;
+        if (isT0) s0 *= 0.5;
+        if (vendor0) s0 *= 0.2;
+        s0 = Math.round(s0 * 100) / 100;
+        const why0 = `${fileNameHits.join(",")} no nome ${f.split("/").pop()} (sem hit no conteúdo)${vendor0 ? " -vendor×0.2" : ""}${isT0 ? " -teste×0.5" : ""}`.slice(0, 240);
+        hits.push({ file: f, line: 1, snippet: (lines[0] || "").slice(0, 200), context: (lines[0] || "").slice(0, 240), score: s0, test: isT0, why: why0, porque: why0, matchedTerms: [...fileNameHits] });
+        continue;
+      }
+      lineInfos.sort((a, b) => b.sub.length - a.sub.length || b.whole.length - a.whole.length || a.idx - b.idx);
+      const best = lineInfos[0];
+      const bestSub = best.sub.length;
+      const bestWhole = best.whole.length;
+      const fileDistinct = fileTerms.size;
+      let windowBonus = 0;
+      let windowSpan = 0;
+      if (fileDistinct > 1 && lineInfos.length > 1) {
+        const byIdx = [...lineInfos].sort((a, b) => a.idx - b.idx);
+        let minSpan = Infinity;
+        for (let s = 0; s < byIdx.length; s++) {
+          const seen = new Set();
+          for (let e = s; e < byIdx.length; e++) {
+            for (const t of byIdx[e].sub) seen.add(String(t).toLowerCase());
+            if (seen.size >= fileDistinct) {
+              const span = byIdx[e].idx - byIdx[s].idx;
+              if (span < minSpan) minSpan = span;
+              break;
+            }
+          }
+        }
+        if (Number.isFinite(minSpan)) {
+          windowSpan = minSpan;
+          if (minSpan <= 2) windowBonus = 6;
+          else if (minSpan <= 9) windowBonus = 3;
+          else if (minSpan <= 29) windowBonus = 1;
+        }
+      }
+      let symbolBonus = 0;
+      let symbolHit = "";
+      try {
+        symDefRe.lastIndex = 0;
+        let m;
+        const syms = [];
+        while ((m = symDefRe.exec(txt)) && syms.length < 50) syms.push(m[1] || m[2] || m[3]);
+        const symsLower = syms.map((s) => String(s).toLowerCase());
+        for (const kl of kwsLower) {
+          const idx = symsLower.findIndex((s) => s.includes(kl));
+          if (idx >= 0) {
+            symbolBonus = 4;
+            symbolHit = syms[idx];
             break;
           }
         }
+        if (/function|class|const|let|var|export/.test(best.text)) {
+          const bl = best.text.toLowerCase();
+          if (kwsLower.some((k) => bl.includes(k))) symbolBonus += 2;
+        }
       } catch {}
-      if (hits.length >= maxHits) break;
+      const baseScore = bestSub * 10 + Math.max(0, fileDistinct - bestSub) * 2 + bestWhole * 2 + windowBonus + fileNameHits.length * 5 + symbolBonus;
+      const isT = isTestFile(f);
+      const vendor = isVendorLike(f);
+      let finalScore = baseScore;
+      if (isT) finalScore *= 0.5;
+      if (vendor) finalScore *= 0.2;
+      finalScore = Math.round(finalScore * 100) / 100;
+      const ctx = lines.slice(Math.max(0, best.idx - ctxN), best.idx + 1 + ctxN).join(" | ").slice(0, 240);
+      const bestLow = new Set(best.sub.map((x) => String(x).toLowerCase()));
+      const extraFileTerms = [...fileTerms].filter((t) => !bestLow.has(t));
+      const whyParts = [];
+      whyParts.push(`${best.sub.join(",")} na L${best.idx + 1}${bestWhole ? " (exata)" : ""}`);
+      if (extraFileTerms.length) whyParts.push(`+${extraFileTerms.join(",")} no arquivo (${lineInfos.length} linhas)`);
+      if (fileNameHits.length) whyParts.push(`+nome-arquivo(${fileNameHits.join(",")})`);
+      if (symbolHit) whyParts.push(`+símbolo ${symbolHit}`);
+      else if (symbolBonus) whyParts.push(`+símbolo/def`);
+      if (windowBonus) whyParts.push(`+proximidade(janela ${windowSpan} linhas)`);
+      if (vendor) whyParts.push(`-vendor×0.2`);
+      if (isT) whyParts.push(`-teste×0.5`);
+      const why = `${whyParts.join(" ")} | ${bestSub}/${keywords.length} termos na melhor linha, ${fileDistinct}/${keywords.length} no arquivo`.slice(0, 240);
+      hits.push({ file: f, line: best.idx + 1, snippet: best.text.slice(0, 200), context: ctx, score: finalScore, test: isT, why, porque: why, matchedTerms: [...fileTerms] });
     }
     if (stack_trace) {
       const m = String(stack_trace).match(/at\s+.*\(?([^:)]+):(\d+):\d+\)?/);
       if (m) {
         const sf = m[1].replace(CWD + "/", "");
-        hits.unshift({ file: sf, line: Number(m[2]), snippet: stack_trace.slice(0, 200), context: "stack_trace", score: 99, test: isTestFile(sf) });
+        const whySt = `stack_trace aponta ${sf}:${m[2]} (score fixo 99)`.slice(0, 240);
+        hits.unshift({ file: sf, line: Number(m[2]), snippet: stack_trace.slice(0, 200), context: "stack_trace", score: 99, test: isTestFile(sf), why: whySt, porque: whySt, matchedTerms: [] });
       }
     }
-    hits.sort((a, b) => b.score - a.score);
-    if (hits.length) {
+    hits.sort((a, b) => b.score - a.score || String(a.file).localeCompare(String(b.file)));
+    if (hits.length > maxHits) hits.length = maxHits; // 12 melhores ranqueados →3 (mantém contrato, sem early-break)
+    for (const top of hits.slice(0, 3)) {
       try {
-        const top = hits[0];
         const ttxt = readFileSync(join(CWD, top.file), "utf8");
         const tlines = ttxt.split("\n");
         const idx = Math.min(tlines.length - 1, Math.max(0, top.line - 1));
@@ -233,12 +341,12 @@ reg("n_investigate_issue", {
           if (sigRe.test(tlines[j])) { sig = tlines[j].trim().slice(0, 200); break; }
         }
         top.signature = sig;
-      } catch { hits[0].signature = ""; }
+      } catch { top.signature = ""; }
     }
     const refs = hits.slice(0, 5).map((h) => `${h.file}:${h.line}`);
     return devOut({
-      summary: hits.length ? `Causa provável em ${hits[0].file}:${hits[0].line} (${hits.length} candidatos)` : `Nenhum candidato para "${symptom}"`,
-      data: { symptom, candidates: hits.slice(0, 8), total_scanned: files.length },
+      summary: hits.length ? `Causa provável em ${hits[0].file}:${hits[0].line} (${hits.length} candidatos)` : `Nenhum candidato para "${String(symptom).slice(0, 80)}"`,
+      data: { symptom, candidates: hits.slice(0, 3), total_scanned: files.length },
       telemetry: { tokens_saved: Math.max(0, files.length * 120 - hits.length * 80), execution_time_ms: Date.now() - t0 },
       next: hits.length ? [{ tool: "n_analyze_change_impact", reason: "Verificar impacto antes de editar" }] : [{ tool: "n_get_architecture_summary", reason: "Mapear módulos relevantes" }],
       refs,
@@ -247,7 +355,7 @@ reg("n_investigate_issue", {
 });
 
 reg("n_analyze_change_impact", {
-  description: "DevEngine: impacto de editar um símbolo — callers + tests_affected. Quando usar: ANTES de editar função/componente. Suporta include (glob p/ filtrar arquivos), top (default 15, máx 50 callers, mesmo dir primeiro) e direction callers|callees (callees = símbolos que o ARQUIVO do alvo importa/requer via import/from/require, top 10). Ex: {symbol_id:\"src/lib/sync.js#syncAll\"}. Evita regressões.",
+  description: "DevEngine: impacto de editar símbolo — callers + tests_affected. Quando usar: ANTES de editar função/componente. Suporta include (glob), top (default 15, máx 50) e direction callers|callees (callees = imports do arquivo via import/require, top 10). Ex: {symbol_id:\"src/lib/sync.js#syncAll\"}. Evita regressões.",
   inputSchema: {
     type: "object",
     properties: {
@@ -339,7 +447,7 @@ reg("n_analyze_change_impact", {
     try {
       rx = new RegExp(`\\b${escapeRe(sym)}\\b`);
     } catch {
-      return devOut({ status: "error", summary: "símbolo inválido", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ status: "error", summary: `símbolo inválido: "${sym}" (recebido: "${target}") — dica: n_analyze_change_impact symbol_id="src/lib/sync.js#syncAll" ou file_path="src/..."`, data: { target, symbol: sym }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const files = [];
     walkFiles(CWD, files);
@@ -373,7 +481,7 @@ reg("n_analyze_change_impact", {
 });
 
 reg("n_apply_semantic_patch", {
-  description: "DevEngine: edição AST-validada (node --check, skip JSX). Quando usar: trocar função/constante específica; quer validação sintática. Suporta dry_run:true (valida AST sem escrever, retorna diff preview) e create_if_missing:true (cria arquivo com conteúdo se não existir, com mkdirs). Ex: {file_path, edits:[{target_symbol, new_code}]}. Mais seguro que n_edit para código.",
+  description: "DevEngine: edição AST-validada (node --check, skip JSX). Quando usar: trocar função/constante; quer validação sintática. Suporta dry_run:true (valida sem escrever) e create_if_missing:true (cria com mkdirs). Ex: {file_path, edits:[{target_symbol, new_code}]}. Mais seguro que n_edit p/ código.",
   inputSchema: {
     type: "object",
     properties: {
@@ -435,7 +543,7 @@ reg("n_apply_semantic_patch", {
           diffs.push(`symbol:${e.target_symbol}`);
         } else {
           const cnt = nextText.split(oldS).length - 1;
-          if (cnt === 0) return devOut({ status: "error", summary: `oldString não encontrado`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
+          if (cnt === 0) return devOut({ status: "error", summary: `oldString não encontrado em ${file_path} — dica: n_read filePath="${file_path}" e copie trecho exato`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
           if (cnt > 1) return devOut({ status: "error", summary: `oldString ambíguo (${cnt}x) — use mais contexto`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
           nextText = nextText.replace(oldS, newS);
           diffs.push(`exact:${oldS.slice(0, 40)}`);
@@ -469,7 +577,7 @@ reg("n_apply_semantic_patch", {
       if (isNew) await mkdir(dirname(p), { recursive: true });
       await writeFile(p, nextText, "utf8");
     } catch (e) {
-      return devOut({ status: "error", summary: `write failed: ${e.message}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ status: "error", summary: `write failed em ${file_path}: ${e.message} — dica: n_read filePath="${file_path}" + retry n_apply_semantic_patch {create_if_missing:true}`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     return devOut({
       summary: isNew ? `Arquivo criado em ${file_path} (${(edits || []).length} hunk(s)) — AST OK` : `Patch semântico aplicado em ${file_path} (${edits.length} hunk(s)) — AST OK`,
@@ -514,7 +622,7 @@ reg("n_execute_targeted_tests", {
       if (scripts["test:changed"]) cmd = "npm run test:changed 2>&1 | tail -n 150";
       else if (runner === "vitest") cmd = "npx vitest run --changed 2>&1 | tail -n 150";
       else if (runner === "jest") cmd = "npx jest --onlyChanged 2>&1 | tail -n 150";
-      else return devOut({ status: "error", summary: "mocha não suporta diff_only sem script 'test:changed' — use scope=module/full com target_path", data: { scope: sc, runner }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      else return devOut({ status: "error", summary: "mocha não suporta diff_only sem script 'test:changed' — use scope=module (com target_path) ou scope=full", data: { scope: sc, runner }, telemetry: { execution_time_ms: Date.now() - t0 } });
     } else if (sc === "module") {
       if (!target_path) return devOut({ status: "error", summary: "target_path obrigatório para scope=module (ex: src/foo.test.js)", data: { scope: sc, runner }, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (/[;&|$`!\\]/.test(target_path)) return devOut({ status: "error", summary: "target_path com caracteres inválidos (; & | $ ` ! \\)", data: { scope: sc, runner }, telemetry: { execution_time_ms: Date.now() - t0 } });
@@ -559,7 +667,7 @@ reg("n_execute_targeted_tests", {
 });
 
 reg("n_manage_background_process", {
-  description: "DevEngine: start/stop/restart/status/read_logs de servidores sem bloquear. Quando usar: dev server, build watch, worker. Ex: {action:\"start\", command:\"npm run dev\", env:{PORT:\"3001\"}}. restart = stop+start com o mesmo command. Limite: stdin é 'ignore' por design — a ação send NÃO escreve stdin (retorna erro explicativo); use env no start/restart.",
+  description: "DevEngine: start/stop/restart/status/read_logs de servidores sem bloquear. Quando usar: dev server, build watch, worker. Ex: {action:\"start\", command:\"npm run dev\"}. restart reusa o command. Limite: stdin ignore — send NÃO escreve stdin; use env no start/restart.",
   inputSchema: {
     type: "object",
     properties: {
@@ -633,7 +741,7 @@ reg("n_manage_background_process", {
       const l = entry.logs().slice(-4000);
       return devOut({ summary: `Logs ${id} (${l.length} chars)`, data: { process_id: id, logs: l }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
-    return devOut({ status: "error", summary: "action inválida (use: start|stop|restart|status|read_logs)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    return devOut({ status: "error", summary: "action inválida (use: start|stop|restart|status|read_logs|send)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 

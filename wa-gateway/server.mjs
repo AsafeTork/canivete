@@ -35,7 +35,7 @@ async function connect() {
     auth: state, version, printQRInTerminal: false,
     browser: ["Canivete", "Chrome", "1.0"], // preset original que pareou OK (Desktop derruba o login nesta conta)
     logger: silentLogger, // sem pino INFO → wa-gateway.log para de crescer (546KB hoje, sem rotação no systemd)
-    syncFullHistory: false, // era true: pulava o sync FULL (dezenas de MB bufferizados no Baileys); on-demand via /wa/read continua
+    syncFullHistory: process.env.WA_SYNC_HISTORY === "1",
     getMessage: async () => undefined, // pushMsg nunca guardou raw: o scan [...inbox].reverse().find() sempre retornou undefined — removido o O(n) por lookup
   });
   sock.ev.on("creds.update", saveCreds);
@@ -147,17 +147,17 @@ createServer(async (req, res) => {
       if (!jid) return J({ ok: false, error: `chat "${body.name || body.jid || body.to}" não achado` }, 404);
       const limit = Math.min(Number(body.limit) || 20, 50);
       let msgs = inbox.filter((m) => m.jid === jid && m.text).slice(-limit);
-      if (!msgs.length) {
-        // on-demand: pede ao celular e aguarda o history-set chegar (doc history-sync)
-        try {
-          const seed = [...inbox].reverse().find((m) => m.jid === jid && m.msgId);
-          const key = seed ? { remoteJid: jid, fromMe: seed.fromMe, id: seed.msgId } : { remoteJid: jid, fromMe: false, id: "0000000000000000" };
-          await sock.fetchMessageHistory(50, key, Date.now());
-          for (let i = 0; i < 45 && !inbox.some((m) => m.jid === jid && m.text); i++) await new Promise((r) => setTimeout(r, 2000));
-          msgs = inbox.filter((m) => m.jid === jid && m.text).slice(-limit);
-        } catch (e) { return J({ ok: true, jid, messages: [], via: "on-demand-falhou", error: String(e.message || e).slice(0, 150) }); }
-      }
-      return J({ ok: true, jid, messages: msgs.map((m) => ({ at: m.at, fromMe: m.fromMe, sender: m.sender, text: m.text })) });
+       if (!msgs.length) {
+         // on-demand com timeout curto (5s) p/ não travar a requisição
+         try {
+           const seed = [...inbox].reverse().find((m) => m.jid === jid && m.msgId);
+           const key = seed ? { remoteJid: jid, fromMe: seed.fromMe, id: seed.msgId } : { remoteJid: jid, fromMe: false, id: "0000000000000000" };
+            await Promise.race([sock.fetchMessageHistory(50, key, Date.now()), new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout-history")),15000))]);
+            for (let i = 0; i < 15 && !inbox.some((m) => m.jid === jid && m.text); i++) await new Promise((r) => setTimeout(r, 1000));
+           msgs = inbox.filter((m) => m.jid === jid && m.text).slice(-limit);
+         } catch (e) { return J({ ok: true, jid, messages: msgs, via: "on-demand-timeout" }); }
+       }
+       return J({ ok: true, jid, messages: msgs.map((m) => ({ at: m.at, fromMe: m.fromMe, sender: m.sender, text: m.text })) });
     }
     if (u.pathname === "/wa/send" && req.method === "POST") {
       if (!authed()) return J({ ok: false, error: "desconectado", state: connState }, 409);

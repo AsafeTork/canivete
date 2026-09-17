@@ -216,6 +216,380 @@ async function elCenterFresh(sel, tries = 2) {
   return { el, p };
 }
 
+// ---- semântica de acessibilidade p/ snapshot (role/name/state/level/path) ----
+function ubAriaRole(el) {
+  try {
+    const explicit = el.getAttribute && el.getAttribute("role");
+    if (explicit && String(explicit).trim()) return String(explicit).trim().split(/\s+/)[0].toLowerCase();
+  } catch {}
+  const tag = ((el.tagName || "").toLowerCase());
+  let type = "";
+  try { type = String(el.type || (el.getAttribute && el.getAttribute("type")) || "").toLowerCase(); } catch {}
+  if (tag === "a") return (el.hasAttribute && el.hasAttribute("href")) ? "link" : "generic";
+  if (tag === "button") return "button";
+  if (tag === "select") return "combobox";
+  if (tag === "textarea") return "textbox";
+  if (/^h[1-6]$/.test(tag)) return "heading";
+  if (tag === "img") return "img";
+  if (tag === "li") return "listitem";
+  if (tag === "ul" || tag === "ol") return "list";
+  if (tag === "table") return "table";
+  if (tag === "tr") return "row";
+  if (tag === "form") return "form";
+  if (tag === "nav") return "navigation";
+  if (tag === "main") return "main";
+  if (tag === "header") return "banner";
+  if (tag === "footer") return "contentinfo";
+  if (tag === "input") {
+    if (type === "checkbox") return "checkbox";
+    if (type === "radio") return "radio";
+    if (type === "button" || type === "submit" || type === "reset" || type === "image") return "button";
+    if (type === "range") return "slider";
+    if (type === "hidden") return "";
+    return "textbox";
+  }
+  try {
+    if (el.isContentEditable) return "textbox";
+    if (el.getAttribute && el.getAttribute("contenteditable") === "true") return "textbox";
+  } catch {}
+  return "generic";
+}
+// Accessible name na ordem: aria-label → text → value → placeholder → title.
+function ubAccessibleName(el, text) {
+  try {
+    const al = el.getAttribute && el.getAttribute("aria-label");
+    if (al && String(al).trim()) return String(al).replace(/\s+/g, " ").trim().slice(0, 60);
+  } catch {}
+  if (text && String(text).trim()) return String(text).slice(0, 60);
+  try {
+    const v = el.value;
+    if (v !== undefined && v !== null && String(v).trim()) return String(v).replace(/\s+/g, " ").trim().slice(0, 60);
+  } catch {}
+  try {
+    const ph = el.getAttribute && el.getAttribute("placeholder");
+    if (ph && String(ph).trim()) return String(ph).replace(/\s+/g, " ").trim().slice(0, 60);
+  } catch {}
+  try {
+    const ti = el.getAttribute && el.getAttribute("title");
+    if (ti && String(ti).trim()) return String(ti).replace(/\s+/g, " ").trim().slice(0, 60);
+  } catch {}
+  return "";
+}
+// Só flags relevantes; "" quando nenhuma se aplica (schema estável).
+function ubElementState(el) {
+  const st = [];
+  try {
+    const ariaDis = el.getAttribute && el.getAttribute("aria-disabled");
+    if (el.disabled === true || ariaDis === "true") st.push("disabled");
+  } catch {}
+  try {
+    const role = el.getAttribute && el.getAttribute("role");
+    const t = String((el.type || "")).toLowerCase();
+    const isCheck = t === "checkbox" || t === "radio" || role === "checkbox" || role === "radio" || role === "switch";
+    const ariaChecked = el.getAttribute && el.getAttribute("aria-checked");
+    if (isCheck) {
+      if (el.checked === true || ariaChecked === "true") st.push("checked");
+    } else if (ariaChecked === "true") {
+      st.push("checked");
+    }
+  } catch {}
+  try {
+    const exp = el.getAttribute && el.getAttribute("aria-expanded");
+    if (exp === "true") st.push("expanded");
+    else if (exp === "false") st.push("collapsed");
+  } catch {}
+  try {
+    if (el.selected === true) st.push("selected");
+    else if (el.getAttribute && el.getAttribute("aria-selected") === "true") st.push("selected");
+  } catch {}
+  try {
+    if (el.readOnly === true) st.push("readonly");
+    else if (el.getAttribute && el.getAttribute("aria-readonly") === "true") st.push("readonly");
+  } catch {}
+  return st.join(" ");
+}
+function ubHeadingLevel(el, role) {
+  try {
+    const tag = ((el.tagName || "").toLowerCase());
+    if (role !== "heading" && !/^h[1-6]$/.test(tag)) return 0;
+    const ariaLevel = el.getAttribute && parseInt(el.getAttribute("aria-level"), 10);
+    if (ariaLevel >= 1 && ariaLevel <= 6) return ariaLevel;
+    const m = tag.match(/^h([1-6])$/);
+    if (m) return Number(m[1]);
+  } catch {}
+  return 0;
+}
+// Path hierárquico curto ex. "main>form>div[2]" (índice 1-based só entre irmãos do mesmo tag).
+function ubShortPath(el, maxDepth = 4) {
+  try {
+    const parts = [];
+    let n = el;
+    while (n && n !== document.body && n !== document.documentElement && parts.length < maxDepth) {
+      const tag = ((n.tagName || "").toLowerCase() || "*");
+      let s = tag;
+      try {
+        const parent = n.parentElement;
+        if (parent) {
+          const same = [...parent.children].filter((c) => ((c.tagName || "").toLowerCase() === tag));
+          if (same.length > 1) s += "[" + (same.indexOf(n) + 1) + "]";
+        }
+      } catch {}
+      parts.unshift(s);
+      n = n.parentElement;
+    }
+    return parts.join(">");
+  } catch { return ""; }
+}
+
+// ---- snapshot virtualizado: coleta incremental com scroll (WhatsApp etc.) ----
+// Coleta crua (sem ref — ref é atribuído só no final p/ refs estáveis após dedup).
+// Teto coleta: hard cap 120 elementos (fatia cedo, antes de sort/dedup) — alivia CPU/RAM no DOM gigante.
+// needBox=false: pula getBoundingClientRect (força layout/sync) na varredura; box é
+// preenchido LAZY só p/ itens finais via ubFillBoxLazy (até 120 medidas, não páginas*120).
+function ubSnapshotCollectRaw(limit = 120, needBox = true) {
+  const cap = Math.min(Math.max(Number(limit) || 120, 10), 120);
+  const els = [...document.querySelectorAll('a,button,input,select,textarea,h1,h2,h3,h4,h5,h6,[role="button"],[role="link"],[role="listitem"],[role="row"],div[data-testid="cell-frame-container"],div[data-testid^="list-item-"],[onclick]')].slice(0, cap);
+  return els.map((el) => {
+    const tag = el.tagName.toLowerCase();
+    const text = (((el.textContent || el.value || el.placeholder || (el.getAttribute && el.getAttribute("aria-label")) || "") + "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60));
+    const role = (() => { try { return ubAriaRole(el); } catch { return ""; } })();
+    const name = (() => { try { return ubAccessibleName(el, text); } catch { return text; } })();
+    const state = (() => { try { return ubElementState(el); } catch { return ""; } })();
+    const lvl = (() => { try { return ubHeadingLevel(el, role); } catch { return 0; } })();
+    const path = (() => { try { return ubShortPath(el); } catch { return ""; } })();
+    // LAZY: só mede box (getBoundingClientRect força layout/sync) quando needBox=true;
+    // senão zera e guarda _el (não-enumerável) p/ ubFillBoxLazy medir só nos finais.
+    const rect = needBox
+      ? (() => { try { return elRect(el); } catch { return { x: 0, y: 0, w: 0, h: 0 }; } })()
+      : { x: 0, y: 0, w: 0, h: 0 };
+    const out = {
+      tag,
+      role,
+      name,
+      text,
+      type: el.type || (el.getAttribute && el.getAttribute("role")) || "",
+      state,
+      ...(lvl ? { level: lvl } : {}),
+      path,
+      selector: (() => { try { return cssPath(el); } catch { return ""; } })(),
+      ...rect,
+    };
+    if (!needBox) {
+      try { Object.defineProperty(out, "_el", { value: el, enumerable: false, writable: true }); }
+      catch { try { out._el = el; } catch {} }
+    }
+    return out;
+  });
+}
+// Preenche x/y/w/h LAZY só p/ itens finais (evita forçar layout em 120*páginas).
+// Usa _el quando ainda conectado; senão re-resolve via selector. Remove _el ao fim.
+function ubFillBoxLazy(items) {
+  for (const it of items) {
+    try {
+      let elb = null;
+      try { elb = it._el && it._el.isConnected ? it._el : null; } catch { elb = null; }
+      if (!elb && it.selector) { try { elb = findEl(it.selector); } catch { elb = null; } }
+      if (elb) {
+        let r = null;
+        try { r = elRect(elb); } catch { r = null; }
+        if (r) { it.x = r.x; it.y = r.y; it.w = r.w; it.h = r.h; }
+      }
+    } catch {}
+    try { delete it._el; } catch {}
+  }
+  return items;
+}
+// Containers com scroll real (listas virtualizadas reciclam nós — sem scroll só vemos o viewport).
+function ubFindVirtualContainers(hintSel) {
+  const out = [];
+  const push = (el) => { if (el && !out.includes(el) && out.length < 3) out.push(el); };
+  if (hintSel) {
+    try {
+      const h = document.querySelector(hintSel);
+      if (h) push(h);
+    } catch {}
+  }
+  const known = ['#pane-side', '[data-testid="chat-list"]', '[role="list"]', '[role="grid"]', '[role="rowgroup"]', 'div[role="list"]'];
+  for (const s of known) {
+    try { document.querySelectorAll(s).forEach(push); } catch {}
+    if (out.length >= 3) break;
+  }
+  if (out.length < 3) {
+    try {
+      document.querySelectorAll("div,ul").forEach((el) => {
+        if (out.length >= 3 || out.includes(el)) return;
+        let st = null;
+        try { st = getComputedStyle(el); } catch { return; }
+        const ov = ((st && st.overflowY) || "") + " " + ((st && st.overflow) || "");
+        if (!/auto|scroll/i.test(ov)) return;
+        try {
+          if (el.scrollHeight > el.clientHeight + 40 && el.clientHeight > 100 && el.clientHeight < innerHeight * 0.95) push(el);
+        } catch {}
+      });
+    } catch {}
+  }
+  return out;
+}
+// Rolagem p/ carregar + coleta incremental com dedup (selector|text). Restaura scroll ao fim.
+// Bounded: páginas ≤5, containers ≤3, settle ~900ms/página — cabe no timeout de 15s do ask().
+// Teto coleta: hard cap 120 (fatia cedo, antes de sort/dedup). Se pedir maior, para no teto (nota: truncado no cap).
+// Com match: para cedo na 1ª coleta que contém o texto (não varre pages todas).
+// Box LAZY: varredura com needBox=false (sem layout); ubFillBoxLazy mede só finais antes do sort.
+async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120, match = "" } = {}) {
+  const lim = Math.min(Math.max(Number(limit) || 120, 10), 120);
+  const maxPages = Math.min(Math.max(Number(pages) || 2, 1), 5);
+  const seen = new Map();
+  const needle = String(match ?? "").toLowerCase().trim();
+  const hasNeedle = needle.length > 0;
+  const hasMatch = () => {
+    if (!hasNeedle) return false;
+    for (const it of seen.values()) {
+      if (((it.text || "").toLowerCase().includes(needle))) return true;
+    }
+    return false;
+  };
+  const push = (arr) => {
+    for (const it of arr) {
+      const k = (it.selector || "") + "|" + (it.text || "");
+      if (!seen.has(k)) seen.set(k, it);
+    }
+  };
+  push(ubSnapshotCollectRaw(lim, false));
+  if (hasMatch()) {
+    const early = [...seen.values()].slice(0, lim);
+    ubFillBoxLazy(early);
+    early.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
+    return early.map((it, i) => ({ ref: i, ...it }));
+  }
+  const targets = ubFindVirtualContainers(container).slice(0, 3); // nota: máx 3 containers (se maior, para aqui)
+  if (!targets.length) {
+    try { window.scrollBy(0, 1); } catch {}
+    await ubSleep(200);
+    push(ubSnapshotCollectRaw(lim, false));
+    try { window.scrollBy(0, -1); } catch {}
+  } else {
+    let foundEarly = false;
+    for (const cont of targets) {
+      let startTop = 0;
+      try { startTop = cont.scrollTop || 0; } catch {}
+      let lastTop = -1, same = 0;
+      const step = Math.max(Math.round(((cont.clientHeight || innerHeight) * 0.9) || 400), 100);
+      for (let p = 0; p < maxPages; p++) {
+        try { cont.scrollBy(0, step); } catch { break; }
+        await ubSettle({ timeout: 900, quiet: 150 });
+        push(ubSnapshotCollectRaw(lim, false));
+        if (hasMatch()) { foundEarly = true; break; }
+        let cur = 0, max = 0;
+        try { cur = cont.scrollTop; max = cont.scrollHeight - cont.clientHeight; } catch {}
+        if (cur === lastTop) { same++; if (same >= 1) break; }
+        else { same = 0; lastTop = cur; }
+        try { if (cur + (cont.clientHeight || 0) >= (cont.scrollHeight || 0) - 8) break; } catch {}
+        if (max <= 0) break;
+        if (seen.size >= lim) break;
+      }
+      try { if (typeof cont.scrollTo === "function") cont.scrollTo(0, startTop); else cont.scrollTop = startTop; } catch {}
+      if (foundEarly) break;
+      if (seen.size >= lim) break;
+    }
+  }
+  const items = [...seen.values()].slice(0, lim);
+  ubFillBoxLazy(items);
+  items.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
+  return items.map((it, i) => ({ ref: i, ...it }));
+}
+// ---- read principal: article/main sem nav/footer/ads/scripts + links com texto (máx 15) ----
+// Opera em CLONE p/ texto (nunca toca na página real); links via DOM vivo (href absoluto).
+// Qualidade: score de blocos por densidade (palavras/tags); fora de article/main descarta <25 palavras.
+function ubReadMain(maxChars = 2500, maxLinks = 15) {
+  const mc = Math.min(Math.max(Number(maxChars) || 2500, 200), 6000);
+  const ml = Math.min(Math.max(Number(maxLinks ?? 15) || 0, 0), 15);
+  const semEl = document.querySelector("article") || document.querySelector("main") || document.querySelector('[role="main"]');
+  const root = semEl || document.body;
+  const isSemantic = !!semEl;
+  let full = "";
+  try {
+    const clone = root.cloneNode(true);
+    clone.querySelectorAll("script,style,noscript,template,nav,footer,header,aside").forEach((n) => n.remove());
+    const adRe = /ad|banner|popup|cookie|newsletter|sponsor|paywall|modal|\btoc\b/i;
+    clone.querySelectorAll("[class],[id]").forEach((n) => {
+      const s = ((n.className && typeof n.className === "string" ? n.className : "") + " " + (n.id || ""));
+      if (s && adRe.test(s)) n.remove();
+    });
+    const kept = [];
+    try {
+      const blocks = [...clone.querySelectorAll("p,h1,h2,h3,h4,h5,h6,li,blockquote,pre")];
+      for (const b of blocks) {
+        try { if (b.closest && b.closest("nav,footer,header,aside")) continue; } catch {}
+        const t = ((b.textContent || "").replace(/\s+/g, " ").trim());
+        if (!t) continue;
+        const words = t.split(/\s+/).filter(Boolean).length;
+        let tags = 1;
+        try { tags = b.querySelectorAll("*").length + 1; } catch {}
+        const density = words / tags; // palavras por tag: boilerplate link-heavy pontua baixo
+        if (!isSemantic && words < 25) continue; // fora de article/main: só bloco substancial
+        if (isSemantic && words < 8 && density < 2) continue; // micro-boilerplate mesmo dentro de article/main
+        kept.push(t);
+      }
+    } catch {}
+    if (kept.length) {
+      full = kept.join("\n\n");
+    } else {
+      // fallback div-only (sites modernos sem <p>): só div/section folha, mesmo corte de 25 fora de article/main
+      try {
+        const divs = [...clone.querySelectorAll("div,section")];
+        for (const d of divs) {
+          try { if (d.closest && d.closest("nav,footer,header,aside")) continue; } catch {}
+          try { if (d.querySelector("p,h1,h2,h3,h4,h5,h6,li,blockquote,pre,div,section")) continue; } catch {} // só folha
+          const t = ((d.textContent || "").replace(/\s+/g, " ").trim());
+          if (!t) continue;
+          const words = t.split(/\s+/).filter(Boolean).length;
+          if (!isSemantic && words < 25) continue;
+          if (isSemantic && words < 8) continue;
+          kept.push(t);
+        }
+      } catch {}
+      full = kept.length ? kept.join("\n\n") : ((clone.textContent || "").replace(/\s+/g, " ").trim());
+    }
+  } catch {
+    try { full = (((root && (root.innerText || root.textContent)) || "").replace(/\s+/g, " ").trim()); } catch { full = ""; }
+  }
+  const text = full.slice(0, mc);
+  let links = [];
+  try {
+    if (ml > 0 && root && root.querySelectorAll) {
+      const seenHref = new Set();
+      const all = [];
+      for (const x of root.querySelectorAll("a[href]")) {
+        let href = "";
+        try { href = x.href || x.getAttribute("href") || ""; } catch { href = ""; }
+        href = String(href || "").trim();
+        if (!href || /^javascript:/i.test(href) || href === "#") continue;
+        if (href.startsWith("#")) continue;
+        try { if (x.closest && x.closest("nav,footer,header,aside")) continue; } catch {}
+        try { if (x.getAttribute && x.getAttribute("aria-hidden") === "true") continue; } catch {}
+        try { if (x.hasAttribute && x.hasAttribute("hidden")) continue; } catch {}
+        const t = (((x.innerText || x.textContent) || "").replace(/\s+/g, " ").trim().slice(0, 80));
+        if (!t || t.length < 3) continue;
+        let key = href;
+        try { key = href.split("#")[0].replace(/\/$/, ""); } catch {}
+        if (!key) continue;
+        if (seenHref.has(key)) continue;
+        seenHref.add(key);
+        all.push({ text: t, href });
+        if (all.length >= ml) break;
+      }
+      links = all.slice(0, ml);
+    }
+  } catch {}
+  return { text, links, stats: { chars: text.length, links: links.length, omitted: Math.max(full.length - text.length, 0) } };
+}
+function ubIsCSPError(e) {
+  return /Content Security Policy|unsafe-eval|Refused to (evaluate|execute)/i.test(String((e && e.message) || e || ""));
+}
+
 // ---- distill: texto enxuto e desduplicado (opera em CLONE, nunca na página real) ----
 function ubDistill(maxChars = 4000) {
   const cap = Math.min(Math.max(Number(maxChars) || 4000, 200), 12000);
@@ -314,17 +688,17 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {
         reply({ ok: true, data: d });
         return;
       }
-      const mc = Math.min(Math.max(Number(a.maxChars) || 2500, 200), 6000);
-      const ml = Math.min(Math.max(Number(a.maxLinks) || 15, 0), 40);
+      // Destilado leve: conteúdo principal (article/main, sem nav/footer/ads/scripts),
+      // links ≤15 com texto, stats {chars, links, omitted}. Protocolo {ok,data} preservado.
+      const r = ubReadMain(a.maxChars, a.maxLinks);
       reply({
         ok: true,
         data: {
           title: document.title,
           url: location.href,
-          text: (document.body ? document.body.innerText : "").slice(0, mc),
-          links: [...document.querySelectorAll("a[href]")]
-            .slice(0, ml)
-            .map((x) => ({ text: (x.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80), href: x.href })),
+          text: r.text,
+          links: r.links,
+          stats: r.stats,
         },
       });
     } else if (msg.cmd === "distill") {
@@ -338,24 +712,36 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {
       const cap = Math.min(Math.max(Number(a.maxChars) || 8000, 500), 30000);
       reply({ ok: true, data: { tag: el.tagName.toLowerCase(), html: el.outerHTML.slice(0, cap), truncated: el.outerHTML.length > cap } });
     } else if (msg.cmd === "snapshot") {
-      const els = [...document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="listitem"],[role="row"],div[data-testid="cell-frame-container"],div[data-testid^="list-item-"],[onclick]')].slice(
-        0,
-        120
-      );
-      reply({
-        ok: true,
-        data: els.map((el, i) => ({
-          ref: i,
-          tag: el.tagName.toLowerCase(),
-          type: el.type || el.getAttribute("role") || "",
-          text: (((el.textContent || el.value || el.placeholder || el.getAttribute("aria-label") || "") + "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 60)),
-          selector: cssPath(el),
-          ...elRect(el),
-        })),
-      });
+      // Virtualizado: rola containers p/ carregar + coleta incremental com dedup.
+      // Protocolo preservado: responde {ok:true, data} (sem match: data=[...] array; background fatia offset/max).
+      // Args opcionais (todos retrocompatíveis): {pages (1-5, default 2), container (seletor), limit (hard cap 120), match}.
+      // Com match: para cedo (não varre pages todas); data={items, found, position}.
+      try {
+        const match = a.match ?? a.query ?? a.text ?? "";
+        const data = await ubSnapshotVirtualized({ pages: a.pages, container: a.container, limit: 120, match });
+        if (match && String(match).trim()) {
+          const needle = String(match).toLowerCase();
+          const pos = data.findIndex((it) => ((it.text || "").toLowerCase().includes(needle)));
+          reply({ ok: true, data: { items: data, found: pos >= 0, position: pos } });
+        } else {
+          reply({ ok: true, data });
+        }
+      } catch (e) {
+        // Fallback: coleta single-pass original (nunca quebra background que espera array).
+        try {
+          const fb = ubSnapshotCollectRaw(120).map((it, i) => ({ ref: i, ...it }));
+          const matchFb = a.match ?? a.query ?? a.text ?? "";
+          if (matchFb && String(matchFb).trim()) {
+            const needleFb = String(matchFb).toLowerCase();
+            const posFb = fb.findIndex((it) => ((it.text || "").toLowerCase().includes(needleFb)));
+            reply({ ok: true, data: { items: fb, found: posFb >= 0, position: posFb } });
+          } else {
+            reply({ ok: true, data: fb });
+          }
+        } catch {
+          reply({ ok: false, error: "SNAPSHOT_ERROR: " + String((e && e.message) || e || "").slice(0, 200) });
+        }
+      }
     } else if (msg.cmd === "wa_state") {
       reply({ ok: true, data: { logged: !!document.querySelector('[data-testid="chat-list-search"], #side'), qr: !!document.querySelector('canvas[aria-label="Scan me!"], div[data-testid="qrcode"]'), title: document.title } });
     } else if (msg.cmd === "wa_chats") {
@@ -593,6 +979,65 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {
       else if (dir === "up") scrollBy(0, -innerHeight * 0.8);
       else scrollBy(0, innerHeight * 0.8);
       reply({ ok: true, data: { scrolled: dir, y: scrollY } });
+    } else if (msg.cmd === "evaluate") {
+      // Isolado (não sujeito à CSP da página como o MAIN). Distingue CSP vs seletor vs erro JS.
+      // Protocolo: {ok:true, data:{value}} espelha background tab.evaluate; erro {ok:false, error:PREFIXO: ...}.
+      try {
+        const code = a.js ?? a.code ?? a.expr;
+        const sel = a.selector;
+        let scopeEl = null;
+        if (sel) {
+          let syntaxOk = true;
+          try {
+            if (!String(sel).startsWith("text=")) document.querySelector(String(sel));
+          } catch (e) {
+            syntaxOk = false;
+            reply({ ok: false, error: "SELECTOR_ERROR: seletor inválido \"" + String(sel).slice(0, 120) + "\" (" + String((e && e.message) || e).slice(0, 150) + ")" });
+            return;
+          }
+          if (syntaxOk) {
+            try { scopeEl = findEl(sel); }
+            catch (e) { reply({ ok: false, error: "SELECTOR_ERROR: " + String((e && e.message) || e).slice(0, 200) }); return; }
+            if (!scopeEl) { reply({ ok: false, error: "NOTFOUND: " + sel + " (seletor válido, sem match — verifique seletor/página carregada)" }); return; }
+          }
+          if (code === undefined || code === null || String(code).trim() === "") {
+            const t = (((scopeEl.innerText || scopeEl.value || "") + "").replace(/\s+/g, " ").trim().slice(0, 4000));
+            reply({ ok: true, data: { value: t, tag: (scopeEl.tagName || "").toLowerCase() } });
+            return;
+          }
+        }
+        if (code === undefined || code === null || String(code).trim() === "") {
+          reply({ ok: false, error: "EVAL_EMPTY: js vazio — passe a.js com a expressão (termine com o valor desejado)" });
+          return;
+        }
+        let fn = null;
+        try {
+          fn = new Function("el", '"use strict"; return (' + String(code) + "\n);");
+        } catch (e) {
+          if (ubIsCSPError(e)) reply({ ok: false, error: "CSP_BLOCKED: eval/new Function bloqueado (" + String((e && e.message) || e).slice(0, 200) + ") — use seletor/snapshot/html em vez de JS arbitrário" });
+          else reply({ ok: false, error: "EVAL_ERROR (sintaxe): " + String((e && e.message) || e).slice(0, 300) });
+          return;
+        }
+        let val;
+        try {
+          val = fn(scopeEl);
+          if (val && typeof val.then === "function") val = await val;
+        } catch (e) {
+          if (ubIsCSPError(e)) reply({ ok: false, error: "CSP_BLOCKED: execução bloqueada (" + String((e && e.message) || e).slice(0, 200) + ") — use seletor/snapshot/html" });
+          else reply({ ok: false, error: "EVAL_ERROR: " + String((e && e.message) || e).slice(0, 300) });
+          return;
+        }
+        if (typeof val === "undefined") { reply({ ok: true, data: { value: null, note: "expressão não retornou valor — termine o JS com o valor desejado" } }); return; }
+        if (val === null) { reply({ ok: true, data: { value: null, note: "resultado null — seletor pode não ter casado ou JS retornou null (verifique seletor)" } }); return; }
+        let out = val;
+        try { out = JSON.parse(JSON.stringify(val)); }
+        catch { out = String(val).slice(0, 4000); }
+        if (typeof out === "string") out = out.slice(0, 4000);
+        reply({ ok: true, data: { value: out } });
+      } catch (e) {
+        if (ubIsCSPError(e)) reply({ ok: false, error: "CSP_BLOCKED: " + String((e && e.message) || e).slice(0, 250) });
+        else reply({ ok: false, error: "EVAL_ERROR: " + String((e && e.message) || e).slice(0, 300) });
+      }
     } else {
       reply({ ok: false, error: "cmd desconhecido no content: " + msg.cmd });
     }

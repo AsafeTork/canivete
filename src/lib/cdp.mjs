@@ -11,6 +11,43 @@ let CDP_PORT = BASE_CDP_PORT;
 const CHROME_PROFILE = process.env.CANIVETE_CHROME_PROFILE || join(tmpdir(), "canivete-chrome-profile");
 let chromeChild = null;
 
+// Timeout configurável (default mantido quando env ausente/inválido).
+const CDP_TIMEOUT_MS = Number(process.env.CANIVETE_CDP_TIMEOUT) || 25000;
+const WS_OPEN_TIMEOUT_MS = Number(process.env.CANIVETE_CDP_TIMEOUT) || 10000;
+const RECONNECT_BACKOFF_MS = 1000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// TEXT-FIRST: navegador em background só texto; render full só no print (screenshot/pdf).
+// Desativa com CANIVETE_BROWSER_FULLRENDER=1 (retorna ao comportamento anterior, sem bloqueio).
+// NOTA: --blink-settings=imagesEnabled=false (launch) já corta imagens no renderer;
+// o bloqueio via Network.setBlockedURLs abaixo é reversível por aba (full render via urls:[]),
+// sem tocar em Stylesheet (que quebraria layout p/ print).
+const TEXT_BLOCK_URLS = [
+  "*.png*", "*.jpg*", "*.jpeg*", "*.gif*", "*.webp*", "*.svg*", "*.ico*", "*.avif*", "*.bmp*", "*.tif*", "*.tiff*",
+  "*.mp4*", "*.webm*", "*.mp3*", "*.wav*", "*.ogg*", "*.oga*", "*.ogv*", "*.flac*", "*.avi*", "*.mov*", "*.m4v*", "*.m4a*", "*.opus*",
+  "*.woff*", "*.woff2*", "*.ttf*", "*.otf*", "*.eot*",
+];
+function isTextFirstEnabled() {
+  return !/^(1|true|yes)$/i.test(String(process.env.CANIVETE_BROWSER_FULLRENDER || ""));
+}
+// Bloqueia Image/Media/Font por default nas navegações de TEXTO (navigate/snapshot/act). Nunca quebra: falha silenciosa → segue sem bloqueio.
+async function cdpSetTextFirst(send) {
+  if (!isTextFirstEnabled()) return false;
+  try { await send("Network.enable"); } catch {}
+  try { await send("Network.setBlockedURLs", { urls: TEXT_BLOCK_URLS }); } catch { return false; }
+  return true;
+}
+// Remove o bloqueio antes de screenshot/pdf/shot (full render). Nunca quebra.
+async function cdpSetFullRender(send) {
+  if (!isTextFirstEnabled()) return false;
+  try { await send("Network.enable"); } catch {}
+  try { await send("Network.setBlockedURLs", { urls: [] }); } catch {}
+  return true;
+}
+// Log mínimo: só falhas de conexão/reconnect (nunca em hot-path de mensagens).
+const logConn = (...a) => console.warn("[canivete:cdp]", ...a);
+
 async function cdpVersion(port = CDP_PORT) {
   try {
     const ac = new AbortController();
@@ -61,7 +98,9 @@ async function ensureBrowser() {
     try {
       chromeChild = spawn(CHROME_BIN, [
         "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-        "--hide-scrollbars", "--mute-audio", `--remote-debugging-port=${port}`,
+        "--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking",
+        "--blink-settings=imagesEnabled=false",
+        `--remote-debugging-port=${port}`,
         `--user-data-dir=${CHROME_PROFILE}`, "about:blank",
       ], { stdio: "ignore", detached: true });
       chromeChild.unref?.();
@@ -80,27 +119,41 @@ async function ensureBrowser() {
 }
 
 async function cdpTargets() {
-  const r = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
-  if (!r.ok) throw new Error(`CDP /json/list HTTP ${r.status}`);
-  return await r.json();
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), WS_OPEN_TIMEOUT_MS);
+  try {
+    const r = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`, { signal: ac.signal });
+    if (!r.ok) throw new Error(`CDP /json/list HTTP ${r.status}`);
+    return await r.json();
+  } finally { clearTimeout(t); }
 }
 
 async function cdpNewPage(url = "about:blank") {
-  const r = await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?${new URLSearchParams({ url })}`, { method: "PUT" });
-  if (!r.ok) throw new Error(`CDP new page [PUT /json/new] falhou p/ ${url}: HTTP ${r.status}`);
-  return await r.json();
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), WS_OPEN_TIMEOUT_MS);
+  try {
+    const r = await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?${new URLSearchParams({ url })}`, { method: "PUT", signal: ac.signal });
+    if (!r.ok) throw new Error(`CDP new page [PUT /json/new] falhou p/ ${url}: HTTP ${r.status}`);
+    return await r.json();
+  } finally { clearTimeout(t); }
 }
 
-function cdpSend(ws, id, method, params = {}, timeout = 25000) {
+function cdpSend(ws, id, method, params = {}, timeout = CDP_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`CDP timeout: ${method}`)), timeout);
+    const timer = setTimeout(() => { try { ws.removeEventListener("message", onMsg); } catch {} reject(new Error(`CDP timeout: ${method} (${timeout}ms)`)); }, timeout);
     const onMsg = (e) => {
       let m;
       try { m = JSON.parse(e.data); } catch { return; }
-      if (m.id === id) { clearTimeout(timer); ws.removeEventListener("message", onMsg); m.error ? reject(new Error(`CDP ${method}: ${m.error.message || JSON.stringify(m.error)}`)) : resolve(m.result || {}); }
+      if (m?.id === id) { clearTimeout(timer); try { ws.removeEventListener("message", onMsg); } catch {} m.error ? reject(new Error(`CDP ${method}: ${m.error.message || JSON.stringify(m.error)}`)) : resolve(m.result || {}); }
     };
     ws.addEventListener("message", onMsg);
-    ws.send(JSON.stringify({ id, method, params }));
+    try {
+      ws.send(JSON.stringify({ id, method, params }));
+    } catch (e) {
+      clearTimeout(timer);
+      try { ws.removeEventListener("message", onMsg); } catch {}
+      reject(e);
+    }
   });
 }
 
@@ -111,7 +164,18 @@ const TAB_TTL_MS = 60000;
 
 async function openWs(wsUrl, tabHint = "?") {
   const ws = new WebSocket(wsUrl);
-  await new Promise((res, rej) => { const t = setTimeout(() => rej(Object.assign(new Error(`WS CDP timeout [open] na aba ${tabHint}`), { __cdpSetup: true })), 10000); ws.onopen = () => { clearTimeout(t); res(); }; ws.onerror = () => { clearTimeout(t); rej(Object.assign(new Error(`WS CDP falhou [open] na aba ${tabHint}`), { __cdpSetup: true })); }; });
+  const timeout = WS_OPEN_TIMEOUT_MS;
+  try {
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => rej(Object.assign(new Error(`WS CDP timeout [open:${timeout}ms] na aba ${tabHint}`), { __cdpSetup: true })), timeout);
+      ws.onopen = () => { clearTimeout(t); ws.onerror = null; res(); };
+      ws.onerror = () => { clearTimeout(t); rej(Object.assign(new Error(`WS CDP falhou [open] na aba ${tabHint}`), { __cdpSetup: true })); };
+    });
+  } catch (e) {
+    logConn(`open falhou (${tabHint}): ${e.message}`);
+    try { ws.close(); } catch {}
+    throw e;
+  }
   return ws;
 }
 
@@ -134,8 +198,8 @@ async function runOnWs(wsUrl, target, fn, { urlHint } = {}) {
   };
   try {
     try {
-      await send("Page.enable");
-      await send("Runtime.enable");
+      // Fusão RTT: enables independentes em paralelo (1 janela de latência em vez de 2; count igual).
+      await Promise.all([send("Page.enable"), send("Runtime.enable")]);
     } catch (e) { e.__cdpSetup = true; throw e; }
     return await fn({ send, target, ws });
   } finally { try { ws.close(); } catch {} }
@@ -143,17 +207,25 @@ async function runOnWs(wsUrl, target, fn, { urlHint } = {}) {
 
 async function withCdp(fn, { url } = {}) {
   await ensureBrowser();
-  // 1x retry: fecha WS (já fechado no finally do runOnWs), cria nova página e tenta de novo.
+  // Reconnect 1x em queda/stale com backoff 1s.
   const staleRetry = async (firstErr) => {
+    logConn(`queda (${url || "?"}): ${firstErr?.message || firstErr} — reconnect 1x em ${RECONNECT_BACKOFF_MS}ms`);
+    await sleep(RECONNECT_BACKOFF_MS);
     let fresh;
     try {
       fresh = await cdpNewPage(url || "about:blank");
     } catch (e2) {
+      logConn(`reconexão falhou [new page] (${url || "?"}): ${e2.message}`);
       throw new Error(`CDP reconexão falhou [new page] na aba ${url || "?"} (orig: ${firstErr.message}): ${e2.message}`);
     }
-    const out = await runOnWs(fresh.webSocketDebuggerUrl, fresh, fn, { urlHint: url });
-    cachedTab = { id: fresh.id, wsUrl: fresh.webSocketDebuggerUrl, ts: Date.now() };
-    return out;
+    try {
+      const out = await runOnWs(fresh.webSocketDebuggerUrl, fresh, fn, { urlHint: url });
+      cachedTab = { id: fresh.id, wsUrl: fresh.webSocketDebuggerUrl, ts: Date.now() };
+      return out;
+    } catch (e3) {
+      logConn(`reconnect falhou (${url || "?"}): ${e3.message}`);
+      throw e3;
+    }
   };
   const now = Date.now();
   // fast-path: cache fresco → vai direto no wsUrl (sem /json/list, sem /json/new)
@@ -186,7 +258,7 @@ async function withCdp(fn, { url } = {}) {
 }
 
 const PAGE_SNAPSHOT_JS = `(() => {
-  const els = [...document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"],[onclick]')].slice(0,120);
+  const els = [...document.querySelectorAll('a,button,input,select,textarea,h1,h2,h3,h4,h5,h6,[role="button"],[role="link"],[role="heading"],[role="checkbox"],[role="radio"],[role="switch"],[onclick]')].slice(0,120);
   const path = (el) => {
     if (el.id) return '#' + el.id;
     const parts = [];
@@ -200,13 +272,89 @@ const PAGE_SNAPSHOT_JS = `(() => {
     }
     return parts.join(' > ');
   };
-  return els.map((el, i) => ({
-    ref: i,
-    tag: el.tagName.toLowerCase(),
-    type: el.type || el.getAttribute('role') || '',
-    text: (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').replace(/\\s+/g,' ').trim().slice(0,100),
-    selector: path(el),
-  }));
+  const implicitRole = (el) => {
+    const t = el.tagName.toLowerCase();
+    if (t === 'a' && el.hasAttribute('href')) return 'link';
+    if (t === 'button') return 'button';
+    if (t === 'h1' || t === 'h2' || t === 'h3' || t === 'h4' || t === 'h5' || t === 'h6') return 'heading';
+    if (t === 'input') {
+      const ty = (el.type || '').toLowerCase();
+      if (ty === 'checkbox') return 'checkbox';
+      if (ty === 'radio') return 'radio';
+      if (ty === 'button' || ty === 'submit' || ty === 'reset' || ty === 'image') return 'button';
+      if (ty === 'search') return 'searchbox';
+      return 'textbox';
+    }
+    if (t === 'select') return 'combobox';
+    if (t === 'textarea') return 'textbox';
+    return '';
+  };
+  const accName = (el) => {
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) {
+      const ps = lb.split(/\\s+/).map((id) => document.getElementById(id)).filter(Boolean).map((n) => (n.innerText || n.textContent || '').replace(/\\s+/g,' ').trim()).filter(Boolean);
+      if (ps.length) return ps.join(' ').slice(0,100);
+    }
+    const al = el.getAttribute('aria-label');
+    if (al) return al.replace(/\\s+/g,' ').trim().slice(0,100);
+    const t = el.tagName.toLowerCase();
+    if (t === 'input') {
+      const ty = (el.type || '').toLowerCase();
+      if (ty === 'image' && el.alt) return String(el.alt).replace(/\\s+/g,' ').trim().slice(0,100);
+      if ((ty === 'button' || ty === 'submit' || ty === 'reset') && el.value) return String(el.value).replace(/\\s+/g,' ').trim().slice(0,100);
+    }
+    if (t === 'select' && el.selectedOptions && el.selectedOptions[0]) return (el.selectedOptions[0].textContent || '').replace(/\\s+/g,' ').trim().slice(0,100);
+    const it = (el.innerText || '').replace(/\\s+/g,' ').trim();
+    if (it) return it.slice(0,100);
+    const tc = (el.textContent || '').replace(/\\s+/g,' ').trim();
+    if (tc) return tc.slice(0,100);
+    if (el.value) return String(el.value).replace(/\\s+/g,' ').trim().slice(0,100);
+    if (el.placeholder) return String(el.placeholder).replace(/\\s+/g,' ').trim().slice(0,100);
+    if (el.title) return String(el.title).replace(/\\s+/g,' ').trim().slice(0,100);
+    return '';
+  };
+  const stateOf = (el, role) => {
+    const st = [];
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') st.push('disabled');
+    const ty = (el.type || '').toLowerCase();
+    const chk = ty === 'checkbox' || ty === 'radio' || role === 'checkbox' || role === 'radio' || role === 'switch' || el.hasAttribute('aria-checked');
+    if (chk) {
+      const ac = el.getAttribute('aria-checked');
+      if (el.checked === true || ac === 'true') st.push('checked');
+      else if (ac === 'mixed') st.push('mixed');
+      else st.push('unchecked');
+    }
+    const ae = el.getAttribute('aria-expanded');
+    if (ae === 'true') st.push('expanded');
+    else if (ae === 'false') st.push('collapsed');
+    else if (el.tagName.toLowerCase() === 'details') st.push(el.hasAttribute('open') ? 'expanded' : 'collapsed');
+    if (el.selected === true || el.getAttribute('aria-selected') === 'true') st.push('selected');
+    if (el.required || el.getAttribute('aria-required') === 'true') st.push('required');
+    if (el.readOnly || el.getAttribute('aria-readonly') === 'true') st.push('readonly');
+    return st.join(' ');
+  };
+  const levelOf = (el, role) => {
+    if (role !== 'heading') return 0;
+    const al = parseInt(el.getAttribute('aria-level') || '', 10);
+    if (al >= 1 && al <= 6) return al;
+    const m = /^h([1-6])$/i.exec(el.tagName);
+    if (m) return parseInt(m[1], 10);
+    return 0;
+  };
+  return els.map((el, i) => {
+    const role = el.getAttribute('role') || implicitRole(el);
+    return {
+      ref: i,
+      tag: el.tagName.toLowerCase(),
+      type: el.type || el.getAttribute('role') || '',
+      text: (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').replace(/\\s+/g,' ').trim().slice(0,100),
+      selector: path(el),
+      role: role,
+      name: accName(el),
+      state: stateOf(el, role),
+      level: levelOf(el, role),
+    };
+  });
 })()`;
 
 const RESOLVE_JS = (sel) => `(() => {
@@ -226,23 +374,20 @@ const RESOLVE_JS = (sel) => `(() => {
 async function cdpGoto(send, url, waitMs = 4000) {
   await send("Page.navigate", { url });
   const wait = Math.min(Math.max(Number(waitMs) || 4000, 500), 25000);
+  // Fusão RTT: 1 evaluate in-page com awaitPromise (poll de readyState DENTRO da página,
+  // a cada 100ms, com teto próprio) em vez de N polls via CDP (1 send a cada 400ms).
+  // Antes: 1 (navigate) + até wait/400 sends. Depois: 1 (navigate) + 1 (wait), +1 retry
+  // só se o contexto foi destruído pela navegação (Unsafe: nunca lança por espera).
+  const waitExpr = `new Promise((__res) => { const __t0 = Date.now(); const __wait = ${Math.floor(wait)}; const __fin = (v) => { try { __res(v); } catch {} }; const __iv = setInterval(() => { try { if (document.readyState === "complete" || (Date.now() - __t0) > __wait) { clearInterval(__iv); __fin(document.readyState); } } catch { try { clearInterval(__iv); } catch {} __fin("unknown"); } }, 100); try { if (document.readyState === "complete") { clearInterval(__iv); __fin("complete"); } } catch {} setTimeout(() => { try { clearInterval(__iv); } catch {} __fin("timeout"); }, __wait + 500); })`;
   try {
-    await new Promise((resolve) => {
-      const done = () => resolve();
-      const t = setTimeout(done, wait);
-      // aguarda load via evento avaliado por polling simples
-      (async () => {
-        for (let i = 0; i < wait / 400; i++) {
-          await new Promise((r) => setTimeout(r, 400));
-          try {
-            const s = await send("Runtime.evaluate", { expression: "document.readyState", returnByValue: true }, 5000);
-            if (s.result?.value === "complete") { clearTimeout(t); resolve(); break; }
-          } catch {}
-        }
-      })();
-    });
-  } catch {}
-  // sem sleep final: o poll de readyState acima já garante carga (retorna cedo)
+    await send("Runtime.evaluate", { expression: waitExpr, returnByValue: true, awaitPromise: true }, wait + 10000);
+  } catch {
+    try {
+      // retry 1x: o contexto de execução pode ter caído no meio da navegação
+      await send("Runtime.evaluate", { expression: waitExpr, returnByValue: true, awaitPromise: true }, wait + 10000);
+    } catch {}
+  }
+  // sem sleep final: o wait in-page acima já garante carga (retorna cedo)
 }
 
 async function cdpState(send) {
@@ -278,12 +423,14 @@ async function cdpDrainConsole(send, ws, { timeoutMs = 1500, limit = 30 } = {}) 
   };
   ws.addEventListener("message", onMsg);
   try {
+    // Fusão RTT (3→1): só Log.enable aqui. Sem Runtime.enable redundante (runOnWs já
+    // habilitou Runtime antes de fn — eventos consoleAPICalled/exceptionThrown exigem isso)
+    // e sem Log.disable no fim (a sessão WS fecha no finally do runOnWs; disable seria
+    // 1 roundtrip jogado fora).
     try { await send("Log.enable"); } catch {}
-    try { await send("Runtime.enable"); } catch {}
     await new Promise((r) => setTimeout(r, Math.min(Math.max(Number(timeoutMs) || 1500, 300), 5000)));
   } finally {
     try { ws.removeEventListener("message", onMsg); } catch {}
-    try { await send("Log.disable"); } catch {}
   }
   return logs.slice(-Math.max(1, Math.min(Number(limit) || 30, 100)));
 }
@@ -309,14 +456,17 @@ async function cdpElementClip(send, selector) {
 }
 
 // Cookies da página via CDP (Storage.getCookies, fallback Network.getCookies).
+// Fusão RTT (2→1 no caminho feliz): Storage.getCookies NÃO exige nenhum domain enable
+// (Storage não tem enable), então tenta direto; Network.enable só no fallback, que é o
+// único que precisa dele.
 async function cdpCookies(send) {
-  try { await send("Network.enable"); } catch {}
   try {
     const r = await send("Storage.getCookies");
     if (Array.isArray(r.cookies)) return r.cookies;
   } catch {}
+  try { await send("Network.enable"); } catch {}
   const r = await send("Network.getCookies");
   return r.cookies || [];
 }
 
-export { ensureBrowser, withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN, CDP_PORT };
+export { ensureBrowser, withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, isTextFirstEnabled, TEXT_BLOCK_URLS, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN, CDP_PORT };

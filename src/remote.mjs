@@ -1,6 +1,7 @@
 // canivete — modo remoto (Streamable HTTP) para qualquer CLI.
 // Uso: node src/server.mjs --http 19423
 // Auth: header X-Token, ?token= ou Authorization: Bearer (mesmo token da extensão).
+// Rotação do token: troque CANIVETE_TOKEN (ou o arquivo em CANIVETE_TOKEN_FILE) e reinicie o servidor — clientes passam a usar o novo token na próxima chamada.
 // Por que remoto: o host reconecta por chamada — trocar CÓDIGO nunca exige restart do opencode.
 // (Trocar CONFIG exige 1 restart: opencode lê config só no boot.)
 import { createServer } from "node:http";
@@ -14,6 +15,9 @@ import "./lib/tasks.mjs";
 import "./lib/devengine.mjs";
 import "./lib/tools-browser.mjs";
 import "./lib/tools-owner.mjs";
+
+// Limite do corpo POST via env CANIVETE_MAX_BODY em bytes (default 2MB mantido).
+const MAX_BODY = Number(process.env.CANIVETE_MAX_BODY) || 2 * 1024 * 1024;
 
 export function getToken() {
   if (process.env.CANIVETE_TOKEN) return process.env.CANIVETE_TOKEN.trim();
@@ -54,7 +58,7 @@ export async function serveHttp(port, token) {
       await new Promise((ok, fail) => {
         const ch = [];
         let n = 0;
-        req.on("data", (c) => { n += c.length; if (n > 2 * 1024 * 1024) fail(new Error("body > 2MB")); else ch.push(c); }); // era sem teto (POST gigante = OOM)
+        req.on("data", (c) => { n += c.length; if (n > MAX_BODY) fail(new Error(`body > ${MAX_BODY} bytes`)); else ch.push(c); }); // teto via CANIVETE_MAX_BODY (default 2MB; POST gigante = OOM)
         req.on("end", () => { body = Buffer.concat(ch).toString("utf8"); ok(); });
         req.on("error", fail);
       });
@@ -69,7 +73,7 @@ export async function serveHttp(port, token) {
         } else if (m.method === "ping") {
           out.push({ jsonrpc: "2.0", id: m.id, result: {} });
         } else if (m.method === "tools/list") {
-          out.push({ jsonrpc: "2.0", id: m.id, result: { tools: [...TOOLS.values()].map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) } });
+          out.push({ jsonrpc: "2.0", id: m.id, result: { tools: [...TOOLS.values()].map((t) => ({ name: t.name, description: t.description.slice(0,120), inputSchema: t.inputSchema })) } });
         } else if (m.method === "tools/call") {
           const { name: tn, arguments: args } = m.params || {};
           const tool = TOOLS.get(tn);

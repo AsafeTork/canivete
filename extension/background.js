@@ -5,15 +5,22 @@ const DEFAULT_URL = "http://127.0.0.1:19422";
 let settings = { token: "", enabled: true, url: DEFAULT_URL };
 let running = false;
 
+// Log verboso opt-in: chrome.storage.local { UB_DEBUG: true } (default off).
+// Transições online/offline usam logd(); erros mantêm console.* / diag.lastError.
+let UB_DEBUG = false;
+function logd(...args) { if (UB_DEBUG) console.log(...args); }
+
 async function load() {
-  const s = await chrome.storage.local.get(["token", "enabled", "url"]);
+  const s = await chrome.storage.local.get(["token", "enabled", "url", "UB_DEBUG"]);
   settings = { token: s.token || "", enabled: s.enabled !== false, url: s.url || DEFAULT_URL };
+  UB_DEBUG = s.UB_DEBUG === true;
 }
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area !== "local") return;
   if (ch.token) settings.token = ch.token.newValue || "";
   if (ch.enabled) settings.enabled = ch.enabled.newValue !== false;
   if (ch.url) settings.url = ch.url.newValue || DEFAULT_URL;
+  if (ch.UB_DEBUG) UB_DEBUG = ch.UB_DEBUG.newValue === true;
 });
 
 const UB_EXPECTED = "7"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
@@ -410,7 +417,7 @@ async function handle(cmd, a = {}) {
     // NUNCA troca de aba: só fotografa a aba VISÍVEL (fundo = sem print, use read)
     const id = a.tabId || (await activeTabId());
     const cur = await activeTabId().catch(() => null);
-    if (cur && cur !== id) throw new Error("print só na aba VISÍVEL (fundo: use read/snapshot) — foco é intocável");
+    if (cur && cur !== id) throw new Error("print só na aba VISÍVEL — traga p/ frente (fundo: use read/snapshot, foco é intocável)");
     const t = await getTabOrThrow(id);
     const url = await chrome.tabs.captureVisibleTab(t.windowId, { format: "png" });
     return { dataUrl: url, tab: { id, title: t.title, url: t.url } };
@@ -476,8 +483,15 @@ async function pollOnce() {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 30000);
   try {
-    const r = await fetch(settings.url + "/poll?token=" + encodeURIComponent(settings.token), { signal: ctl.signal });
+    let r;
+    try {
+      r = await fetch(settings.url + "/poll?token=" + encodeURIComponent(settings.token), { signal: ctl.signal });
+    } catch (e) {
+      if (e.name === "AbortError") throw e;
+      throw new Error("bridge offline (" + settings.url + "/poll inacessível) — suba o bridge e aguarde reconnect");
+    }
     if (r.status === 204) return null;
+    if (r.status === 401 || r.status === 403) throw new Error("token rejeitado (HTTP " + r.status + ") — confira token no popup e no bridge");
     if (!r.ok) throw new Error("HTTP " + r.status);
     return await r.json();
   } catch (e) {
@@ -510,8 +524,15 @@ async function hello() {
 }
 
 // diagnóstico visível no popup
-const diag = { polls: 0, lastPollOk: "-", lastError: "-", helloOk: "-", startedAt: new Date().toLocaleTimeString() };
-let diagT = 0, loopBeat = 0;
+const diag = { polls: 0, lastPollOk: "-", lastError: "-", helloOk: "-", startedAt: new Date().toLocaleTimeString(), online: false };
+let diagT = 0, loopBeat = 0, wasOnline = false, consecFails = 0;
+function setOnline(on, reason) {
+  diag.online = on;
+  if (on !== wasOnline) {
+    wasOnline = on;
+    logd(on ? "[ub] online" + (reason ? " (" + reason + ")" : "") : "[ub] offline" + (reason ? " (" + reason + ")" : ""));
+  }
+}
 function saveDiag() {
   const now = Date.now();
   if (now - diagT < 2000) return;
@@ -529,12 +550,16 @@ async function loop() {
     loopBeat = Date.now();
     try { await load(); } catch {}
     if (!settings.enabled || !settings.token) {
+      setOnline(false, !settings.enabled ? "pausado" : "sem token — configure no popup");
+      if (!settings.token) { diag.lastError = "sem token — configure no popup"; saveDiag(); }
       await new Promise((r) => setTimeout(r, 3000));
       continue;
     }
     try {
       const job = await pollOnce();
       backoff = 1000;
+      consecFails = 0;
+      setOnline(true, "poll ok");
       diag.polls++;
       diag.lastPollOk = new Date().toLocaleTimeString();
       diag.lastError = "-";
@@ -547,7 +572,10 @@ async function loop() {
         await result(job.id, false, null, e.message);
       }
     } catch (e) {
-      diag.lastError = new Date().toLocaleTimeString() + " " + (e.message || e).slice(0, 120);
+      consecFails++;
+      const msg = String(e.message || e).slice(0, 120);
+      setOnline(false, msg);
+      diag.lastError = new Date().toLocaleTimeString() + " " + msg + " (reconnect em " + Math.round(backoff / 1000) + "s)";
       saveDiag();
       await new Promise((r) => setTimeout(r, backoff));
       backoff = Math.min(backoff * 2, 15000);

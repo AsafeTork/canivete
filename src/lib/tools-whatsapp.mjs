@@ -1,6 +1,13 @@
 // canivete — WhatsApp Web dedicado (seletores data-testid estáveis).
 // Ações de leitura/navegação: low. Envio: medium e SÓ com texto explícito do dono
 // (conteúdo da mensagem NÃO passa na trava — quem ordena o envio é o dono).
+// OPEN (lista virtualizada — ex: chat "MÃE" invisível p/ snapshot, "Projeto II" preso na sidebar):
+//   1. busca via [data-testid="chat-list-search"] (filtra sem depender de scroll),
+//   2. scroll virtualizado da sidebar via param `pages` (default 3) em [data-testid="chat-list"],
+//   3. click no item via [data-testid^="chat-list-item"] / title="NAME".
+// FALLBACK gateway Baileys (WebSocket, sem browser): código em wa-gateway/server.mjs
+//   (WA_GW_URL, default http://127.0.0.1:19424). Ordem: gateway primeiro; se
+//   offline/miss/vazio → cai p/ extensão Chrome logada (ubrowser tab.wa_*).
 import { reg, devOut, trimOut } from "./ctx.mjs";
 import { ubSend, ubConnected, UB_OFF } from "./ubridge.mjs";
 
@@ -31,19 +38,22 @@ reg("n_whatsapp", {
     properties: {
       action: { type: "string", enum: ["state", "chats", "open", "read", "send", "pair"] },
       tabId: { type: "number" }, tab: { type: "string", description: "trecho título/URL (default: acha web.whatsapp.com)" },
-      name: { type: "string", description: "nome do chat/grupo p/ open (browser) " },
+      name: { type: "string", description: "nome do chat/grupo p/ open (ex: MÃE, Projeto II). open faz busca + scroll virtualizado" },
       to: { type: "string", description: "JID, número ou nome do grupo p/ gateway" },
       phone: { type: "string", description: "número E.164 p/ pair (ex: 5591999999999)" },
       text: { type: "string", description: "mensagem p/ send (obrigatória, explícita do dono)" },
-      limit: { type: "number", default: 20, description: "N chats/mensagens (máx 100 p/ read)" },
+      pages: { type: "number", default: 3, description: "páginas de scroll virtualizado da sidebar p/ open (default 3; aumente p/ lista longa ex: 6)" },
+      limit: { type: "number", default: 20, description: "nº de mensagens p/ read (default 20)" },
+      "data-testid": { type: "string", description: "seletor data-testid estável p/ localizar chat na sidebar (ex: chat-list-search, chat-list). Opcional; default usa busca+scroll por `name`" },
     },
     required: ["action"],
   },
   run: async (a) => {
     const t0 = Date.now();
     const ms = () => Date.now() - t0;
+    let gatewayChats = []; // chats vindos de `state` p/ erro acionável no open
     // via gateway primeiro (rápido, sem browser) p/ state/chats/read/send/pair
-    if (["state", "chats", "read", "send", "pair"].includes(a.action)) {
+    if (["state", "chats", "open", "read", "send", "pair"].includes(a.action)) {
       try {
         if (a.action === "state") {
           const h = await waGw("/health");
@@ -58,6 +68,19 @@ reg("n_whatsapp", {
         if (a.action === "chats") {
           const c = await waGw("/wa/chats");
           if (c.ok) return devOut({ summary: `${c.groups.length} grupo(s) via gateway`, data: { via: "gateway", groups: c.groups }, telemetry: { execution_time_ms: ms() } });
+        }
+        if (a.action === "open") {
+          if (!a.name || !String(a.name).trim()) return devOut({ status: "error", summary: 'open exige name (ex: {action:"open", name:"Projeto II"})', data: {}, telemetry: { execution_time_ms: ms() } });
+          const found = await waGw("/wa/open", "POST", { name: a.name, pages: a.pages ?? 3, "data-testid": a["data-testid"] });
+          if (found.ok && found.opened) {
+            return devOut({ summary: `Chat aberto via gateway ✓: ${found.title || a.name}`, data: { via: "gateway", ...found }, telemetry: { execution_time_ms: ms() } });
+          }
+          // miss/vazio → NÃO retorna: guarda chats de `state` p/ erro acionável
+          // e cai p/ fallback browser (busca + scroll virtualizado) abaixo.
+          try {
+            const state = await waGw("/wa/chats");
+            if (state.ok) gatewayChats = state.groups || [];
+          } catch { /* gateway instável: browser decide */ }
         }
         if (a.action === "read") {
           const c = await waGw("/wa/read", "POST", { jid: a.to, name: a.name, limit: a.limit || 20 });
@@ -76,15 +99,34 @@ reg("n_whatsapp", {
         }
       } catch (e) {
         if (a.action === "state") return devOut({ status: "error", summary: `gateway fora do ar (${String(e.message || e).slice(0, 100)}) — tentando browser`, data: {}, telemetry: { execution_time_ms: ms() } });
+        // open/read/send/chats: ignora e cai p/ fallback browser abaixo
       }
     }
+    // Fallback: gateway Baileys (wa-gateway/server.mjs) falhou/miss → extensão Chrome
+    // logada (ubrowser). open usa busca + scroll virtualizado via `pages` e
+    // seletores data-testid estáveis (chat-list-search / chat-list / chat-list-item).
     const map = { state: "tab.wa_state", chats: "tab.wa_chats", open: "tab.wa_open", read: "tab.wa_read", send: "tab.wa_send" };
     if (!map[a.action]) return devOut({ status: "error", summary: `action inválida: ${a.action}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (a.action === "send" && !(a.text && String(a.text).trim())) return devOut({ status: "error", summary: "send exige text explícito do dono", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    const r = await ubSend(map[a.action], { ...a }, 90000);
+    const payload = a.action === "open"
+      ? { ...a, name: a.name, pages: a.pages ?? 3, "data-testid": a["data-testid"] }
+      : { ...a };
+    const r = await ubSend(map[a.action], payload, 90000);
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF : "timeout 90s (WhatsApp pesado/sincronizando)", data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
-    if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!r.ok) {
+      if (a.action === "open") {
+        const chatNames = gatewayChats.map(g => g.name || g.title || "?").join(", ");
+        return devOut({ status: "error", summary: `Chat "${a.name}" não abriu (extensão: ${r.error}). Busca+scroll pages=${payload.pages} via data-testid. Chats de state: ${chatNames || "(vazio — confira n_whatsapp chats)"}. Tente pages maior ex: {action:"open", name:"${a.name}", pages:6}.`,
+          data: { action: "whatsapp_open", available_chats: gatewayChats, name: a.name, pages: payload.pages }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      }
+      return devOut({ status: "error", summary: `extensão: ${r.error}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    }
     const d = r.data || {};
+    if (a.action === "open" && !d.opened) {
+      const chatNames = gatewayChats.map(g => g.name || g.title || "?").join(", ");
+      return devOut({ status: "error", summary: `Chat "${a.name}" não encontrado (browser: ${d.reason || "lista virtualizada — snapshot não captura"}). Chats de state: ${chatNames || "(vazio — confira n_whatsapp chats)"}. Tente busca exata + pages maior ex: {action:"open", name:"${a.name}", pages:6}.`,
+        data: { action: "whatsapp_open", available_chats: gatewayChats, result: d, name: a.name, pages: payload.pages }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    }
     const msgs = Array.isArray(d) ? d : d.messages || [];
     const summary = a.action === "read"
       ? `${msgs.length} mensagem(ns)` + (msgs.length ? ` — última de ${msgs[msgs.length - 1].from}: ${(msgs[msgs.length - 1].text || "").slice(0, 100)}` : "")

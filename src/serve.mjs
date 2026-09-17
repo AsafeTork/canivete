@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // canivete serve: supervisor da ponte HTTP — reinicia sozinho em queda (gargalo zero).
 // Uso: node src/serve.mjs [port]   (default 19423; env como no server.mjs)
+// Restart: loga exit code + tempo de vida no stderr e aplica backoff exponencial 1s→30s (dobra a cada queda, reseta p/ 1s se viveu >60s).
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
