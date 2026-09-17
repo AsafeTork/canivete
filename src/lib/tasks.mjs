@@ -15,7 +15,6 @@ const todo = [];
 // ENV: CANIVETE_HOST_GUARD_MS=170000=clamp máx de resposta sync (resto segue em background)
 // ENV: CANIVETE_MAX_MSGS=100=teto de msgs por mailbox (pushCapped fatia p/ últimas N)
 // ENV: CANIVETE_MAX_MSG_CHARS=4000=teto de chars por msg (excesso trunca com ...[truncated N chars])
-// ENV: CANIVETE_MAX_TASKS=3=teto de tasks running (spawn recusa acima disso)
 // ENV: CANIVETE_MAX_POLLS=8=teto de polls ativos (acima começa em POLL_MAX_MS)
 // ENV: CANIVETE_AGENTS=mcp-only,explore,quick,general,reviewer=lista de subagent_type válidos
 // ENV: CANIVETE_MODELS_FILE=../../config/models.json=arquivo JSON com allowlist de modelos free
@@ -91,16 +90,6 @@ const POLL_BASE_MS = 2000;
 const POLL_MID_MS = 4000;
 const POLL_MAX_MS = 8000;
 const MAX_ACTIVE_POLLS = Number(process.env.CANIVETE_MAX_POLLS) || 8;
-const MAX_TASKS = Number(process.env.CANIVETE_MAX_TASKS) || 3;
-function memAvailableMB() {
-  try {
-    if (process.platform !== "linux") return null;
-    const txt = readFileSync("/proc/meminfo", "utf8");
-    const m = txt.match(/MemAvailable:\s+(\d+)\s*kB/i);
-    if (!m) return null;
-    return Math.floor(Number(m[1]) / 1024);
-  } catch { return null; }
-}
 const activePolls = new Set();
 function pollJitter(ms) { return Math.round(ms * (0.85 + Math.random() * 0.3)); }
 function nextPollDelay(cur) { if (cur <= POLL_BASE_MS) return POLL_MID_MS; if (cur < POLL_MAX_MS) return POLL_MAX_MS; return POLL_MAX_MS; }
@@ -469,10 +458,6 @@ reg("n_task", {
         await new Promise((r) => setTimeout(r, Math.min(2000, Math.max(1, depDeadline - Date.now()))));
       }
     }
-    const runningCount = [...new Set([...tasks.keys(), ...safeTaskIds()])].filter((k) => { try { const rt = resolveTask(k); return rt && rt.status === "running"; } catch { return false; } }).length;
-    if (runningCount >= MAX_TASKS) return out(`muitas tasks rodando (${runningCount}/${MAX_TASKS}), aguarde n_task_wait`, true);
-    const memMB = memAvailableMB();
-    if (memMB !== null && memMB < 400) return out(`memória baixa (<400MB), aguarde n_task_wait (disp ${memMB}MB)`, true);
     const id = taskId();
     const chosenModel = String(model);
     const entry = {

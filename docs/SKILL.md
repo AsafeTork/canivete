@@ -99,7 +99,7 @@ Runner de subagentes: opencode (total) ou genérico (`CANIVETE_RUN_TEMPLATE`).
 
 - `n_bash`: `timeout` default 120s, **máx 600000 (10min)**. Passou → `n_manage_background_process({action:"start", command})` + `read_logs`/`status`/`stop`.
 - `n_task background:true` → **1×** `n_task_wait({task_ids, wait:"all"|"any", timeout:600000})`; clamp ~170s (`CANIVETE_HOST_GUARD_MS`) → **chame de novo**, não é erro. Ao vivo: `n_task_tail`; sem bloquear: `n_task_status`.
-- Workflow: fan-out N× `background:true` → `wait any/all` → `send/recv/peek`. Subagente sempre `send({task_id:"main", message:"done <id> + resumo"})`. Limites: `CANIVETE_MAX_TASKS=3`, `CANIVETE_MAX_POLLS=8`.
+- Workflow: fan-out N× `background:true` → `wait any/all` → `send/recv/peek`. Subagente sempre `send({task_id:"main", message:"done <id> + resumo"})`. Sem teto de quantidade (spawn nunca recusa); `CANIVETE_MAX_POLLS=8`.
 - Modelo obrigatório (opencode): `n_list_models` → `model` em `n_task`. Tipos: `mcp-only|explore|quick|general|reviewer`.
 
 ## Erros comuns
@@ -123,7 +123,7 @@ Runner de subagentes: opencode (total) ou genérico (`CANIVETE_RUN_TEMPLATE`).
 
 ## Env (`CANIVETE_*`)
 
-Execução/limites: `CANIVETE_CWD` (repo), `CANIVETE_RUNNER` (`opencode`) + `CANIVETE_RUN_TEMPLATE`, `CANIVETE_HOST_GUARD_MS` (170000), `CANIVETE_MAX_TASKS` (3), `CANIVETE_MAX_POLLS` (8), `CANIVETE_MAX_BODY` (2MB remoto), `CANIVETE_CTX_BUDGET` (200000), `CANIVETE_MAX_MSGS` (100)/`CANIVETE_MAX_MSG_CHARS` (4000), `CANIVETE_WALK_CAP` (8000)/`CANIVETE_WALK_DEPTH` (8).
+Execução/limites: `CANIVETE_CWD` (repo), `CANIVETE_RUNNER` (`opencode`) + `CANIVETE_RUN_TEMPLATE`, `CANIVETE_HOST_GUARD_MS` (170000), `CANIVETE_MAX_POLLS` (8), `CANIVETE_MAX_BODY` (2MB remoto), `CANIVETE_CTX_BUDGET` (200000), `CANIVETE_MAX_MSGS` (100)/`CANIVETE_MAX_MSG_CHARS` (4000), `CANIVETE_WALK_CAP` (8000)/`CANIVETE_WALK_DEPTH` (8).
 Browser: `CANIVETE_CHROME_BIN` (auto-detect), `CANIVETE_CDP_PORT` (19322), `CANIVETE_CDP_TIMEOUT` (25000, WS open 10000), `CANIVETE_BROWSER_TIMEOUT_MS` (40000; PDF 60000), `CANIVETE_BROWSER_ALLOW_PRIVATE` (`1` libera intranet), `CANIVETE_CHROME_PROFILE`, `CANIVETE_BRIDGE_PORT` (19422), `CANIVETE_TOKEN`/`CANIVETE_TOKEN_FILE` (`~/.config/canivete/token.txt`).
 Tasks/skills: `CANIVETE_AGENTS`, `CANIVETE_MODELS_FILE` (`config/models.json`), `CANIVETE_TASK_PREFIX`, `CANIVETE_DB_TIMEOUT_MS` (5000)/`CANIVETE_EXPORT_TIMEOUT_MS` (8000), `CANIVETE_SKILLS_PATHS`, `CANIVETE_WATCH_MAIN`/`CANIVETE_WATCH`, `CANIVETE_SERVER_NAME`, `MCP_BROKER_DIR` (mailbox).
 

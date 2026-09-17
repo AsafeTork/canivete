@@ -17,7 +17,6 @@ claude mcp add canivete -- node /caminho/para/canivete/src/server.mjs
 
 # Com limites de tarefas longas + browser (todos opcionais, defaults entre parênteses):
 #   env: {
-#     "CANIVETE_MAX_TASKS": "3",          # teto de tasks ativas (foreground)
 #     "CANIVETE_MAX_POLLS": "8",          # polls ativos aguardando subagente
 #     "CANIVETE_HOST_GUARD_MS": "170000", # clamp do n_task_wait (~170s; chame de novo)
 #     "CANIVETE_CHROME_BIN": "/usr/bin/google-chrome",

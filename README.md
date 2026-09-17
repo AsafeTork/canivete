@@ -130,7 +130,7 @@ Regra: **nunca sleep em loop** — 1 espera longa com teto + erro acionável no 
   O servidor espera por você até o clamp do host (~170s, `CANIVETE_HOST_GUARD_MS`);
   se ainda estiver rodando, **chame `n_task_wait` de novo** (não é erro).
   Progresso ao vivo: `n_task_tail({task_id})`; estado sem bloquear: `n_task_status`.
-  Limites: `CANIVETE_MAX_TASKS` (default 3 em foreground), `CANIVETE_MAX_POLLS` (8 polls ativos).
+  Limites: sem teto de quantidade de tasks (spawn nunca recusa por carga); `CANIVETE_MAX_POLLS` (8 polls ativos).
 - **Mailbox acorda:** subagente sempre finaliza com `n_task_send({task_id:"main", message:"done <id> + resumo"})`;
   o principal lê via `n_task_notifications` / `n_task_recv({timeout})`. Nunca termine com mailbox cheia.
 - **Modelo obrigatório (modo opencode):** `n_list_models` → escolha → passe `model` em `n_task`.
@@ -250,7 +250,6 @@ empurra 📬 automático na sessão — ninguém dorme sem ler. Extras via `CANI
 | `CANIVETE_CDP_PORT` | `19322` | Chrome headless (CDP) |
 | `CANIVETE_CHROME_BIN` | auto-detect | binário do Chrome |
 | `CANIVETE_CHROME_PROFILE` | `/tmp/canivete-chrome-profile` | perfil headless |
-| `CANIVETE_MAX_TASKS` | `3` | teto de tasks ativas (foreground); excedeu → rode `background:true` + `n_task_wait` |
 | `CANIVETE_MAX_POLLS` | `8` | teto de polls ativos aguardando subagente |
 | `CANIVETE_BROWSER_TIMEOUT_MS` | `40000` | timeout do Chrome headless (`n_browser_*`; PDF usa `CANIVETE_BROWSER_PDF_TIMEOUT_MS` ou este, default 60s) |
 | `CANIVETE_BROWSER_ALLOW_PRIVATE` | — | `1` libera intranet nos `n_browser_*` (default bloqueia SSRF) |
