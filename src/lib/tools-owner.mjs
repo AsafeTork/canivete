@@ -35,9 +35,9 @@ reg("n_ubrowser_tabs", {
 reg("n_ubrowser_read", {
   description: "Lê aba do dono COM login. Destilado markdown/desduplicado por padrão (mode=distill, ~4000 chars); mode=raw devolve texto integral + links (maxChars default 2500, maxLinks 15). {tabId?/tab?} = aba ativa.",
   inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" } }, required: [] },
-  run: async ({ tabId, mode, maxChars, maxLinks }) => {
+  run: async ({ tabId, tab, mode, maxChars, maxLinks }) => {
     const t0 = Date.now();
-    const r = await ubSend("tab.read", { tabId, mode: mode || "distill", maxChars, maxLinks });
+    const r = await ubSend("tab.read", { tabId, tab, mode: mode || "distill", maxChars, maxLinks });
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const body = r.data.markdown || r.data.text || "";
@@ -114,7 +114,7 @@ function ubSnapAutoCompactFields(els, budget = UB_SNAP_BYTE_BUDGET) {
 // UB_SNAP_PURE_END
 
 reg("n_ubrowser_snapshot", {
-  description: "Elementos clicáveis da aba do dono (ref/tag/texto/selector). compact=true: só ref|tag|texto|role sem x/y/w/h/selector (~60% menos tokens, paridade com headless). Suporte a paginação: max (default 50, máx 120) + offset para paginar até o fim. Rank por importância (viewport→nome→papel; editáveis por último) + junk sem nome descartado com `omitted`. Auto-compact-por-campos: corta CAMPOS (nunca elementos — mantém a página) acima do orçamento. Use offset para avançar páginas.",
+  description: "Elementos clicáveis da aba do dono (ref/tag/texto/selector). compact=true: só ref|tag|texto|role sem x/y/w/h/selector (~60% menos tokens, paridade com headless). Suporte a paginação: max (default 50, máx 120) + offset para paginar até o fim. Rank por importância (viewport→nome→papel; editáveis por último) + junk sem nome descartado com `omitted` (imgs com alt/src GANHAM nome e entram). Auto-compact-por-campos: corta CAMPOS (nunca elementos — mantém a página) acima do orçamento. Use offset para avançar páginas.",
   inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 50, description: "máximo de elementos por página (default 50, máx 120)" }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" }, compact: { type: "boolean", default: false, description: "compact=true: só ref|tag|texto|role sem x/y/w/h (~60% menos tokens, paridade com headless)" } }, required: [] },
   run: async ({ tabId, tab, max, offset, compact }) => {
     const t0 = Date.now();
@@ -129,7 +129,8 @@ reg("n_ubrowser_snapshot", {
     for (const el of ranked) { if (ubSnapIsJunk(el)) junk++; else kept.push(el); }
     const omitNote = junk ? ` (+${junk} junk omitidos)` : "";
     if (compact) {
-      const compactOut = kept.map(({ ref, tag, text, role }) => ({ ref, tag, text, role }));
+      // #42: text||name — img com alt/src ganha nome na extensão; compact não o esconde.
+      const compactOut = kept.map(({ ref, tag, text, role, name }) => ({ ref, tag, text: text || name || "", role }));
       return devOut({ summary: `${compactOut.length} elemento(s) (compact)${omitNote}`, data: { elements: compactOut, compact: true, omitted: junk }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_act", reason: "Agir com selector" }] });
     }
     const ac = ubSnapAutoCompactFields(kept);
@@ -167,9 +168,15 @@ reg("n_ubrowser_act", {
     const risk = ubRisk(a);
     if (risk === "high" && !(a.confirm && a.confirm.trim().length >= 4))
       return devOut({ status: "error", summary: `BLOQUEADO (alto risco: pagamento/senha/excluir/apagar). Só com pedido EXPLÍCITO + confirm="<frase do dono>". Ação: ${a.action} ${a.selector || a.url || ""}`, data: { action: a.action, risk }, telemetry: { execution_time_ms: Date.now() - t0 } });
-    if (a.action === "wait") { await new Promise((r) => setTimeout(r, Math.min(Number(a.ms) || 2000, 15000))); return devOut({ summary: "wait ok", data: { action: "wait" }, telemetry: { execution_time_ms: Date.now() - t0 } }); }
+    if (a.action === "wait") { await new Promise((r) => setTimeout(r, Math.min(Number(a.waitMs ?? a.ms) || 2000, 15000))); return devOut({ summary: "wait ok", data: { action: "wait" }, telemetry: { execution_time_ms: Date.now() - t0 } }); }
     const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", cursor: "tab.cursor", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow" };
-    const r = await ubSend(map[a.action], { ...a });
+    let r = await ubSend(map[a.action], { ...a });
+    // #43a: evaluate null intermitente (race com JS da página) — 1 retry após 800ms antes de declarar null.
+    if (a.action === "evaluate" && r && r.ok && (r.data?.value ?? null) === null && !r.data?.error) {
+      await new Promise((res) => setTimeout(res, 800));
+      const r2 = await ubSend(map[a.action], { ...a });
+      if (r2 && (r2.ok || r2.__timeout || r2.__offline)) r = r2;
+    }
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     const d = r.data || {};
@@ -182,7 +189,7 @@ reg("n_ubrowser_act", {
       if (!pageLoaded) return devOut({ status: "error", summary: `página não carregou — recovery: reload via n_ubrowser_act + waittext e tente de novo | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: false, selectorFound: false, pageLoaded: false }, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (cspBlocked) return devOut({ status: "error", summary: `CSP bloqueou avaliação JS — use n_ubrowser_read / n_ubrowser_snapshot em vez de evaluate | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: true, selectorFound: selFound, error: d.error }, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (a.selector && !selFound) return devOut({ status: "error", summary: `seletor não achou elemento — recovery: rode n_ubrowser_snapshot p/ selector atual + confira aba ativa | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: false, selectorFound: false }, telemetry: { execution_time_ms: Date.now() - t0 } });
-      if (!a.selector && value === null) return devOut({ status: "warn", summary: `evaluate retornou null — termine JS com valor + confira n_ubrowser_snapshot/read | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: false, selectorFound: selFound }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      if (!a.selector && value === null) return devOut({ status: "warn", summary: `evaluate retornou null${d.note ? ` — ${String(d.note).slice(0, 160)}` : " — termine JS com valor + confira n_ubrowser_snapshot/read"} | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: false, selectorFound: selFound, note: d.note || undefined }, telemetry: { execution_time_ms: Date.now() - t0 } });
       return devOut({ summary: "[evaluate] ok", data: { action: a.action, risk, value, cspBlocked: false, selectorFound: selFound }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_shot", reason: "Confirmar visualmente" }] });
     }
     // state-diff barato (sem round-trip extra): antes = intenção (a.url p/ goto/new), depois = estado que a extensão já retorna (d.title/d.url, fallback p/ a.url).

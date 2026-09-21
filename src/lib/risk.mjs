@@ -23,6 +23,20 @@ const HIGH = [
   /rm\s+-[rf]/i, /shred|wipe|dd\s+/i, /chpasswd|passwd.*(change|set)/i,
   /\bdrop\s+(table|database)\b|delete\s+from\b|\btruncate\b/i,
 ];
+// #18: "Pix" colado conta como informativo ("Pixtotal"); transacional em fill/type
+// (só digitar texto nunca move dinheiro) cai p/ medium salvo verbo de pagamento.
+const PIX_INFO = /pix[\s\/\-]*total|total[\s\/\-]*pix/i;
+const PIX_TRANS_WEAK = /\(pix\)|via pix|pelo pix|no pix/i; // em fill/type sem verbo: medium
+const PIX_TRANS_STRONG = /pix\s*:(?!\s*total\b)|chave pix/i; // sempre high (chave/similar)
+const PAY_VERB = /pag(?:ar|amento)|checkout|chave|qr\s*code|qrcode|copiar.*c[oó]digo|colar.*c[oó]digo|confirmar/i;
+// #43b: SQL read-only (SELECT/WITH/EXPLAIN/SHOW/...) nunca destrói — ignora a trava SQL.
+const SQL_DESTRUCTIVE = /\bdrop\s+(table|database)\b|delete\s+from\b|\btruncate\b/i;
+const SQL_WRITE_STMT = /\b(insert|update|delete|drop|truncate|alter|create|grant|revoke|exec(?:ute)?|call|merge|replace)\b/i;
+function isReadOnlySql(js) {
+  const s = String(js || "").trim().replace(/^\(+/, "");
+  if (!/^(select|with|explain|show|describe|desc|pragma)\b/i.test(s)) return false;
+  return !SQL_WRITE_STMT.test(s);
+}
 
 // Allowlist: navegação simples em whats.web e magalu ≠ ação destrutiva.
 // Login no whats.web/magalu é leitura/navegação, NÃO exfiltra senha.
@@ -40,10 +54,12 @@ const ALLOWLIST_BYPASS = /redefinir|trocar.*senha|alterar.*senha|nova senha|chan
 export function riskOf(a = {}) {
   const blob = `${a.action || ""} ${a.cmd || ""} ${a.selector || ""} ${a.text || ""} ${a.js || ""} ${a.url || ""}`;
   const norm = blob.replace(/[\/\-]+/g, " ").replace(/\s+/g, " ");
-  // INFORMATIVO: "Pix Total"/"Pix/Total"/"Pix - Total" em leitura NÃO é pagamento — nunca high por pix.
-  const isPixInformativo = /pix\s+total|total\s+pix/i.test(norm);
-  const isPixTransacional = /pix\s*:(?!\s*total\b)|\(pix\)|via pix|pelo pix|no pix|chave pix/i.test(blob);
-  if (isPixInformativo && !isPixTransacional) {
+  const isTextAction = a.action === "fill" || a.action === "type";
+  // #18: Pix informativo (inclui "Pixtotal" colado) em leitura/digitação NÃO é pagamento.
+  const isPixInformativo = PIX_INFO.test(norm);
+  const hasPayVerb = PAY_VERB.test(blob);
+  const pixWeakOnly = PIX_TRANS_WEAK.test(blob) && !PIX_TRANS_STRONG.test(blob) && !hasPayVerb;
+  if ((isPixInformativo || (isTextAction && pixWeakOnly)) && !PIX_TRANS_STRONG.test(blob) && !hasPayVerb) {
     if (isAllowlistURL(a.url)) return "low";
     if (a.action === "cursor") return a.click ? "medium" : "low";
     if (["click", "fill", "type", "select", "press", "evaluate"].includes(a.action)) return "medium";
@@ -61,7 +77,12 @@ export function riskOf(a = {}) {
   // Allowlist: navegação simples em whats.web + magalu (leitura, não transação).
   // Login no whats.web/magalu é leitura; NÃO exfiltra senha.
   if (isAllowlistURL(a.url) && !ALLOWLIST_BYPASS.test(blob)) return "low";
-  if (HIGH.some((r) => r.test(blob))) return "high";
+  // #43b: evaluate com SQL read-only (SELECT/WITH/...) nunca é high POR MOTIVO SQL
+  // (SELECT não destrói; outras travas — senha/pagar/rm — continuam valendo).
+  const HIGH_NOSQL = HIGH.filter((r) => r !== SQL_DESTRUCTIVE);
+  if (a.action === "evaluate" && a.js && isReadOnlySql(a.js)) {
+    if (HIGH_NOSQL.some((r) => r.test(blob))) return "high";
+  } else if (HIGH.some((r) => r.test(blob))) return "high";
   if (a.action === "cursor") return a.click ? "medium" : "low";
   if (["click", "fill", "type", "select", "press", "evaluate"].includes(a.action)) return "medium";
   return "low";

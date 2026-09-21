@@ -254,11 +254,18 @@ function ubAriaRole(el) {
   } catch {}
   return "generic";
 }
-// Accessible name na ordem: aria-label → text → value → placeholder → title.
+// Accessible name na ordem: aria-label → img alt → text → value → placeholder → title.
+// (#42: alt entra antes do texto p/ logos/imagens ganharem nome no snapshot.)
 function ubAccessibleName(el, text) {
   try {
     const al = el.getAttribute && el.getAttribute("aria-label");
     if (al && String(al).trim()) return String(al).replace(/\s+/g, " ").trim().slice(0, 60);
+  } catch {}
+  try {
+    if (el && (el.tagName || "").toLowerCase() === "img" && el.getAttribute) {
+      const alt = el.getAttribute("alt");
+      if (alt && String(alt).trim()) return String(alt).replace(/\s+/g, " ").trim().slice(0, 60);
+    }
   } catch {}
   if (text && String(text).trim()) return String(text).slice(0, 60);
   try {
@@ -272,6 +279,18 @@ function ubAccessibleName(el, text) {
   try {
     const ti = el.getAttribute && el.getAttribute("title");
     if (ti && String(ti).trim()) return String(ti).replace(/\s+/g, " ").trim().slice(0, 60);
+  } catch {}
+  // #42: img com src mas sem alt (logo sem alt é comum) — basename como nome,
+  // só se tiver corpo visível (>16px; tracking pixel 1x1 continua junk).
+  try {
+    if (el && (el.tagName || "").toLowerCase() === "img" && el.getAttribute) {
+      const src = el.getAttribute("src") || el.currentSrc || el.src || "";
+      const w = Number(el.width) || 0, h = Number(el.height) || 0;
+      if (src && w > 16 && h > 16) {
+        const base = String(src).split("?")[0].split("/").pop().slice(0, 40) || "img";
+        return "[img " + base + "]";
+      }
+    }
   } catch {}
   return "";
 }
@@ -645,8 +664,21 @@ function ubDistill(maxChars = 4000) {
       line = "[btn: " + t + "]";
     } else if (tag === "input" || tag === "select" || tag === "textarea") {
       const tipo = el.getAttribute("type") || el.type || tag;
-      const ph = ((el.getAttribute("placeholder") || el.value || el.getAttribute("aria-label") || "") + "").replace(/\s+/g, " ").trim();
-      line = "[campo " + tipo + (ph ? " " + ph : "") + "]";
+      const ph = ((el.getAttribute("placeholder") || el.getAttribute("aria-label") || "") + "").replace(/\s+/g, " ").trim();
+      // #41: value SEPARADO do placeholder — dá p/ distinguir preenchido de vazio.
+      let val = "";
+      try {
+        if (tag === "select") {
+          const sel = el.selectedOptions && el.selectedOptions[0];
+          val = ((sel && (sel.text || sel.value)) || el.value || "");
+        } else if (tipo === "checkbox" || tipo === "radio") {
+          val = el.checked ? "checked" : "unchecked";
+        } else {
+          val = (el.value || "");
+        }
+        val = String(val).replace(/\s+/g, " ").trim();
+      } catch {}
+      line = "[campo " + tipo + (ph ? " " + ph : "") + "]" + (val ? ' = "' + val.slice(0, 80) + '"' : "");
     } else if (tag === "img") {
       const alt = (el.getAttribute("alt") || "").replace(/\s+/g, " ").trim();
       if (!alt) { descartadas++; continue; }
@@ -869,6 +901,9 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {
       try { const fv = await elCenterFresh(a.selector); await ubGlide(fv.p.x, fv.p.y); } catch {} // visual
       ubPulse();
       el.focus();
+      // #44: select-all antes de inserir — fill SUBSTITUI em vez de anexar
+      // (contenteditable/divs; Monaco/CodeMirror vão pela API no background, mundo MAIN).
+      try { if (typeof el.select === "function") el.select(); else document.execCommand("selectAll", false, null); } catch {}
       el.value = "";
       el.dispatchEvent(new Event("input", { bubbles: true }));
       document.execCommand("insertText", false, String(a.text ?? ""));

@@ -114,11 +114,29 @@ function waitLoad(tabId, maxMs) {
 }
 
 async function handle(cmd, a = {}) {
-  // resolução de aba por nome: vale p/ todos os comandos que aceitam tabId
+  // resolução de aba por nome: vale p/ todos os comandos que aceitam tabId.
+  // score: http(s) primeiro; chrome://newtab/blank por último (só se o needle pedir);
+  // match no título pesa mais que na URL; aba ativa desempata (#40).
   if (a && a.tab && !a.tabId) {
     const needle = String(a.tab).toLowerCase();
     const all = await chrome.tabs.query({});
-    const found = all.find((t) => ((t.title || "") + " " + (t.url || "")).toLowerCase().includes(needle));
+    const wantsChrome = needle.includes("chrome://") || needle.includes("newtab") || needle.includes("blank");
+    const scored = [];
+    for (const t of all) {
+      const title = (t.title || "").toLowerCase();
+      const url = (t.url || "").toLowerCase();
+      if (!title.includes(needle) && !url.includes(needle)) continue;
+      let s = 0;
+      if (/^https?:\/\//.test(url)) s += 10;
+      else if (/^chrome:\/\//.test(url)) s -= wantsChrome ? 0 : 12;
+      if (/^(about:blank|newtab)/.test(url) || /new ?tab/.test(title)) s -= wantsChrome ? 0 : 8;
+      if (title.includes(needle)) s += 5;
+      if (url.includes(needle)) s += 3;
+      if (t.active) s += 2;
+      scored.push({ t, s });
+    }
+    scored.sort((x, y) => y.s - x.s);
+    const found = scored.length ? scored[0].t : null;
     if (!found) throw new Error(`aba "${a.tab}" não encontrada — veja n_ubrowser_tabs`);
     a.tabId = found.id;
   }
@@ -231,6 +249,58 @@ async function handle(cmd, a = {}) {
       return d;
     }
     if (cmd === "tab.read" && a.links === false) a.maxLinks = 0; // dica p/ content pular coleta
+    // #44: editor rico (Monaco/CodeMirror) — content script roda em mundo ISOLATED e não
+    // enxerga window.monaco; tenta a API do editor no mundo MAIN antes do fill genérico
+    // (insertText no textarea-espelho do Monaco anexaria no meio do texto).
+    if (cmd === "tab.fill" && a.selector) {
+      try {
+        const [mr] = await withTimeout(chrome.scripting.executeScript({
+          target: { tabId: id },
+          world: "MAIN",
+          func: (sel, text) => {
+            try {
+              const el = document.querySelector(sel);
+              if (!el) return { rich: false, reason: "notfound" };
+              const t = String(text ?? "");
+              const mroot = el.closest ? el.closest(".monaco-editor") : null;
+              if (mroot) {
+                const mon = window.monaco;
+                if (mon && mon.editor && typeof mon.editor.getModels === "function") {
+                  let target = (mon.editor.getModels() || [])[0] || null;
+                  try {
+                    const editors = typeof mon.editor.getEditors === "function" ? mon.editor.getEditors() : [];
+                    for (const ed of editors) {
+                      try {
+                        const dom = ed.getDomNode ? ed.getDomNode() : null;
+                        if (dom && (dom === mroot || mroot.contains(dom) || dom.contains(mroot))) { target = ed.getModel(); break; }
+                      } catch {}
+                    }
+                  } catch {}
+                  if (target && typeof target.setValue === "function") { target.setValue(t); return { rich: true, via: "monaco" }; }
+                }
+                return { rich: false, reason: "no-api" };
+              }
+              const cmRoot = el.closest ? (el.closest(".CodeMirror") || el.closest(".cm-editor")) : null;
+              if (cmRoot) {
+                try {
+                  if (cmRoot.CodeMirror && typeof cmRoot.CodeMirror.setValue === "function") { cmRoot.CodeMirror.setValue(t); return { rich: true, via: "cm5" }; }
+                  const vw = cmRoot.__cmView && cmRoot.__cmView.view;
+                  if (vw && vw.dispatch && vw.state) { vw.dispatch({ changes: { from: 0, to: vw.state.doc.length, insert: t } }); return { rich: true, via: "cm6" }; }
+                } catch (e) { return { rich: false, reason: "cm-err" }; }
+                return { rich: false, reason: "no-api" };
+              }
+              return { rich: false };
+            } catch (e) { return { rich: false, reason: String((e && e.message) || e).slice(0, 120) }; }
+          },
+          args: [String(a.selector), String(a.text ?? "")],
+        }), 15000, "content tab.fill richeditor");
+        if (mr && mr.result && mr.result.rich) {
+          await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
+          const st = await ask(id, "state", {}).catch(() => ({}));
+          return { filled: a.selector, via: mr.result.via, ...((st && typeof st === "object") ? st : {}) };
+        }
+      } catch { /* sem MAIN (CSP/página chrome) → cai no fill genérico abaixo */ }
+    }
     const map = {
       "tab.read": "read", "tab.snapshot": "snapshot", "tab.click": "click",
       "tab.fill": "fill", "tab.press": "press", "tab.scroll": "scroll", "tab.html": "html",
