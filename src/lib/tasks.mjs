@@ -5,6 +5,7 @@ import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, watch } fro
 import { join, dirname, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { reg, out, trimOut, CWD, HOME, sendToHost } from "./ctx.mjs";
+import { llmChat, llmMissing, llmModels } from "./llm.mjs";
 
 const todo = [];
 
@@ -23,6 +24,7 @@ const todo = [];
 // ENV: CANIVETE_WATCH=""=caixas extras p/ push 📬 (CSV, ex: "box1,box2")
 const RUNNER = process.env.CANIVETE_RUNNER || "opencode";
 const isOpencode = RUNNER === "opencode" || RUNNER.endsWith("/opencode");
+const isLLMDirect = !isOpencode && !RUN_TEMPLATE;
 // Binário real do opencode: respeita CANIVETE_RUNNER absoluto + fallbacks de PATH mínimo do host MCP.
 // Dirs extras garantidos no PATH de spawn/exec (MCP roda com PATH mínimo via `node src/server.mjs --http`).
 const EXTRA_BIN_DIRS = ["/home/tork/.local/bin", "/usr/local/bin"];
@@ -72,6 +74,108 @@ const MAX_MSGS = Number(process.env.CANIVETE_MAX_MSGS) || 100;
 const MAX_MSG_CHARS = Number(process.env.CANIVETE_MAX_MSG_CHARS) || 4000;
 const KNOWN_AGENTS = (process.env.CANIVETE_AGENTS || "mcp-only,explore,quick,general,reviewer").split(",").map((s) => s.trim()).filter(Boolean);
 
+// ---- serve persistente: 1 processo `opencode serve` p/ N tasks (HTTP localhost, API limpa) ----
+// O free tier zen só responde ao binário oficial (gate anti-abuso por fingerprint);
+// então o caminho mais rápido/limpo possível é o serve: 1 processo, N tasks via REST,
+// sem spawn de ~200MB-1GB por task. Fallback automático p/ spawn se o serve falhar.
+// ENV: CANIVETE_SERVE_PORT=19425=porta do serve gerenciado (0 = desliga serve, usa spawn)
+// ENV: CANIVETE_SERVE_URL=""=override total (ex: http://127.0.0.1:19425)
+// ENV: CANIVETE_TASK_MODE=attach=attach (reusa serve/TUI aberto, NUNCA inicia nada; fallback spawn) | auto (serve→sobe gerenciado→fallback spawn) | serve (só serve, sem spawn) | spawn (só spawn clássico)
+// Padrão attach: o canivete nunca inicia processo opencode sozinho (RAM). P/ via rápida,
+// abra o TUI com `opencode --port 4096` e fixe CANIVETE_SERVE_URL=http://127.0.0.1:4096.
+// Senha do serve (Basic opencode:<token>): mesmo token do canivete; sem token = sem auth (localhost).
+const SERVE_PORT = Number(process.env.CANIVETE_SERVE_PORT) || 19425;
+const SERVE_URL = (process.env.CANIVETE_SERVE_URL || `http://127.0.0.1:${SERVE_PORT}`).replace(/\/$/, "");
+const TASK_MODE = String(process.env.CANIVETE_TASK_MODE || "attach").toLowerCase();
+function serveToken() {
+  try {
+    const p = process.env.CANIVETE_TOKEN_FILE || join(HOME, ".config/canivete/token.txt");
+    const t = readFileSync(p, "utf8").trim();
+    return t || "";
+  } catch { return ""; }
+}
+async function serveFetch(path, { method = "GET", body, timeout = 30000, noAuth = false } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => { try { ctrl.abort(); } catch {} }, Math.max(1000, timeout));
+  try {
+    const headers = { "Content-Type": "application/json" };
+    const tok = noAuth ? "" : serveToken();
+    if (tok) headers.Authorization = `Basic ${Buffer.from(`opencode:${tok}`).toString("base64")}`;
+    const res = await fetch(`${SERVE_URL}${path}`, {
+      method, headers, signal: ctrl.signal,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    // TUI aberto não tem senha: se mandamos Basic e ele respondeu 401, tenta sem auth 1x
+    if (res.status === 401 && tok && !noAuth) {
+      clearTimeout(timer);
+      return serveFetch(path, { method, body, timeout, noAuth: true });
+    }
+    const text = await res.text().catch(() => "");
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch {}
+    if (res.status >= 400) return { status: res.status, json, text, error: `serve ${res.status}: ${text.slice(0, 300)}` };
+    return { status: res.status, json, text, error: null };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    const isAbort = e?.name === "AbortError" || /abort/i.test(msg);
+    return { status: 0, json: null, text: "", error: isAbort ? `serve timeout após ${timeout}ms` : `serve unreachable: ${msg}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function serveHealthy() {
+  try {
+    const r = await serveFetch("/global/health", { timeout: 5000 });
+    return !!(r.json && r.json.healthy);
+  } catch { return false; }
+}
+let serveChildPid = 0;
+let serveStarting = null; // promise única: N tasks concorrentes não spawnam N serves
+async function ensureServe(allowStart = true) {
+  if (!SERVE_PORT && !process.env.CANIVETE_SERVE_URL) return { ok: false, error: "serve desligado (CANIVETE_SERVE_PORT=0)" };
+  if (await serveHealthy()) return { ok: true, reused: true };
+  if (!allowStart) return { ok: false, error: `serve fora do ar em ${SERVE_URL} (modo attach não inicia serve; abra o TUI com --port ou use CANIVETE_TASK_MODE=auto)` };
+  if (serveStarting) return serveStarting;
+  serveStarting = (async () => {
+    if (await serveHealthy()) return { ok: true, reused: true };
+    const missing = runnerMissing();
+    if (missing) return { ok: false, error: missing };
+    try {
+      const env = { ...process.env, PATH: augmentedPath(process.env.PATH) };
+      const tok = serveToken();
+      if (tok) env.OPENCODE_SERVER_PASSWORD = tok;
+      const child = spawn(OPENCODE_BIN, ["serve", "--port", String(SERVE_PORT), "--hostname", "127.0.0.1"], {
+        cwd: CWD, env, stdio: ["ignore", "ignore", "ignore"], detached: true,
+      });
+      child.unref?.();
+      if (child.pid) serveChildPid = child.pid;
+    } catch (e) {
+      serveStarting = null;
+      return { ok: false, error: `spawn serve falhou: ${e?.message || e}` };
+    }
+    const t0 = Date.now();
+    for (;;) {
+      if (await serveHealthy()) break;
+      if (Date.now() - t0 > 60000) {
+        serveStarting = null;
+        return { ok: false, error: `serve não subiu em 60s em ${SERVE_URL} (porta ocupada por outro processo?)` };
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    // health 200 ≠ pronto: cold start ainda carrega MCP/providers (single-thread ocupado) —
+    // assenta antes de entregar p/ criar sessão (era "aborted" no primeiro POST).
+    await new Promise((r) => setTimeout(r, 3000));
+    if (!(await serveHealthy())) { serveStarting = null; return { ok: false, error: `serve instável em ${SERVE_URL}` }; }
+    serveStarting = null;
+    return { ok: true, reused: false };
+  })();
+  return serveStarting;
+}
+function serveAbort(sessionId) {
+  if (!sessionId) return;
+  serveFetch(`/session/${sessionId}/abort`, { method: "POST", timeout: 10000 }).catch((e) => logWarn(`serveAbort falhou ${sessionId}: ${e?.message || e}`));
+}
+
 // ---- segurança: escapes contra injeção shell/SQL (prompt/model/agent/id vêm do LLM) ----
 // Shell: envolve em aspas simples; `'` interno vira `'"'"'` (fecha, aspas-duplas, reabre).
 function escapeShellArg(s) {
@@ -83,7 +187,7 @@ function escapeSql(s) {
 }
 // Timeouts curtos: a chamada ao binário é síncrona (bloqueia o event-loop);
 // 5s/8s limitam a janela — caches abaixo evitam as chamadas quentes.
-const DB_QUERY_TIMEOUT_MS = Number(process.env.CANIVETE_DB_TIMEOUT_MS) || 5000;
+const DB_QUERY_TIMEOUT_MS = Number(process.env.CANIVETE_DB_TIMEOUT_MS) || 15000;
 const EXPORT_TIMEOUT_MS = Number(process.env.CANIVETE_EXPORT_TIMEOUT_MS) || 8000;
 // ---- poll tuning (perf): backoff exponencial + teto de concorrência ----
 const POLL_BASE_MS = 2000;
@@ -116,9 +220,12 @@ function runnerMissing() {
     }
     catch { return "binário 'opencode' não encontrado — defina CANIVETE_RUNNER + CANIVETE_RUN_TEMPLATE (modo genérico) ou instale o opencode"; }
   }
-  if (!RUN_TEMPLATE) return "modo genérico sem CANIVETE_RUN_TEMPLATE — ex: CANIVETE_RUN_TEMPLATE=\"claude -p {prompt}\"";
-  return null;
-}
+   if (!RUN_TEMPLATE) {
+     if (isLLMDirect) return llmMissing() || null;
+     return "modo genérico sem CANIVETE_RUN_TEMPLATE — ex: CANIVETE_RUN_TEMPLATE=\"claude -p {prompt}\"";
+   }
+   return null;
+ }
 
 function cwdTag(s) {
   let h = 5381;
@@ -301,7 +408,12 @@ function procAlive(pid) {
 }
 
 function tryKill(t) {
-  if (!t || t.status !== "running" || !t.pid || !procAlive(t.pid)) return null;
+  if (!t || t.status !== "running") return null;
+  if (t.runner === "serve" && t.sessionId) {
+    serveAbort(t.sessionId); // sem pid: aborta a sessão no serve (fire-and-forget)
+    return `serve:${t.sessionId}`;
+  }
+  if (!t.pid || !procAlive(t.pid)) return null;
   const pid = t.pid;
   try {
     process.kill(pid, "SIGTERM");
@@ -317,7 +429,7 @@ async function sweepTask(t) {
   // devengine tasks (n_orchestrate_task) usam pollDb próprio — finalizar normalmente
   const age = Date.now() - new Date(t.startedAt).getTime();
   const deadPid = t.pid && !procAlive(t.pid);
-  const staleNoPid = !t.pid && age > 60000;
+  const staleNoPid = !t.pid && t.runner !== "serve" && age > 60000;
   if (deadPid) {
     try {
       const finalized = await finalizeDetachedIfDead(t.id).catch((e) => { logWarn(`sweep finalize falhou ${t.id}: ${e?.message || e}`); return null; });
@@ -366,7 +478,7 @@ function pendingHints() {
 }
 
 reg("n_task", {
-  description: "Spawn subagente isolado (opencode ou genérico via CANIVETE_RUN_TEMPLATE). model OBRIGATÓRIO no opencode: n_list_models → passe em {model}. Tipos: mcp-only|explore|quick|general|reviewer. WORKFLOW: fan-out N× background:true → n_task_wait any/all → n_task_send. Sync bloqueia; fim notifica. Ao vivo: n_task_tail.",
+   description: "Subagente isolado. Modo LLM direto (default sem RUN_TEMPLATE): POST HTTPS direto ao provedor OpenAI-compatível (Groq/Cerebras/Gemini/DeepSeek/Ollama/etc.), zero opencode. Modo opencode: CANIVETE_RUNNER=opencode + serve HTTP persistente (CANIVETE_TASK_MODE=auto|attach|serve|spawn, CANIVETE_SERVE_URL, CANIVETE_SERVE_PORT=19425) ou spawn clássico (CANIVETE_RUN_TEMPLATE). model OBRIGATÓRIO (id do provedor; n_list_models lista presets). Tipos: mcp-only|explore|quick|general|reviewer. WORKFLOW: fan-out N× background:true → n_task_wait any/all → n_task_send. Sync bloqueia; fim notifica. Ao vivo: n_task_tail. Env: CANIVETE_TASK_MODE, CANIVETE_SERVE_URL, CANIVETE_SERVE_PORT, CANIVETE_LLM_BASE_URL, CANIVETE_LLM_API_KEY, CANIVETE_LLM_MODEL, CANIVETE_LLM_PROVIDER (groq|cerebras|gemini|openrouter|deepseek|openai|ollama) + fallbacks _2_..._5_.",
   inputSchema: {
     type: "object",
     properties: {
@@ -422,19 +534,28 @@ reg("n_task", {
       _batchTotal = _batchItems.length;
       prompt = _buildBatchPrompt(prompt, _batchItems);
     }
-    if (!model && isOpencode) {
-      return out(`model é OBRIGATÓRIO — escolha explícita. Chame n_list_models para ver os disponíveis e passe um deles em n_task({model}).`, true);
-    }
-    if (!model && !isOpencode) model = "default";
-    if (isOpencode && String(model).startsWith("opencode-go/")) {
-      return out(`modelo bloqueado: "${model}" é opencode-go (pago/instável). Chame n_list_models e escolha um free zen: ${FREE_MODELS.join(", ")}`, true);
-    }
-    if (isOpencode && String(model) === "opencode/hy3-free") {
-      return out(`modelo "${model}" quebrado (não listado em opencode models). Chame n_list_models e escolha um free zen: ${FREE_MODELS.join(", ")}`, true);
-    }
-    if (isOpencode && !FREE_MODELS.includes(String(model))) {
-      return out(`modelo desconhecido: "${model}". Chame n_list_models e escolha um da lista: ${FREE_MODELS.join(", ")}`, true);
-    }
+if (!model && isOpencode) {
+       return out(`model é OBRIGATÓRIO — escolha explícita. Chame n_list_models para ver os disponíveis e passe um deles em n_task({model}).`, true);
+     }
+     if (!model && !isOpencode) model = "default";
+     // LLM direto: model é o id do provedor — sem validação de free list, sem opencode-go/hy3
+     if (isLLMDirect) {
+       const providers = llmModels();
+       if (!providers.length) return out(llmMissing(), true);
+       if (!providers.some((p) => p.model === String(model))) {
+         return out(`model "${model}" não encontrado nos provedores configurados (${providers.map((p) => `${p.provider}:${p.model}`).join(", ")}). Use n_list_models para ver os disponíveis.`, true);
+       }
+     } else {
+       if (isOpencode && String(model).startsWith("opencode-go/")) {
+         return out(`modelo bloqueado: "${model}" é opencode-go (pago/instável). Chame n_list_models e escolha um free zen: ${FREE_MODELS.join(", ")}`, true);
+       }
+       if (isOpencode && String(model) === "opencode/hy3-free") {
+         return out(`modelo "${model}" quebrado (não listado em opencode models). Chame n_list_models e escolha um free zen: ${FREE_MODELS.join(", ")}`, true);
+       }
+       if (isOpencode && !FREE_MODELS.includes(String(model))) {
+         return out(`modelo desconhecido: "${model}". Chame n_list_models e escolha um da lista: ${FREE_MODELS.join(", ")}`, true);
+       }
+     }
     const agent = subagent_type || "mcp-only";
     if (!KNOWN_AGENTS.includes(agent)) {
       return out(`subagent_type desconhecido: "${agent}". Válidos: ${KNOWN_AGENTS.join(", ")}`, true);
@@ -520,8 +641,159 @@ reg("n_task", {
     if (_isBatch) entry.batch = { total: _batchTotal, done: 0 };
     tasks.set(id, entry);
     await persistTask(entry);
+    const formatFin = (fin) => {
+      const via = fin.runner === "serve" ? "via serve (sem spawn run)" : `pid ${fin.pid ?? "?"}`;
+      if (fin.ephemeral) {
+        setTimeout(async () => {
+          try {
+            await unlink(join(TASKS_DIR, `${fin.id}.json`));
+            await unlink(join(MB_DIR, `${fin.id}.json`)).catch(() => {});
+            tasks.delete(fin.id);
+          } catch {}
+        }, 5000);
+      }
+      const finTag = fin.label ? `${fin.label} (${fin.id})` : (shortLabel ? `${shortLabel} (${fin.id})` : fin.id);
+      const header = `[${agent} ${fin.status} | ${fin.model || chosenModel}${fin.ephemeral ? " | ephemeral" : ""}, exit ${fin.exitCode}, ${via}] ${finTag}\ntools usados: ${fin.tools.length ? fin.tools.join(", ") : "nenhum"}`;
+      let ownMb = "";
+      try {
+        const box = readJson(join(MB_DIR, `${fin.id}.json`), null);
+        const n = box && Array.isArray(box.msgs) ? box.msgs.length : 0;
+        if (n) ownMb = `\n📬 ${n} notificação(ões) pendente(s) p/ ${fin.label || shortLabel || fin.id} — leia com n_task_recv({task_id:"${fin.id}"})`;
+      } catch {}
+      if (_isBatch || fin.batch) {
+        const total = (fin.batch && fin.batch.total) || _batchTotal;
+        const slices = (fin.batch && Array.isArray(fin.batch.results) && fin.batch.results.length === total) ? fin.batch.results : _sliceBatch(fin.result || "", total);
+        const done = (fin.batch && typeof fin.batch.done === "number") ? fin.batch.done : slices.filter((s) => String(s || "").trim()).length;
+        const finTagB = fin.label ? `${fin.label} (${fin.id})` : (shortLabel ? `${shortLabel} (${fin.id})` : fin.id);
+        const headerB = `[${agent} ${fin.status} | ${fin.model || chosenModel}${fin.ephemeral ? " | ephemeral" : ""} | batch ${done}/${total} ${fin.runner === "serve" ? "via serve (sem spawn run)" : "em 1 PID (economia " + total + "×200MB→1×)"}, exit ${fin.exitCode}] ${finTagB}\ntools usados: ${fin.tools.length ? fin.tools.join(", ") : "nenhum"}`;
+        if (fin.error && !fin.result) return out(`${headerB}\n${fin.error}` + ownMb + pendingHints());
+        const bodyB = slices.map((s, i) => `### RESULT ${i + 1} ###\n${String(s || "").trim() || "(sem resposta)"}`).join("\n\n");
+        return out(headerB + (fin.result ? `\n\n${trimOut(bodyB, 20000)}` : "\n(sem resposta)") + ownMb + pendingHints());
+      }
+      return out((fin.error && !fin.result ? `${header}\n${fin.error}` : header + (fin.result ? `\n\n${trimOut(fin.result, 20000)}` : "\n(sem resposta)")) + ownMb + pendingHints());
+    };
     const missing = runnerMissing();
     if (missing) return out(missing, true);
+    // ---- LLM direto (isLLMDirect): POST HTTPS ao provedor OpenAI-compatível, sem opencode ----
+    const runViaLLM = async () => {
+      const providers = llmModels();
+      const provider = providers.find((p) => p.model === String(chosenModel)) || providers[0];
+      if (!provider) return { error: `modelo "${chosenModel}" não mapeado a provider configurado` };
+      if (!background) entry.lastActivityAt = new Date().toISOString();
+      await persistTask(entry);
+      if (background) {
+        llmChat([{ role: "user", content: prompt }], { timeoutMs: t, maxTokens: 4000 })
+          .then(async (r) => {
+            if (!tasks.has(id)) return;
+            const fin = { id, status: r.ok ? "done" : "failed", model: chosenModel, agent, exitCode: r.ok ? 0 : 1, tools: [], runner: "llm", result: r.ok ? r.text : null, error: r.ok ? null : r.error, finishedAt: new Date().toISOString(), label: shortLabel, ephemeral };
+            entry.status = fin.status; entry.result = fin.result; entry.error = fin.error; entry.exitCode = fin.exitCode; entry.finishedAt = fin.finishedAt; entry.runner = "llm";
+            await persistTask(entry);
+            if (r.ok) await notifyMain(id, "done", description, chosenModel, r.text.slice(0, 200)).catch(() => {});
+            else await notifyMain(id, "failed", description, chosenModel, r.error?.slice(0, 200)).catch(() => {});
+            if (ephemeral) setTimeout(() => { try { unlink(join(TASKS_DIR, `${id}.json`)); unlink(join(MB_DIR, `${id}.json`)).catch(() => {}); tasks.delete(id); } catch {} }, 5000);
+          })
+          .catch(async (e) => {
+            if (!tasks.has(id)) return;
+            entry.status = "failed"; entry.error = String(e?.message || e).slice(0, 200); entry.finishedAt = new Date().toISOString(); entry.exitCode = 1;
+            await persistTask(entry); await notifyMain(id, "failed", description, chosenModel, entry.error).catch(() => {});
+          });
+        return { bgMsg: `task ${shortLabel ? `${shortLabel} (${id})` : id} via LLM direto em background (${provider.name}:${chosenModel})${ephemeral ? " [ephemeral]" : ""}\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara status: n_task_status({ task_id: "${id}" })` };
+      }
+      const r = await llmChat([{ role: "user", content: prompt }], { timeoutMs: t, maxTokens: 4000 });
+      entry.finishedAt = new Date().toISOString(); entry.lastActivityAt = entry.finishedAt;
+      if (r.ok) { entry.status = "done"; entry.result = r.text; entry.exitCode = 0; }
+      else { entry.status = "failed"; entry.error = r.error; entry.exitCode = 1; }
+      entry.runner = "llm";
+      await persistTask(entry);
+      return { fin: entry };
+    };
+    if (isLLMDirect) {
+      const r = await runViaLLM();
+      if (r.bgMsg) return out(r.bgMsg);
+      if (r.error) return out(r.error, true);
+      return formatFin(r.fin);
+    }
+    // ---- via serve (preferido): 1 processo p/ N tasks, API limpa; fallback p/ spawn ----
+    const runViaServe = async () => {
+      const ens = await ensureServe(TASK_MODE !== "attach").catch((e) => ({ ok: false, error: String(e?.message || e) }));
+      if (!ens.ok) return { error: ens.error };
+      let c = null;
+      for (let i = 0; i < 3; i++) {
+        c = await serveFetch("/session", { method: "POST", body: { title: `${TASK_TITLE_PREFIX}${id}` }, timeout: 60000 });
+        if (!c.error && c.json && c.json.id) break;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      if (c.error || !c.json || !c.json.id) return { error: `create session: ${c.error || "sem id"}` };
+      const sid = c.json.id;
+      entry.sessionId = sid;
+      entry.runner = "serve";
+      entry.lastActivityAt = new Date().toISOString();
+      await persistTask(entry);
+      const p = await serveFetch(`/session/${sid}/prompt_async`, { method: "POST", body: { model: { providerID: "opencode", modelID: chosenModel }, agent, parts: [{ type: "text", text: orchestrationNote(id) + prompt }] }, timeout: 60000 });
+      if (p.error) { serveAbort(sid); return { error: `prompt_async: ${p.error}` }; }
+      const serveDone = new Promise((resolveP) => {
+        let serveTimer = null; let pollTimer = null; let killed = false;
+        const stopAll = () => { if (serveTimer) clearTimeout(serveTimer); serveTimer = null; if (pollTimer) clearTimeout(pollTimer); pollTimer = null; activePolls.delete(id); };
+        const finalizeServe = async (how, errMsg) => {
+          if (entry.finalizing) return; entry.finalizing = true; stopAll();
+          if (!tasks.has(id)) { entry.status = "deleted"; entry.finishedAt = new Date().toISOString(); resolveP(entry); return; }
+          const settled = await settleSession(sid); const responseText = (settled.text || "").trim();
+          const toolCalls = getSessionTools(sid);
+          entry.exitCode = how === "done" ? 0 : 1; entry.status = how === "done" ? "done" : how;
+          entry.finishedAt = new Date().toISOString(); entry.tools = [...new Set(toolCalls)];
+          const modelTag = `[modelo: ${chosenModel}]`;
+          if (errMsg) entry.error = `${modelTag} ${errMsg}`; else if (how === "timeout") entry.error = `${modelTag} timeout after ${Math.round(t / 1000)}s (via serve)`; else entry.error = responseText ? null : `${modelTag} serve sem resposta aproveitável`;
+          entry.result = responseText; entry.tailRaw = responseText.slice(-8000);
+          if (_isBatch) { try { const _slices = _sliceBatch(entry.result, _batchTotal); entry.batch = { total: _batchTotal, done: _slices.filter((s) => String(s || "").trim()).length, results: _slices }; } catch {} }
+          persistTask(entry); const summary = entry.error || (entry.result ? entry.result.slice(0, 200) : "");
+          notifyMain(id, entry.status, description, chosenModel, summary).catch((e) => logWarn(`notifyMain falhou ${id}: ${e?.message || e}`));
+          try { sendToHost({ method: "notifications/message", params: { level: entry.status === "done" ? "info" : "warning", logger: "native", data: `task ${id} (${description || ""}) — ${entry.status}` } }); } catch (e) { logWarn(`sendToHost falhou ${id}: ${e?.message || e}`); }
+          if (entry.ephemeral) { setTimeout(async () => { try { await unlink(join(TASKS_DIR, `${id}.json`)); await unlink(join(MB_DIR, `${id}.json`)).catch(() => {}); tasks.delete(id); } catch (e) { logWarn(`ephemeral cleanup falhou ${id}: ${e?.message || e}`); } }, 30000); }
+          resolveP(entry);
+        };
+        serveTimer = setTimeout(() => { killed = true; serveAbort(sid); finalizeServe("timeout").catch((e) => logWarn(`finalize timeout falhou ${id}: ${e?.message || e}`)); }, t);
+        let pollDelay = POLL_BASE_MS;
+        if (activePolls.size < MAX_ACTIVE_POLLS) { activePolls.add(id); } else { pollDelay = POLL_MAX_MS; logWarn(`poll teto atingido (${MAX_ACTIVE_POLLS}) — task ${id} começa em ${POLL_MAX_MS}ms`); }
+        let pollBusy = false;
+        const schedule = (ms) => { if (entry.finalizing || !tasks.has(id)) { stopAll(); return; } pollTimer = setTimeout(tick, pollJitter(ms)); };
+        const tick = () => {
+          pollTimer = null;
+          if (entry.finalizing || !tasks.has(id)) { stopAll(); return; }
+          if (pollBusy) { schedule(pollDelay); return; } pollBusy = true; let progressed = false;
+          try {
+            entry.lastActivityAt = new Date().toISOString();
+            const partial = pollCached(`txt:${sid}`, 5000, () => getSessionAssistantText(sid));
+            if (partial) { if (partial.length !== (entry.tailRaw || "").length) progressed = true; entry.tailRaw = partial.slice(-8000); }
+            try { const now = Date.now(); const grown = (entry.tailRaw || "").length > (entry.lastPushLen || 0); if (grown && now - (entry.lastPushAt || 0) > 25000) { entry.lastPushAt = now; entry.lastPushLen = (entry.tailRaw || "").length; entry.tools = pollCached(`tools:${sid}`, 5000, () => getSessionTools(sid)); persistTask(entry).catch((e) => logWarn(`persist progress falhou ${id}: ${e?.message || e}`)); sendToHost({ method: "notifications/message", params: { level: "info", logger: "canivete", data: `task ${id} (${description || ""}) — andando [${entry.tools.slice(-4).join(", ") || "iniciando"}]\n${(entry.tailRaw || "").slice(-600)}` } }); }
+            } catch (e) { logWarn(`poll push falhou ${id}: ${e?.message || e}`); }
+            if (!killed && isSessionDone(sid)) { pollBusy = false; finalizeServe("done").catch((e) => logWarn(`finalize poll falhou ${id}: ${e?.message || e}`)); return; }
+          } catch (e) { logWarn(`serve poll tick falhou ${id}: ${e?.message || e}`); }
+          pollBusy = false; pollDelay = progressed ? POLL_BASE_MS : nextPollDelay(pollDelay); schedule(pollDelay);
+        };
+        schedule(pollDelay);
+      });
+      entry.donePromise = serveDone;
+      await persistTask(entry);
+      const eph = ephemeral ? " [ephemeral auto-exclui em 30s]" : "";
+      const tag = shortLabel ? `${shortLabel} (${id})` : id;
+      if (_isBatch && background) {
+        return { bgMsg: `task ${tag} batch ${_batchTotal} jobs via serve em background (sem spawn run) (${agent} | ${chosenModel})${eph}\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: n_task_send({ task_id: "${id}", message: "..." })\npara excluir: n_task_delete({task_id:"${id}"}) ou n_task_delete({task_id:"all"})` };
+      }
+      if (background) {
+        return { bgMsg: `task ${tag} via serve em background (sem spawn run) (${agent} | ${chosenModel})${eph}\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: n_task_send({ task_id: "${id}", message: "..." })\npara excluir: n_task_delete({task_id:"${id}"}) ou n_task_delete({task_id:"all"})` };
+      }
+      let finServe;
+      if (t > HOST_GUARD_MS) { finServe = await Promise.race([serveDone, new Promise((r) => setTimeout(() => r(null), HOST_GUARD_MS))]); if (!finServe) return { pendingMsg: `task ${shortLabel ? `${shortLabel} (${id})` : id} ainda rodando após ${Math.round(HOST_GUARD_MS / 1000)}s (limite de resposta; continua em background)\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" })\npara status: n_task_status({ task_id: "${id}" })` }; } else { finServe = await serveDone; }
+      return { fin: finServe };
+    };
+    if (isOpencode && TASK_MODE !== "spawn" && SERVE_PORT > 0) {
+      const r = await runViaServe();
+      if (r.fin) return formatFin(r.fin);
+      if (r.bgMsg) return out(r.bgMsg);
+      if (r.pendingMsg) return out(r.pendingMsg);
+      if (TASK_MODE === "serve") return out(`serve indisponível: ${r.error} (CANIVETE_TASK_MODE=serve não usa fallback)`, true);
+      logWarn(`serve falhou, fallback p/ spawn: ${r.error}`);
+    }
     const args = ["run"];
     args.push("--title", `${TASK_TITLE_PREFIX}${id}`);
     args.push("--agent", agent);
@@ -694,34 +966,7 @@ reg("n_task", {
     } else {
       fin = await donePromise;
     }
-    if (fin.ephemeral) {
-      setTimeout(async () => {
-        try {
-          await unlink(join(TASKS_DIR, `${fin.id}.json`));
-          await unlink(join(MB_DIR, `${fin.id}.json`)).catch(() => {});
-          tasks.delete(fin.id);
-        } catch {}
-      }, 5000);
-    }
-    const finTag = fin.label ? `${fin.label} (${fin.id})` : (shortLabel ? `${shortLabel} (${fin.id})` : fin.id);
-    const header = `[${agent} ${fin.status} | ${fin.model || chosenModel}${fin.ephemeral ? " | ephemeral" : ""}, exit ${fin.exitCode}] ${finTag}\ntools usados: ${fin.tools.length ? fin.tools.join(", ") : "nenhum"}`;
-    let ownMb = "";
-    try {
-      const box = readJson(join(MB_DIR, `${fin.id}.json`), null);
-      const n = box && Array.isArray(box.msgs) ? box.msgs.length : 0;
-      if (n) ownMb = `\n📬 ${n} notificação(ões) pendente(s) p/ ${fin.label || shortLabel || fin.id} — leia com n_task_recv({task_id:"${fin.id}"})`;
-    } catch {}
-    if (_isBatch || fin.batch) {
-      const total = (fin.batch && fin.batch.total) || _batchTotal;
-      const slices = (fin.batch && Array.isArray(fin.batch.results) && fin.batch.results.length === total) ? fin.batch.results : _sliceBatch(fin.result || "", total);
-      const done = (fin.batch && typeof fin.batch.done === "number") ? fin.batch.done : slices.filter((s) => String(s || "").trim()).length;
-      const finTagB = fin.label ? `${fin.label} (${fin.id})` : (shortLabel ? `${shortLabel} (${fin.id})` : fin.id);
-      const headerB = `[${agent} ${fin.status} | ${fin.model || chosenModel}${fin.ephemeral ? " | ephemeral" : ""} | batch ${done}/${total} em 1 PID (economia ${total}×200MB→1×), exit ${fin.exitCode}] ${finTagB}\ntools usados: ${fin.tools.length ? fin.tools.join(", ") : "nenhum"}`;
-      if (fin.error && !fin.result) return out(`${headerB}\n${fin.error}` + ownMb + pendingHints());
-      const bodyB = slices.map((s, i) => `### RESULT ${i + 1} ###\n${String(s || "").trim() || "(sem resposta)"}`).join("\n\n");
-      return out(headerB + (fin.result ? `\n\n${trimOut(bodyB, 20000)}` : "\n(sem resposta)") + ownMb + pendingHints());
-    }
-    return out((fin.error && !fin.result ? `${header}\n${fin.error}` : header + (fin.result ? `\n\n${trimOut(fin.result, 20000)}` : "\n(sem resposta)")) + ownMb + pendingHints());
+    return formatFin(fin);
   },
 });
 
@@ -1107,15 +1352,20 @@ function formatTaskResult(done, any, still, summary = false, deltas = false) {
 }
 
 reg("n_list_models", {
-  description: "PASSO 1 antes de n_task: lista modelos disponíveis. No modo opencode a escolha é obrigatória e validada; no genérico, informativo.",
-  inputSchema: { type: "object", properties: {}, required: [] },
-  run: async () => {
-    if (isOpencode) {
-      return out(`Modelos (${FREE_MODELS.length}, runner opencode):\n${FREE_MODELS.join("\n")}\n\nUso: n_task({prompt, model: "${FREE_MODELS[2] || FREE_MODELS[0]}"})\nBloqueados: opencode-go/* e opencode/hy3-free\nFonte: config/models.json (ou CANIVETE_MODELS_FILE).`);
-    }
-    return out(`Runner genérico ativo (${RUNNER}). Sem lista fixa — use o model name do seu runner no template.\nTemplate: ${RUN_TEMPLATE}\nSugestões (modo opencode): ${FREE_MODELS.slice(0, 3).join(", ")}\nUso: n_task({prompt, model: "qualquer-nome"})`);
-  },
-});
+   description: "PASSO 1 antes de n_task: lista modelos disponíveis. No modo opencode a escolha é obrigatória e validada; no modo LLM direto, lista providers configurados (CANIVETE_LLM_*).",
+   inputSchema: { type: "object", properties: {}, required: [] },
+   run: async () => {
+     if (isOpencode) {
+       return out(`Modelos (${FREE_MODELS.length}, runner opencode):\n${FREE_MODELS.join("\n")}\n\nUso: n_task({prompt, model: "${FREE_MODELS[2] || FREE_MODELS[0]}"})\nBloqueados: opencode-go/* e opencode/hy3-free\nFonte: config/models.json (ou CANIVETE_MODELS_FILE).`);
+     }
+     if (isLLMDirect) {
+       const providers = llmModels();
+       if (!providers.length) return out(llmMissing(), true);
+       return out(`Modelos LLM direto (${providers.length}):\n${providers.map((p) => `${p.provider}: ${p.model} (${p.base})`).join("\n")}\n\nUso: n_task({prompt, model: "${providers[0].model}"})\nSet CANIVETE_LLM_* env vars ou ~/.config/canivete/llm.env.`);
+     }
+     return out(`Runner genérico ativo (${RUNNER}). Sem lista fixa — use o model name do seu runner no template.\nTemplate: ${RUN_TEMPLATE}\nSugestões (modo opencode): ${FREE_MODELS.slice(0, 3).join(", ")}\nUso: n_task({prompt, model: "qualquer-nome"})`);
+   },
+ });
 
 reg("n_task_status", {
   description: "Lista subagentes (id|status|tools|elapsed|modelo) ou detalha 1. Nunca bloqueia. Mostra mailbox:N (msg não lida), idle:Ns e marca interrupted quando o PID morre.",

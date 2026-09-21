@@ -2,13 +2,28 @@
 // Travou? Faltou tool/capacidade? Achou gargalo? NUNCA improvise em silêncio:
 // registre aqui (inbox global ~/.config/canivete/issues.jsonl) e siga pelo
 // alternativo. Sem report, o problema não existe.
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { reg, out } from "./ctx.mjs";
 
 const KINDS = ["bug", "missing", "bottleneck"];
+const MAX_INBOX_LINES = 500;
 const inboxPath = () => join(homedir(), ".config/canivete/issues.jsonl");
+
+// Rotação simples: mantém no máximo MAX_INBOX_LINES, descartando as mais antigas.
+function pruneInbox(p) {
+  try {
+    if (!existsSync(p)) return;
+    const raw = readFileSync(p, "utf8");
+    if (!raw) return;
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    if (lines.length >= MAX_INBOX_LINES) {
+      const keep = lines.slice(-(MAX_INBOX_LINES - 1));
+      writeFileSync(p, keep.join("\n") + "\n");
+    }
+  } catch {}
+}
 
 reg("n_report", {
   description: "Reporta erro/falta/gargalo p/ refinar a ferramenta (inbox global). Quando usar: tool falhou, faltou capacidade, gargalo. OBRIGATÓRIO em vez de improvisar. Ex: {kind:\"missing\", where:\"n_ubrowser_shot\", expected:\"print em aba de fundo\", got:\"só na visível\"}.",
@@ -37,6 +52,7 @@ reg("n_report", {
     try {
       const p = inboxPath();
       mkdirSync(dirname(p), { recursive: true });
+      pruneInbox(p);
       appendFileSync(p, JSON.stringify(entry) + "\n");
     } catch (e) {
       return out(`inbox indisponível: ${e.message}`, true);

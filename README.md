@@ -209,14 +209,22 @@ Exemplos prontos em `examples/`.
 
 ## Runner de subagentes (`n_task`)
 
-- Padrão: `opencode` (fidelidade total: monitora a session via DB).
-- Qualquer CLI: `CANIVETE_RUNNER` + `CANIVETE_RUN_TEMPLATE` com `{prompt} {model} {agent} {id}`.
+**Modo LLM direto (default quando `CANIVETE_RUNNER` não é `opencode` e sem `CANIVETE_RUN_TEMPLATE`):** POST HTTPS direto ao provedor OpenAI-compatível (Groq, Cerebras, Gemini, DeepSeek, Ollama, OpenRouter, etc.), **zero opencode**, sem spawn nem serve. Modelo é o id do provedor (ex: `llama-3.3-70b-versatile`).
 
 ```bash
-CANIVETE_RUNNER=claude CANIVETE_RUN_TEMPLATE="claude -p {prompt}" node src/server.mjs
+# Exemplo com Groq (substitua a chave):
+CANIVETE_LLM_PROVIDER=groq CANIVETE_LLM_API_KEY=gsk_... node src/server.mjs
+# Ou chaves em ~/.config/canivete/llm.env (0600, via EnvironmentFile do serviço):
+# CANIVETE_LLM_BASE_URL, CANIVETE_LLM_API_KEY, CANIVETE_LLM_MODEL
+# Fallbacks: CANIVETE_LLM_2_..., CANIVETE_LLM_3_, ..._4_, ..._5_
+# Providers suportados: groq|cerebras|gemini|openrouter|deepseek|openai|ollama
 ```
 
-Sem o binário do runner, `n_task` devolve erro claro (o resto funciona).
+- Padrão (`CANIVETE_TASK_MODE=attach`): reusa `opencode serve`/TUI aberto e **nunca inicia processo sozinho** (RAM); se nada no ar, fallback p/ spawn.
+- `auto`: como attach, mas sobe um serve gerenciado em `127.0.0.1:19425` se fora do ar (1 processo p/ N tasks) → fallback spawn.
+- `serve`: só serve (erro se inacessível). `spawn`: só spawn clássico.
+- Receita zero-processo-novo: abra o TUI com `opencode --port 4096` e fixe `CANIVETE_SERVE_URL=http://127.0.0.1:4096`.
+- **Nota sobre zen free:** chamada HTTPS direta ao zen é bloqueada por gate anti-abuso (fingerprint TLS do binário oficial; curl/Node/Go/Chrome-UA: `FreeTierError`). O binário oficial passa no gate por construção. Use um provedor com API key para LLM direto.
 
 ## Correio que acorda (mailbox push)
 
@@ -241,6 +249,9 @@ empurra 📬 automático na sessão — ninguém dorme sem ler. Extras via `CANI
 |---|---|---|
 | `CANIVETE_CWD` | `process.cwd()` | raiz do projeto (fs/shell) |
 | `CANIVETE_RUNNER` | `opencode` | binário de subagentes |
+| `CANIVETE_TASK_MODE` | `auto` | `auto` (serve→fallback spawn) \| `attach` (reusa, nunca inicia) \| `serve` (só serve) \| `spawn` (só spawn) |
+| `CANIVETE_SERVE_PORT` | `19425` | porta do `opencode serve` gerenciado (`0` = desliga serve) |
+| `CANIVETE_SERVE_URL` | `http://127.0.0.1:<porta>` | override (ex: TUI com `--port 4096`) |
 | `CANIVETE_RUN_TEMPLATE` | — | template genérico `{prompt} {model} {agent} {id}` |
 | `CANIVETE_MODELS_FILE` | `config/models.json` | lista de modelos |
 | `CANIVETE_AGENTS` | lista padrão | tipos de subagente |
