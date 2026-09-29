@@ -1,7 +1,7 @@
 // canivete — contexto compartilhado: config universal (env), registro, helpers.
 // Universal: sem fallback de projeto; CWD = CANIVETE_CWD || cwd().
 import { spawn, execSync } from "node:child_process";
-import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
+import { mkdir, writeFile, unlink, stat, rename, open, chmod } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -29,6 +29,7 @@ const KNOWN_CANIVETE_ENVS = new Set([
   "CANIVETE_SERVE_PORT",
   "CANIVETE_SERVE_URL",
   "CANIVETE_TASK_MODE",
+  "CANIVETE_TASK_ENABLE",
   "CANIVETE_RUNNER",
   "CANIVETE_RUN_TEMPLATE",
   "CANIVETE_SERVER_NAME",
@@ -243,6 +244,30 @@ async function httpJson(url, { timeout = 30000, headers = {}, method, body } = {
   }
 }
 
+// escrita ATÔMICA (#49: disco cheio zerava arquivo — writeFile direto trunca antes de falhar).
+// tmp no MESMO dir (rename atômico, mesmo fs) + fsync (ENOSPC aparece antes do rename)
+// + preserva mode/uid/gid do original (rename trocaria o dono p/ o escritor).
+async function atomicWriteFile(p, content, encoding = "utf8") {
+  const tmp = `${p}.tmp-${process.pid}-${Date.now().toString(36)}`;
+  let st = null;
+  try { st = statSync(p); } catch {}
+  const fh = await open(tmp, "w", st ? st.mode & 0o777 : 0o666);
+  try {
+    await fh.writeFile(content, encoding);
+    await fh.sync();
+    if (st) {
+      try { await fh.chown(st.uid, st.gid); } catch {}
+      try { await fh.chmod(st.mode & 0o777); } catch {}
+    }
+  } catch (e) {
+    try { await fh.close(); } catch {}
+    try { await unlink(tmp); } catch {}
+    throw e;
+  }
+  await fh.close();
+  await rename(tmp, p);
+}
+
 function devOut({ status = "success", summary = "", data = {}, telemetry = {}, next = [], refs = [] }) {
   const payload = {
     status,
@@ -267,4 +292,4 @@ function sendToHost(obj) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...obj }) + "\n");
 }
 
-export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, capOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, estTokens, ctxStatusText, WALK_CAP, WALK_MAX_DEPTH, isSkippable, CTX, CTX_BUDGET };
+export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, capOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, estTokens, ctxStatusText, WALK_CAP, WALK_MAX_DEPTH, isSkippable, CTX, CTX_BUDGET, atomicWriteFile };

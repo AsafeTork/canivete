@@ -17,24 +17,20 @@ claude mcp add canivete -- node /caminho/para/canivete/src/server.mjs
 
 # Com limites de tarefas longas + browser (todos opcionais, defaults entre parênteses):
 #   env: {
-#     "CANIVETE_MAX_POLLS": "8",          # polls ativos aguardando subagente
-#     "CANIVETE_HOST_GUARD_MS": "170000", # clamp do n_task_wait (~170s; chame de novo)
+#     "CANIVETE_HOST_GUARD_MS": "170000", # clamp de resposta (~170s)
 #     "CANIVETE_CHROME_BIN": "/usr/bin/google-chrome",
 #     "CANIVETE_BROWSER_TIMEOUT_MS": "40000",
 #     "CANIVETE_CDP_TIMEOUT": "25000",
 #     "CANIVETE_MAX_BODY": "2097152",     # teto do POST no modo remoto --http
 #     "CANIVETE_CTX_BUDGET": "200000"     # orçamento p/ n_ctx_status
 #   }
+#   NOTA: subagentes (n_task*) desativados por RAM — reative com CANIVETE_TASK_ENABLE=1.
 
 # Tarefas longas (com progresso, sem sleep cego):
 #   shell ≤10min:   n_bash({command:"npm install", timeout:600000})
 #   servidor fundo: n_manage_background_process({action:"start", command:"npm run dev"})
 #                   n_manage_background_process({action:"read_logs", process_id:"bg..."})
 #                   n_inspect_ui_state({url:"http://localhost:5173", expect:"<texto>", retries:3})
-#   subagentes:     n_list_models
-#                   n_task({prompt:"...", model:"<da lista>", background:true})
-#                   n_task_wait({task_ids:["..."], wait:"all", timeout:600000})  # clamp ~170s: chame de novo
-#                   n_task_tail({task_id:"..."})  # progresso ao vivo
 
 # Erros comuns (ver README "Erros comuns"):
 #   SPA vazio (n_webfetch é SEM JS) → n_browser_navigate

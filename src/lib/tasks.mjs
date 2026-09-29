@@ -22,6 +22,10 @@ const todo = [];
 // ENV: CANIVETE_SERVER_NAME=canivete=prefixo exibido das tools (n_* vs <prefixo>_n_*) no orchestrationNote
 // ENV: CANIVETE_WATCH_MAIN=(unset, só "1" ativa)=observa caixa "main" p/ push 📬 (modo stdio/local)
 // ENV: CANIVETE_WATCH=""=caixas extras p/ push 📬 (CSV, ex: "box1,box2")
+// ENV: CANIVETE_TASK_ENABLE=(unset, só "1" ativa)=kill-switch da família task (spawn consome RAM;
+// desativado por padrão; código intacto, só não registra as tools)
+const TASKS_ENABLED = process.env.CANIVETE_TASK_ENABLE === "1";
+const regTask = (name, def) => { if (TASKS_ENABLED) reg(name, def); };
 const RUNNER = process.env.CANIVETE_RUNNER || "opencode";
 const isOpencode = RUNNER === "opencode" || RUNNER.endsWith("/opencode");
 const isLLMDirect = !isOpencode && !RUN_TEMPLATE;
@@ -321,7 +325,7 @@ function orchestrationNote(id) {
   return `[ORCHESTRATION] Você é o agente ${id}. OBEDIÊNCIA TOTAL às tools — o principal AUDITA n_task_status e RECUSA entrega sem tools certas.
 - Nomes: tools aparecem como ${pfx}_n_* (prefixo); "n_*" é o mesmo nome. Prefira sempre n_*.
 - PROIBIDO fazer na mão o que tem tool: ler=n_read (nunca cat/head), buscar=n_grep/n_glob (nunca grep/find), web=n_webfetch/n_websearch, patch=n_apply_patch/n_apply_semantic_patch. Bash SÓ p/ o que não tem tool.
-- ROTEAMENTO OBRIGATÓRIO: entender projeto→n_get_architecture_summary; bug/erro→n_investigate_issue; antes de editar→n_analyze_change_impact; editar JS→n_apply_semantic_patch; depois→validar (n_execute_targeted_tests ou n_bash); página com JS→n_browser_navigate; Chrome do dono→n_ubrowser_status→tabs→read/snapshot→act→shot; dúvida→n_tools_info.
+- ROTEAMENTO OBRIGATÓRIO: entender projeto→n_get_architecture_summary; bug/erro→n_investigate_issue; antes de editar→n_analyze_change_impact; editar JS→n_apply_semantic_patch; depois→validar (n_execute_targeted_tests ou n_bash); página com JS→n_browser_navigate; Chrome do dono→n_ubrowser_status→tabs→read(distill)|snapshot(compact; find p/ localizar; scan antes se lista virtualizada; shadow: p/ web components)→act(selector; fill substitui, type anexa; wait=waitMs)→shot(visível). Refs do snapshot morrem na navegação: re-snapshot após goto/click.
 - PROIBIDO chutar path/API/versão/comportamento: VERIFIQUE com tool e cite arquivo:linha como evidência.
 - Modelos: o principal escolheu este explicitamente via n_list_models. opencode-go/*, hy3-free e desconhecidos são BLOQUEADOS (isError).
 - Comunicação (confie no MCP, SEM polling manual): dispare background (id em mãos = abort-safe) → UMA chamada n_task_wait com timeout longo → leia. NUNCA sleep/status em loop. Subagente: ao concluir, SEMPRE n_task_send({task_id:"main", message:"done <id> + resumo 1 linha"}) — o principal acorda pela notificação. Peers: handshake + recv com timeout. Mailbox tem teto; recv esvazia (destrutivo); delete em running mata. REGRA DE OURO: nunca termine com mailbox própria cheia — recv({timeout:30000}) até 2x vazio. Respostas trazem 📬 — leia n_task_notifications.
@@ -477,7 +481,7 @@ function pendingHints() {
   return "";
 }
 
-reg("n_task", {
+regTask("n_task", {
    description: "Subagente isolado. Modo LLM direto (default sem RUN_TEMPLATE): POST HTTPS direto ao provedor OpenAI-compatível (Groq/Cerebras/Gemini/DeepSeek/Ollama/etc.), zero opencode. Modo opencode: CANIVETE_RUNNER=opencode + serve HTTP persistente (CANIVETE_TASK_MODE=auto|attach|serve|spawn, CANIVETE_SERVE_URL, CANIVETE_SERVE_PORT=19425) ou spawn clássico (CANIVETE_RUN_TEMPLATE). model OBRIGATÓRIO (id do provedor; n_list_models lista presets). Tipos: mcp-only|explore|quick|general|reviewer. WORKFLOW: fan-out N× background:true → n_task_wait any/all → n_task_send. Sync bloqueia; fim notifica. Ao vivo: n_task_tail. Env: CANIVETE_TASK_MODE, CANIVETE_SERVE_URL, CANIVETE_SERVE_PORT, CANIVETE_LLM_BASE_URL, CANIVETE_LLM_API_KEY, CANIVETE_LLM_MODEL, CANIVETE_LLM_PROVIDER (groq|cerebras|gemini|openrouter|deepseek|openai|ollama) + fallbacks _2_..._5_.",
   inputSchema: {
     type: "object",
@@ -1165,7 +1169,7 @@ async function pollDetached(ids, deadline) {
   });
 }
 
-reg("n_task_wait", {
+regTask("n_task_wait", {
   description: "Aguarda subagentes e retorna resultados. wait:'any' resolve quando O PRIMEIRO termina; 'all' espera todos. Depois de spawn em background. Responde em até ~170s (clamp do host timeout) — se ainda rodando, chame de novo. ID desconhecido → not found imediato.",
   inputSchema: {
     type: "object",
@@ -1351,7 +1355,7 @@ function formatTaskResult(done, any, still, summary = false, deltas = false) {
   );
 }
 
-reg("n_list_models", {
+regTask("n_list_models", {
    description: "PASSO 1 antes de n_task: lista modelos disponíveis. No modo opencode a escolha é obrigatória e validada; no modo LLM direto, lista providers configurados (CANIVETE_LLM_*).",
    inputSchema: { type: "object", properties: {}, required: [] },
    run: async () => {
@@ -1367,7 +1371,7 @@ reg("n_list_models", {
    },
  });
 
-reg("n_task_status", {
+regTask("n_task_status", {
   description: "Lista subagentes (id|status|tools|elapsed|modelo) ou detalha 1. Nunca bloqueia. Mostra mailbox:N (msg não lida), idle:Ns e marca interrupted quando o PID morre.",
   inputSchema: {
     type: "object",
@@ -1423,7 +1427,7 @@ reg("n_task_status", {
   },
 });
 
-reg("n_task_send", {
+regTask("n_task_send", {
   description: "Envia msg p/ mailbox (não-bloqueante). ttl_ms opcional: msg velha some no recv/peek/notify.",
   inputSchema: {
     type: "object",
@@ -1448,7 +1452,7 @@ reg("n_task_send", {
   },
 });
 
-reg("n_task_delete", {
+regTask("n_task_delete", {
   description: "Exclui task(s)+mailbox p/ organizar. Em running encerra o processo (tombstone). Use p/ coletores de info. Auto: n_task ephemeral:true exclui ~30s após done. Requer confirm:true p/ bulk all ou alvo running (sem confirm só preview). dryRun:true lista sem deletar.",
   inputSchema: {
     type: "object",
@@ -1520,7 +1524,7 @@ reg("n_task_delete", {
   },
 });
 
-reg("n_task_recv", {
+regTask("n_task_recv", {
   description: "Lê e esvazia mailbox (destrutivo). filter: só consome o que casa. Expirada (ttl) é descartada.",
   inputSchema: {
     type: "object",
@@ -1578,7 +1582,7 @@ reg("n_task_recv", {
   },
 });
 
-reg("n_task_peek", {
+regTask("n_task_peek", {
   description: "Espia mailbox SEM esvaziar. Retorna últimas N + idade. Expirada (ttl) é oculta. filter opcional: só mostra o que casa.",
   inputSchema: {
     type: "object",
@@ -1616,7 +1620,7 @@ reg("n_task_peek", {
   },
 });
 
-reg("n_task_tail", {
+regTask("n_task_tail", {
   description: "Mostra o que o subagente está GERANDO agora (transcrição parcial ao vivo via arquivo de saída). Quando sessions parece parado mas há tokens: revela o texto já emitido. Barato, sem interferir. Finalizada → resultado completo em n_task_status.",
   inputSchema: {
     type: "object",
@@ -1657,7 +1661,7 @@ reg("n_task_tail", {
   },
 });
 
-reg("n_task_notifications", {
+regTask("n_task_notifications", {
   description: "Lê notifs de tasks + correio dormindo. Esvazia notifs. Expirada (ttl) é oculta.",
   inputSchema: { type: "object", properties: {}, required: [] },
   run: async () => {

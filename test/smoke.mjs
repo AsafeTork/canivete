@@ -1,5 +1,5 @@
 // canivete smoke: offline-seguro, rápido (<30s). Falha != quebrou tudo: mostra PASS/FAIL por grupo.
-// OFFLINE: sem rede real, sem spawn opencode (n_task). Só stdio local + fs + risk local.
+// OFFLINE: sem rede real, sem spawn opencode (família n_task desativada por padrão). Só stdio local + fs + risk local.
 import { spawn } from "node:child_process";
 
 const srv = spawn("node", ["src/server.mjs"], { cwd: new URL("..", import.meta.url).pathname, stdio: ["pipe", "pipe", "pipe"] });
@@ -53,7 +53,7 @@ const t = async (label, id, name, args, expect = /./, allowError = null) => {
     ok ? pass++ : fail++;
   } catch (e) { console.log(`FAIL ${label} :: ${e.message}`); fail++; }
 };
-await t("tools_info conta 56", 1, "n_tools_info", {}, /56 tools/);
+await t("tools_info conta 46", 1, "n_tools_info", {}, /46 tools/);
 await t("read self", 2, "n_read", { filePath: "package.json", limit: 5 });
 await t("bash echo", 3, "n_bash", { command: "echo smoke-ok" });
 await t("glob", 4, "n_glob", { pattern: "src/lib/*.mjs" });
@@ -78,10 +78,19 @@ await t("find snapshot acha dono", 16, "n_find_tools", { query: "snapshot" }, /n
 await t("snapshot compact registrado (tools-owner, sem CDP)", 17, "n_bash", { command: "node -e \"import('node:fs').then(fs=>console.log(fs.readFileSync('src/lib/tools-owner.mjs','utf8').includes('compact')?'has-compact':'no-compact'))\"" }, /has-compact/);
 await t("docs receita onde-clicar (snapshot+compact+role)", 18, "n_bash", { command: "node -e \"import('node:fs').then(fs=>{const s=fs.readFileSync('docs/SKILL.md','utf8');console.log(/snapshot/.test(s)&&/compact/.test(s)&&/role/.test(s)?'receita-ok':'receita-falta')})\"" }, /receita-ok/);
 // mailbox send/peek/recv roundtrip (leve, filesystem local, sem spawn opencode, sem rede). Filter isola sem limpar caixa alheia.
+// Só quando a família task está ativa (CANIVETE_TASK_ENABLE=1) — senão as tools nem registram.
 const mbTag = `smoke-mb-${Date.now()}`;
-await t("mailbox send main", 20, "n_task_send", { task_id: "main", message: mbTag }, /delivered to main/);
-await t("mailbox peek ve msg", 21, "n_task_peek", { task_id: "main", limit: 5 }, new RegExp(mbTag));
-await t("mailbox recv roundtrip", 22, "n_task_recv", { task_id: "main", filter: mbTag }, new RegExp(mbTag));
+try {
+  const { m: listMb } = await list(19);
+  const hasMb = listMb.result && Array.isArray(listMb.result.tools) && listMb.result.tools.some((t) => t && t.name === "n_task_send");
+  if (!hasMb) {
+    console.log("SKIP mailbox send/peek/recv (família n_task desativada)");
+  } else {
+    await t("mailbox send main", 20, "n_task_send", { task_id: "main", message: mbTag }, /delivered to main/);
+    await t("mailbox peek ve msg", 21, "n_task_peek", { task_id: "main", limit: 5 }, new RegExp(mbTag));
+    await t("mailbox recv roundtrip", 22, "n_task_recv", { task_id: "main", filter: mbTag }, new RegExp(mbTag));
+  }
+} catch (e) { console.log(`SKIP mailbox (falha listando tools: ${e.message})`); }
 // tools_info sync == TOOLS: compara número no texto n_tools_info com tools/list (stdio offline). Sem import (pesado) nem /health (rede).
 if (_grepRe && !_grepRe.test("tools_info sync == tools/list")) { console.log(`SKIP tools_info sync == tools/list (filtro --grep)`); }
 else try {

@@ -22,9 +22,16 @@ chrome.storage.onChanged.addListener((ch, area) => {
   if (ch.url) settings.url = ch.url.newValue || DEFAULT_URL;
   if (ch.UB_DEBUG) UB_DEBUG = ch.UB_DEBUG.newValue === true;
 });
+// cursor-remoto: detach best-effort ao fechar aba (evita sessão zombie que bloquearia o próximo attach).
+try {
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    try { chrome.debugger.detach({ tabId }).catch(() => {}); } catch {}
+  });
+} catch {}
 
-const UB_EXPECTED = "7"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "13"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 const injectedTabs = new Set(); // fallback manual 1x por aba/sessão (registro cobre o resto)
+const ubPushLast = new Map(); // debounce do /ubpush por tabId (4s)
 
 // registra content.js permanente: injeta sozinho em toda página http/https (sobrevive a F5/navegação)
 (async () => {
@@ -82,6 +89,8 @@ async function ensureContent(tabId) {
   try {
     await withTimeout(chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }), 12000, "injetar content");
     injectedTabs.add(tabId);
+    // hook de observabilidade (console+rede, mundo MAIN, idempotente) — sem permissão nova.
+    try { await withTimeout(chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: ["mon-hook.js"] }), 8000, "injetar mon-hook"); } catch {}
     await new Promise((r) => setTimeout(r, 250)); // espaçamento p/ content inicializar após injeção
     const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd: "ping" }), 4000, "content ping2");
     if (r?.ok) return; // aceita a versão do disco (verdade atual)
@@ -89,8 +98,7 @@ async function ensureContent(tabId) {
   throw new Error("página sem responder (" + lastErr.slice(0, 100) + ") — recarregue a página (F5)");
 }
 
-async function ask(tabId, cmd, args) {  await ensureContent(tabId);
-  const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd, args }), 15000, "content " + cmd);
+async function ask(tabId, cmd, args) {  await ensureContent(tabId);  const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd, args }), 15000, "content " + cmd);
   if (!r?.ok) throw new Error(r?.error || "content falhou");
   return r.data;
 }
@@ -235,7 +243,60 @@ async function handle(cmd, a = {}) {
     }), 15000, "content tab.scroll");
     return sr?.result || { scrolled: false, found: false };
   }
-  if (["tab.read", "tab.snapshot", "tab.click", "tab.fill", "tab.press", "tab.scroll"].includes(cmd)) {
+  if (cmd === "tab.click") {
+    // Cadeia de escalada: sintetico+verificacao (content) → trusted via CDP → duplo trusted.
+    // O content ja tentou sintetico e duplo sintetico; aqui so escalamos p/ trusted
+    // quando ele sinaliza needsTrusted (nada mudou). COVERED e NOTFOUND viram erro direto.
+    const id = a.tabId || (await activeTabId());
+    await getTabOrThrow(id);
+    const data = await ask(id, "click", a);
+    const complete = async (d) => ({ ...d, ...((await ask(id, "state", {}).catch(() => ({}))) || {}) });
+    // v12: reaproveita o expect do content (pós-settle sintético); sem ele, checa 1x aqui.
+    if (data && (data.verified || !data.needsTrusted || a.trusted === false)) {
+      const c = await complete(data);
+      const ex0 = await ubExpectEnsure(id, a, data, false);
+      if (ex0) c.expect = ex0;
+      return c;
+    }
+    const cx = Number(data.x), cy = Number(data.y);
+    if (!Number.isFinite(cx) || !Number.isFinite(cy)) return await complete(data);
+    const method0 = data.method || "synthetic";
+    try { await ask(id, "verify_arm", { selector: a.selector }).catch(() => {}); } catch {}
+    const tr = await ubTrustedClick(id, cx, cy);
+    await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
+    let vv = null;
+    try { vv = await ask(id, "verify_stop", {}); } catch { vv = null; }
+    const st = await ask(id, "state", {}).catch(() => ({}));
+    let sv = null;
+    try { sv = ubVerifyStateChange(data, st || {}); } catch { sv = { verified: false, whatChanged: [] }; }
+    const wc = ubMergeWhatChanged(vv && vv.whatChanged, sv && sv.whatChanged);
+    if (tr.ok && ((vv && vv.verified) || (sv && sv.verified))) {
+      const ex1 = await ubExpectEnsure(id, a, data, true); // re-checa pós-settle trusted (sintético ficou p/ trás)
+      return { ...data, verified: true, whatChanged: wc, method: "trusted", via: "trusted", delta: (vv && vv.delta) || data.delta, ...(ex1 ? { expect: ex1 } : {}), ...st };
+    }
+    // Duplo-clique trusted: ultimo degrau da cadeia.
+    try { await ask(id, "verify_arm", { selector: a.selector }).catch(() => {}); } catch {}
+    const tr2 = await ubTrustedClick(id, cx, cy, { dblclick: true });
+    await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
+    let vv2 = null;
+    try { vv2 = await ask(id, "verify_stop", {}); } catch { vv2 = null; }
+    const st2 = await ask(id, "state", {}).catch(() => ({}));
+    let sv2 = null;
+    try { sv2 = ubVerifyStateChange(data, st2 || {}); } catch { sv2 = { verified: false, whatChanged: [] }; }
+    const wc2 = ubMergeWhatChanged(vv2 && vv2.whatChanged, sv2 && sv2.whatChanged);
+    if (tr2.ok && ((vv2 && vv2.verified) || (sv2 && sv2.verified))) {
+      const ex2 = await ubExpectEnsure(id, a, data, true);
+      return { ...data, verified: true, whatChanged: wc2, method: "trusted+dblclick", via: "trusted", delta: (vv2 && vv2.delta) || data.delta, ...(ex2 ? { expect: ex2 } : {}), ...st2 };
+    }
+    const terr = [tr.error, tr2.error].filter(Boolean).join("; ").slice(0, 200);
+    const ex3 = await ubExpectEnsure(id, a, data, true);
+    return {
+      ...data, verified: false, whatChanged: [], method: method0 + "+trusted+dblclick", via: "trusted",
+      escalations: ["synthetic", "trusted", "dblclick"],
+      ...(terr ? { trustedError: terr } : {}), ...(ex3 ? { expect: ex3 } : {}), ...st2,
+    };
+  }
+  if (["tab.read", "tab.snapshot", "tab.fill", "tab.press", "tab.scroll", "tab.tooltip", "tab.catchup"].includes(cmd)) {
     const id = a.tabId || (await activeTabId());
     // gate de senha REMOVIDO a pedido do dono: fill/type em type=password liberado (risco segue classificado no MCP)
     // destilado por padrão (só-necessário); raw opt-out
@@ -297,33 +358,208 @@ async function handle(cmd, a = {}) {
         if (mr && mr.result && mr.result.rich) {
           await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
           const st = await ask(id, "state", {}).catch(() => ({}));
-          return { filled: a.selector, via: mr.result.via, ...((st && typeof st === "object") ? st : {}) };
+          const exR = await ubExpectEnsure(id, a, null, true);
+          return { filled: a.selector, via: mr.result.via, ...((st && typeof st === "object") ? st : {}), ...(exR ? { expect: exR } : {}) };
         }
       } catch { /* sem MAIN (CSP/página chrome) → cai no fill genérico abaixo */ }
     }
     const map = {
       "tab.read": "read", "tab.snapshot": "snapshot", "tab.click": "click",
       "tab.fill": "fill", "tab.press": "press", "tab.scroll": "scroll", "tab.html": "html",
+      "tab.tooltip": "tooltip", "tab.catchup": "catchup",
     };
     const data = await ask(id, map[cmd], a); // content já faz settle antes de responder — sem sleep
     if (cmd === "tab.read" && a.links === false && data && typeof data === "object" && !Array.isArray(data)) {
       const { links, ...rest } = data; // raw sem links: só título+texto (~40% menos)
       return rest;
     }
-    if (cmd === "tab.snapshot" && Array.isArray(data)) {
+    if (cmd === "tab.snapshot" && (Array.isArray(data) || (data && Array.isArray(data.items)))) {
+      // v11: content responde {items, overlay} (+found/position com match); legado array ainda aceito.
+      const arr = Array.isArray(data) ? data : data.items;
       const off = Math.max(Number(a.offset) || 0, 0);
-      const page = data.slice(off, off + Math.min(Math.max(Number(a.max) || 50, 5), 120));
-      if (a.compact === true) return page.map((it) => ({ ref: it.ref, tag: it.tag, text: it.text, x: it.x, y: it.y })); // sem selector/type/w/h (~60% menos, espelha headless)
-      return page;
+      const page = arr.slice(off, off + Math.min(Math.max(Number(a.max) || 50, 5), 120));
+      const keep = (!Array.isArray(data) && data && typeof data === "object")
+        ? { ...(data.overlay ? { overlay: data.overlay } : {}), ...(data.found !== undefined ? { found: data.found } : {}), ...(data.position !== undefined ? { position: data.position } : {}) }
+        : {};
+      if (a.compact === true) return { items: page.map((it) => ({ ref: it.ref, tag: it.tag, text: it.text, x: it.x, y: it.y })), ...keep }; // sem selector/type/w/h (~60% menos, espelha headless)
+      return { items: page, ...keep };
     }
-    if (cmd === "tab.click" || cmd === "tab.fill") return await ask(id, "state", {}); // dieta: sem texto
+    if (cmd === "tab.click") return await ask(id, "state", {}); // inalcançável (handler dedicado acima) — preservado
+    if (cmd === "tab.fill") {
+      const stF = await ask(id, "state", {}).catch(() => ({})); // dieta: sem texto (delta+expect do content preservados)
+      const exF = await ubExpectEnsure(id, a, data, false);
+      return { ...data, ...stF, ...(exF ? { expect: exF } : {}) };
+    }
     return data;
   }
+// Compara estado antes e depois de um clique trusted (pós-CDP): algo mudou?
+// Pura, sem I/O: before e after sao objetos com url e title. Nunca lanca excecao.
+function ubVerifyStateChange(before, after) {
+  try {
+    const whatChanged = [];
+    try {
+      const bu = String((before && before.url) || ""), au = String((after && after.url) || "");
+      if (bu && au && bu !== au) whatChanged.push("url");
+    } catch {}
+    try {
+      const bt = String((before && before.title) || ""), at = String((after && after.title) || "");
+      if (bt && at && bt !== at) whatChanged.push("title");
+    } catch {}
+    return { verified: whatChanged.length > 0, whatChanged };
+  } catch { return { verified: false, whatChanged: [] }; }
+}
+// Normaliza snapshot do content p/ array (v11: {items, overlay}; legado: array direto).
+// Pura, sem I/O. Nunca lanca excecao.
+function ubSnapItems(d) {
+  try {
+    if (Array.isArray(d)) return d;
+    if (d && Array.isArray(d.items)) return d.items;
+    return [];
+  } catch { return []; }
+}
+// Junta whatChanged de duas fontes (delta do content + url e title do background).
+// Pura, sem I/O. Nunca lanca excecao.
+function ubMergeWhatChanged(a, b) {
+  try {
+    const out = [];
+    for (const w of [...(a || []), ...(b || [])]) {
+      try {
+        const s = String(w || "");
+        if (s && !out.includes(s)) out.push(s);
+      } catch {}
+    }
+    return out;
+  } catch { return []; }
+}
+// Expectativas pós-ação v12 (expectUrl/expectText/expectGone): garante
+// {passed, checks} no retorno quando o caller passou expects. force=true re-checa
+// no content (pós-settle trusted — o expect do sintético ficou p/ trás); senão
+// reaproveita data.expect (pós-settle do content). Nunca lança (undefined = sem expects).
+async function ubExpectEnsure(id, a, data, force) {
+  try {
+    if (!a || (!a.expectUrl && !a.expectText && !a.expectGone)) return undefined;
+    if (!force && data && data.expect) return data.expect;
+    const e = await ask(id, "expect", a).catch(() => null);
+    return e || undefined;
+  } catch { return undefined; }
+}
+// Cursor-remoto: clique TRUSTED via CDP Input (isTrusted=true, como o mouse do dono),
+// sem mover o mouse dele, escopado na aba (target=tabId). Banner "depurando" pisca
+// (attach→dispatch→detach na mesma tacada). Falhas (DevTools aberto, zombie) → caller faz fallback.
+// opts.dblclick=true: duplo-clique (2 ciclos press/release, clickCount 1 e 2).
+async function ubTrustedClick(tabId, x, y, opts) {
+  try {
+    const target = { tabId };
+    const px = Math.round(Number(x) || 0), py = Math.round(Number(y) || 0);
+    const dbl = !!(opts && opts.dblclick);
+    try {
+      await chrome.debugger.attach(target, "1.3");
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e).slice(0, 150) };
+    }
+    try {
+      const cmd = (m, p) => chrome.debugger.sendCommand(target, m, p);
+      await cmd("Input.dispatchMouseEvent", { type: "mouseMoved", x: px, y: py });
+      await cmd("Input.dispatchMouseEvent", { type: "mousePressed", x: px, y: py, button: "left", clickCount: 1 });
+      await cmd("Input.dispatchMouseEvent", { type: "mouseReleased", x: px, y: py, button: "left", clickCount: 1 });
+      if (dbl) {
+        await cmd("Input.dispatchMouseEvent", { type: "mousePressed", x: px, y: py, button: "left", clickCount: 2 });
+        await cmd("Input.dispatchMouseEvent", { type: "mouseReleased", x: px, y: py, button: "left", clickCount: 2 });
+        return { ok: true, x: px, y: py, dblclick: true };
+      }
+      return { ok: true, x: px, y: py };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e).slice(0, 150) };
+    } finally {
+      try { await chrome.debugger.detach(target); } catch {}
+    }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 150) };
+  }
+}
   if (cmd === "tab.cursor") {
     // cursor INDEPENDENTE: {x,y} na viewport (+click opcional) ou {selector} (+click)
     const id = a.tabId || (await activeTabId());
     await getTabOrThrow(id);
-    if (a.selector) return await ask(id, "cursor_sel", a);
+    if (a.selector) {
+      // cursor_sel ja verifica no content (sintetico+duplo); trusted aqui só se needsTrusted.
+      const dataSel = await ask(id, "cursor_sel", a);
+      if (dataSel && (dataSel.verified || !dataSel.needsTrusted || a.trusted === false)) return dataSel;
+      const sx = Number(dataSel.x), sy = Number(dataSel.y);
+      if (Number.isFinite(sx) && Number.isFinite(sy)) {
+        try { await ask(id, "verify_arm", { selector: a.selector }).catch(() => {}); } catch {}
+        const trS = await ubTrustedClick(id, sx, sy);
+        await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
+        let vvS = null;
+        try { vvS = await ask(id, "verify_stop", {}); } catch { vvS = null; }
+        if (trS.ok && vvS && vvS.verified) {
+          return { ...dataSel, verified: true, whatChanged: vvS.whatChanged, method: "trusted", via: "trusted", delta: vvS.delta, ...(await ask(id, "state", {}).catch(() => ({}))) };
+        }
+        try { await ask(id, "verify_arm", { selector: a.selector }).catch(() => {}); } catch {}
+        const trS2 = await ubTrustedClick(id, sx, sy, { dblclick: true });
+        await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
+        let vvS2 = null;
+        try { vvS2 = await ask(id, "verify_stop", {}); } catch { vvS2 = null; }
+        if (trS2.ok && vvS2 && vvS2.verified) {
+          return { ...dataSel, verified: true, whatChanged: vvS2.whatChanged, method: "trusted+dblclick", via: "trusted", delta: vvS2.delta, ...(await ask(id, "state", {}).catch(() => ({}))) };
+        }
+        const terrS = [trS.error, trS2.error].filter(Boolean).join("; ").slice(0, 200);
+        return {
+          ...dataSel, verified: false, whatChanged: [], method: (dataSel.method || "synthetic") + "+trusted+dblclick", via: "trusted",
+          escalations: ["synthetic", "trusted", "dblclick"],
+          ...(terrS ? { trustedError: terrS } : {}), ...(await ask(id, "state", {}).catch(() => ({}))),
+        };
+      }
+      return dataSel;
+    }
+    // REMOTO (default no click): input TRUSTED via CDP — mesma autoridade do mouse do dono,
+    // sem mover o mouse dele, escopado na aba. Banner amarelo "depurando" pisca (attach→dispatch→detach).
+    // trusted:false volta ao clique sintético. Fallback automático se debugger ocupado.
+    if (a.click && a.x !== undefined && a.y !== undefined && a.trusted !== false) {
+      // glide visual primeiro (o dono vê o remoto deslizando), depois o dispatch trusted.
+      try { await ask(id, "cursor", { x: Number(a.x), y: Number(a.y) }); } catch {}
+      try { await ask(id, "verify_arm", { x: Number(a.x), y: Number(a.y) }).catch(() => {}); } catch {}
+      const tr = await ubTrustedClick(id, Number(a.x), Number(a.y));
+      await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
+      let vvT = null;
+      try { vvT = await ask(id, "verify_stop", {}); } catch { vvT = null; }
+      const stT = await ask(id, "state", {}).catch(() => ({}));
+      const wcT = ubMergeWhatChanged(vvT && vvT.whatChanged, []);
+      if (tr.ok && vvT && vvT.verified) {
+        return { x: Number(a.x), y: Number(a.y), clicked: true, via: "trusted", verified: true, whatChanged: wcT, method: "trusted", delta: vvT.delta, ...stT };
+      }
+      if (tr.ok) {
+        // sem mudança (URL, título, DOM, estado em ~3s) → duplo-clique trusted.
+        try { await ask(id, "verify_arm", { x: Number(a.x), y: Number(a.y) }).catch(() => {}); } catch {}
+        const trD = await ubTrustedClick(id, Number(a.x), Number(a.y), { dblclick: true });
+        await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
+        let vvD = null;
+        try { vvD = await ask(id, "verify_stop", {}); } catch { vvD = null; }
+        const stD = await ask(id, "state", {}).catch(() => ({}));
+        if (trD.ok && vvD && vvD.verified) {
+          return { x: Number(a.x), y: Number(a.y), clicked: true, via: "trusted", verified: true, whatChanged: vvD.whatChanged || [], method: "trusted+dblclick", delta: vvD.delta, ...stD };
+        }
+        // último recurso: sintético no content (verifica sozinho com delta+duplo).
+        let syn = null;
+        try { syn = await ask(id, "cursor", a); } catch {}
+        const stS = await ask(id, "state", {}).catch(() => ({}));
+        if (syn && syn.verified) {
+          return { ...syn, ...stS, via: "synthetic", trustedFallback: "trusted sem efeito visível" };
+        }
+        const terrT = [trD.error, syn && syn.error].filter(Boolean).join("; ").slice(0, 120);
+        return {
+          ...(syn || {}),
+          x: Number(a.x), y: Number(a.y), clicked: true, via: syn ? "synthetic" : "trusted", verified: false, whatChanged: [],
+          method: ((syn && syn.method) || "synthetic") + "+trusted+dblclick", escalations: ["trusted", "dblclick", "synthetic"],
+          note: "sem mudança de URL, título, DOM ou estado — NÃO confie: re-snapshot e tente outro ponto",
+          ...(terrT ? { trustedError: terrT } : {}), ...stD, ...stS,
+        };
+      }
+      // fallback sintético (comportamento anterior) com motivo registrado
+      const data = await ask(id, "cursor", a);
+      const st = a.click ? await ask(id, "state", {}).catch(() => ({})) : {};
+      return { ...data, ...st, via: "synthetic", trustedFallback: (tr.error || "debugger").slice(0, 120) };
+    }
     const data = await ask(id, "cursor", a); // content já faz settle antes de responder — sem sleep
     if (a.click) return { ...data, ...(await ask(id, "state", {})) };
     return data;
@@ -342,7 +578,7 @@ async function handle(cmd, a = {}) {
       for (let i = 0; i < pagesReq; i++) {
         executed = i + 1;
         const snap = await ask(id, "snapshot");
-        const arr = Array.isArray(snap) ? snap : [];
+        const arr = ubSnapItems(snap);
         for (const it of arr) {
           const key = (it?.selector || "") + "|" + (it?.text || "");
           if (!seen.has(key)) seen.set(key, it);
@@ -380,7 +616,7 @@ async function handle(cmd, a = {}) {
         const pollT0 = Date.now();
         while (Date.now() - pollT0 < 1500) { // teto por página; total 60s mantido via withTimeout
           const s2 = await ask(id, "snapshot");
-          const a2 = Array.isArray(s2) ? s2 : [];
+          const a2 = ubSnapItems(s2);
           for (const it of a2) {
             const key = (it?.selector || "") + "|" + (it?.text || "");
             if (!seen.has(key)) seen.set(key, it);
@@ -465,23 +701,66 @@ async function handle(cmd, a = {}) {
   if (cmd === "tab.evaluate") {
     if (!a.js) throw new Error("js obrigatório");
     const id = a.tabId || (await activeTabId());
+    // wrapper: separa "rodou e retornou undefined" de "eval bloqueado/throw" e de
+    // "script nem executou" (resultado vazio = aba navegando/descartada — era null silencioso, #45/#46).
+    const runEval = async () => {
+      const [r] = await withTimeout(chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func: (code) => {
+        try { return { v: eval(code) }; }
+        catch (e) { return { err: String((e && e.message) || e).slice(0, 300) }; }
+      }, args: [String(a.js)] }), 20000, "evaluate (página pode estar ocupada/bloqueando script)");
+      return r;
+    };
     let r;
     try {
-      [r] = await withTimeout(chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func: (code) => eval(code), args: [String(a.js)] }), 20000, "evaluate (página pode estar ocupada/bloqueando script)");
+      r = await runEval();
     } catch (e) {
       throw new Error("evaluate falhou: " + String(e.message || e).slice(0, 200) + " (CSP pode bloquear eval)");
     }
-    const ex = r?.exceptionDetails || r?.error;
+    if (!r) {
+      await new Promise((res) => setTimeout(res, 1000));
+      try { r = await runEval(); } catch (e) {
+        throw new Error("evaluate falhou: " + String(e.message || e).slice(0, 200) + " (CSP pode bloquear eval)");
+      }
+      if (!r) throw new Error("evaluate não executou (aba navegando/descartada?) — recarregue a página (F5) e tente de novo");
+    }
+    const ex = r.exceptionDetails || r.error || (r.result && r.result.err) || null;
     if (ex) {
-      let msg = ex.message || ex.description || (ex.exception && ex.exception.description);
+      let msg = typeof ex === "string" ? ex : (ex.message || ex.description || (ex.exception && ex.exception.description));
       if (!msg) {
         try { msg = JSON.stringify(ex).slice(0, 300); } catch { msg = String(ex); }
       }
       throw new Error("evaluate falhou: " + String(msg).slice(0, 300) + " (CSP pode bloquear eval)");
     }
-    const v = r?.result;
-    if (typeof v === "undefined") return { value: null, note: "expressão não retornou valor — termine o JS com o valor desejado" };
+    const raw = (r.result && typeof r.result === "object" && "v" in r.result) ? r.result.v : r.result;
+    const v = raw;
+    if (typeof v === "undefined") return { value: null, note: "expressão executou e retornou undefined — termine o JS com o valor desejado" };
     return { value: typeof v === "string" ? v.slice(0, 4000) : v };
+  }
+  if (cmd === "tab.console") {
+    // lê o buffer do mon-hook (console+erros+rede). Só vê o que aconteceu DEPOIS da 1ª injeção.
+    const id = a.tabId || (await activeTabId());
+    const [sr] = await withTimeout(chrome.scripting.executeScript({
+      target: { tabId: id }, world: "MAIN",
+      func: (f) => {
+        try {
+          const m = window.__ubMon;
+          if (!m || typeof m.read !== "function") return { hooked: false, entries: [] };
+          const lim = Math.min(Math.max(Number((f && f.limit)) || 30, 1), 120);
+          const entries = m.read(120);
+          if (f && f.clear && typeof m.clear === "function") { try { m.clear(); } catch {} }
+          return { hooked: true, entries: Array.isArray(entries) ? entries : [], total: (typeof m.count === "function" ? m.count() : entries.length) };
+        } catch (e) { return { hooked: false, error: String((e && e.message) || e).slice(0, 200) }; }
+      },
+      args: [{ filter: a.filter, limit: a.limit }],
+    }), 15000, "content tab.console");
+    const out = (sr && sr.result) || { hooked: false, entries: [] };
+    if (!out.hooked) return { hooked: false, entries: [], note: "hook ainda não injetado nesta página — rode qualquer ação antes (goto/click) e leia de novo" };
+    let entries = Array.isArray(out.entries) ? out.entries : [];
+    const flt = String(a.filter || "all").toLowerCase();
+    if (flt === "errors") entries = entries.filter((e) => e && (e.kind === "js-error" || e.kind === "promise" || e.level === "error" || (e.kind === "net" && (e.status === 0 || e.status >= 400))));
+    else if (flt === "net") entries = entries.filter((e) => e && e.kind === "net");
+    else if (flt === "console") entries = entries.filter((e) => e && e.kind === "console");
+    return { hooked: true, filter: flt, count: entries.length, entries: entries.slice(-Math.min(Math.max(Number(a.limit) || 30, 1), 120)) };
   }
   if (cmd === "tab.shot") {
     // NUNCA troca de aba: só fotografa a aba VISÍVEL (fundo = sem print, use read)
@@ -541,6 +820,11 @@ async function handle(cmd, a = {}) {
       }
     }
     return { steps: out };
+  }
+  if (cmd === "tab.aesthetic") {
+    // v12: veredito visual bounded do content (score 0-100 + issues ≤12) — sem print.
+    const id = a.tabId || (await activeTabId());
+    return await ask(id, "aesthetic", a);
   }
   if (cmd.startsWith("tab.")) {
     const id = a.tabId || (await activeTabId());
@@ -657,6 +941,30 @@ async function loop() {
 chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg.cmd === "status") reply({ enabled: settings.enabled, hasToken: !!settings.token, url: settings.url });
   if (msg.cmd === "diag") reply({ ...diag, enabled: settings.enabled, hasToken: !!settings.token });
+  // alerta proativo do mon-hook (erro de console/rede na página): empurra p/ bridge
+  // /ubpush com debounce por aba (4s, máx 3 entradas) — o MCP exibe na hora, sem poll.
+  if (msg && msg.__ubMonAlert) {
+    (async () => {
+      try {
+        const tabId = (_s && _s.tab && _s.tab.id) || 0;
+        const now = Date.now();
+        const last = ubPushLast.get(tabId) || 0;
+        if (now - last < 4000) return;
+        ubPushLast.set(tabId, now);
+        if (ubPushLast.size > 20) ubPushLast.delete(ubPushLast.keys().next().value);
+        let tab = null;
+        try { tab = await chrome.tabs.get(tabId); } catch {}
+        const entry = msg.__ubMonAlert;
+        await fetch(settings.url + "/ubpush?token=" + encodeURIComponent(settings.token || ""), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ tabId, title: (tab && tab.title) || "", url: (tab && tab.url) || "", entries: [entry].slice(0, 3) }),
+          signal: AbortSignal.timeout(8000),
+        }).catch(() => {});
+      } catch {}
+    })();
+    return false;
+  }
   if (msg.cmd === "pingBridge") {
     (async () => {
       try {

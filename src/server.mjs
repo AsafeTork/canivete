@@ -22,12 +22,14 @@ reg("n_tools_info", {
   run: () => {
     const first = (d = "") => (String(d).match(/^[^.!?]+[.!?]?/)?.[0] ?? String(d)).trim();
     const g = (names) => names.map((n) => { const t = TOOLS.get(n); return t ? `${t.name} — ${first(t.description)}` : n; }).join("\n");
+    const taskOn = TOOLS.has("n_task");
+    const orchNames = ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"].filter((n) => TOOLS.has(n));
     const groups = [
       { title: "Filesystem + execução", hint: "ler/listar/criar/editar/patch/shell/glob/grep", names: ["n_read", "n_list", "n_write", "n_edit", "n_apply_patch", "n_bash", "n_glob", "n_grep"] },
       { title: "Web + APIs públicas sem chave", hint: "fetch enxuto, search 7 backends, currency/cep/cnpj/ip/weather/github/npm", names: ["n_webfetch", "n_websearch", "n_currency", "n_cep", "n_cnpj", "n_ipinfo", "n_weather", "n_github", "n_npm"] },
       { title: "Browser headless", hint: "CDP zero-deps: navegar com JS, snapshot, agir, screenshot, pdf", names: ["n_browser_navigate", "n_browser_snapshot", "n_browser_act", "n_browser_screenshot", "n_browser_pdf"] },
       { title: "Navegador LOGADO do dono", hint: "via extensão local: status, abas, ler, snapshot, agir, print", names: ["n_ubrowser_status", "n_ubrowser_tabs", "n_ubrowser_read", "n_ubrowser_snapshot", "n_ubrowser_act", "n_ubrowser_shot"] },
-      { title: "Orquestração paralela monitorada", hint: "spawn sync/async, wait any/all, status com modelo+mailbox, send/recv/peek/tail não-bloqueante, delete, models, todos", names: ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"] },
+      { title: taskOn ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)", hint: taskOn ? "spawn sync/async, wait any/all, status com modelo+mailbox, send/recv/peek/tail não-bloqueante, delete, models, todos" : "todos in-memory; subagentes voltam com CANIVETE_TASK_ENABLE=1", names: orchNames },
       { title: "DevEngine AI-Native", hint: "arquitetura sem varrer, investigar causa (12→1), impacto, patch AST, testes afetados, bg proc, UI state, DAG", names: ["n_get_architecture_summary", "n_investigate_issue", "n_analyze_change_impact", "n_apply_semantic_patch", "n_execute_targeted_tests", "n_manage_background_process", "n_inspect_ui_state", "n_orchestrate_task"] },
       { title: "Meta", hint: "catálogo, pergunta humana, skill, plan, report, contexto", names: ["n_tools_info", "n_question", "n_skill", "n_plan", "n_report", "n_ctx_status"] },
       { title: "WhatsApp dedicado", hint: "state|chats|open|read|send no Chrome logado", names: ["n_whatsapp"] },
@@ -36,7 +38,7 @@ reg("n_tools_info", {
     const extras = [...TOOLS.keys()].filter((n) => !listed.has(n));
     const lines = [
       `== CANIVETE (src/server.mjs, 1.0.0, ${TOOLS.size} tools — MCP universal, qualquer CLI) ==`,
-      "Runner atual: CANIVETE_RUNNER=opencode (ou genérico via CANIVETE_RUN_TEMPLATE).",
+      taskOn ? "Runner atual: CANIVETE_RUNNER=opencode (ou genérico via CANIVETE_RUN_TEMPLATE)." : "Subagentes desativados (RAM) — reative com CANIVETE_TASK_ENABLE=1.",
       "",
       ...groups.flatMap((gr) => [`-- ${gr.title} (${gr.names.length}): ${gr.hint} --`, g(gr.names), ""]),
     ];
@@ -76,7 +78,7 @@ reg("n_find_tools", {
       { title: "Web + APIs públicas sem chave", names: ["n_webfetch", "n_websearch", "n_currency", "n_cep", "n_cnpj", "n_ipinfo", "n_weather", "n_github", "n_npm"] },
       { title: "Browser headless", names: ["n_browser_navigate", "n_browser_snapshot", "n_browser_act", "n_browser_screenshot", "n_browser_pdf"] },
       { title: "Navegador LOGADO do dono", names: ["n_ubrowser_status", "n_ubrowser_tabs", "n_ubrowser_read", "n_ubrowser_snapshot", "n_ubrowser_act", "n_ubrowser_shot"] },
-      { title: "Orquestração paralela monitorada", names: ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"] },
+      { title: TOOLS.has("n_task") ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)", names: ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"].filter((n) => TOOLS.has(n)) },
       { title: "DevEngine AI-Native", names: ["n_get_architecture_summary", "n_investigate_issue", "n_analyze_change_impact", "n_apply_semantic_patch", "n_execute_targeted_tests", "n_manage_background_process", "n_inspect_ui_state", "n_orchestrate_task"] },
       { title: "Meta", names: ["n_tools_info", "n_find_tools", "n_question", "n_skill", "n_plan", "n_report", "n_ctx_status"] },
       { title: "WhatsApp dedicado", names: ["n_whatsapp"] },

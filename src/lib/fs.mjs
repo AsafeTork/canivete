@@ -12,7 +12,7 @@ import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { userInfo } from "node:os";
-import { reg, out, trimOut, fpath, exec, walkFiles, humanSize, escapeRe, CWD, SKIP_DIRS } from "./ctx.mjs";
+import { reg, out, trimOut, fpath, exec, walkFiles, humanSize, escapeRe, CWD, SKIP_DIRS, atomicWriteFile } from "./ctx.mjs";
 
 function globToRegex(pattern) {
   let re = "";
@@ -376,7 +376,7 @@ reg("n_write", {
       if (mkdirs !== false) await mkdir(dirname(p), { recursive: true });
       if (backup && existsSync(p)) await writeFile(`${p}.bak`, readFileSync(p));
       if (append) await writeFile(p, content, { encoding: "utf8", flag: "a" });
-      else await writeFile(p, content, "utf8");
+      else await atomicWriteFile(p, content, "utf8"); // atômico: ENOSPC não zera o original
       let ownNote = "";
       if (owner) {
         const cr = await exec("chown", [String(owner), p], { timeout: 15000 });
@@ -438,7 +438,7 @@ reg("n_edit", {
     if (dryRun) return out(`matches=${count} count=${count}`);
     try {
       if (backup) await writeFile(`${p}.bak`, text, "utf8");
-      await writeFile(p, updated, "utf8");
+      await atomicWriteFile(p, updated, "utf8"); // atômico: ENOSPC não zera o original (#49)
     } catch (e) {
       return out(fail("n_edit", `edit failed: ${e.message}`, "confira permissões/disco; use n_read p/ validar o arquivo"), true);
     }
@@ -544,7 +544,10 @@ reg("n_bash", {
     if (tries > 0) msg += `\n(tentativa ${attempt + 1}/${tries + 1})`;
     if (r.killed) {
       msg += `\n--- progresso antes do timeout (${elapsed}s / ${Math.round(timeoutMs / 1000)}s, ${r.so.length} chars) ---\n${r.so.length ? r.so.slice(-800) : "(sem stdout)"}`;
-      msg += `\ntimeout em ${Math.round(timeoutMs / 1000)}s — aumente com timeout até 600000 (10min) ou rode a tarefa longa em background sem bloquear: n_manage_background_process({action:"start", command:"..."}) e acompanhe com {action:"read_logs"}/{action:"stop"}; encadeie comandos dependentes com &&`;
+      // #50: host (opencode) corta a RESPOSTA em ~170s — timeout maior que isso nunca volta sync.
+      msg += timeoutMs > 165000
+        ? `\nHOST-GUARD: timeout pedido (${Math.round(timeoutMs / 1000)}s) passa do teto de resposta do host (~170s) — sync NUNCA volta acima disso. Rode em background: n_manage_background_process({action:"start", command:"..."}) + read_logs/stop.`
+        : `\ntimeout em ${Math.round(timeoutMs / 1000)}s — aumente com timeout até 600000 (10min) ou rode a tarefa longa em background sem bloquear: n_manage_background_process({action:"start", command:"..."}) e acompanhe com {action:"read_logs"}/{action:"stop"}; encadeie comandos dependentes com &&`;
     }
     const isErr = !!(r.error || r.killed || r.code !== 0);
     // dica curta e só em falha (nunca em sucesso; no timeout o bloco acima já orienta — sem duplicar)

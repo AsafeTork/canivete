@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
-import { reg, out, devOut, trimOut, estTokens, fpath, exec, walkFiles, escapeRe, WALK_CAP, isSkippable, CWD, HOME, SKIP_DIRS } from "./ctx.mjs";
+import { reg, out, devOut, trimOut, estTokens, fpath, exec, walkFiles, escapeRe, WALK_CAP, isSkippable, CWD, HOME, SKIP_DIRS, atomicWriteFile } from "./ctx.mjs";
 import { tasks, taskId, persistTask, resolveTask } from "./tasks.mjs";
 
 function loadPkg() {
@@ -615,7 +615,7 @@ reg("n_apply_semantic_patch", {
     }
     try {
       if (isNew) await mkdir(dirname(p), { recursive: true });
-      await writeFile(p, nextText, "utf8");
+      await atomicWriteFile(p, nextText, "utf8"); // atômico: ENOSPC não zera o original (#49)
     } catch (e) {
       return devOut({ status: "error", summary: `write failed em ${file_path}: ${e.message} — dica: n_read filePath="${file_path}" + retry n_apply_semantic_patch {create_if_missing:true}`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }

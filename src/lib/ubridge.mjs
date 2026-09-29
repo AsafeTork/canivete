@@ -36,6 +36,24 @@ const ubToken = () => {
 
 const ubQueue = [], ubWaiters = [], ubPending = new Map();
 let ubSeq = 0, ubLastPoll = 0, ubExtInfo = null, ubHttp = false;
+// alertas proativos do mon-hook (/ubpush): erros de console/rede empurrados pela extensão.
+// Ring global (cap 30) + contador não-lidos; `console` marca lido; hint nas respostas.
+const ubAlerts = [];
+let ubAlertsUnread = 0;
+function ubAlertsPush(tabId, title, url, entries) {
+  try {
+    for (const e of (Array.isArray(entries) ? entries : []).slice(0, 3)) {
+      ubAlerts.push({ at: new Date().toISOString(), tabId, title: String(title || "").slice(0, 80), url: String(url || "").slice(0, 120), kind: e.kind, level: e.level, text: String(e.text || e.url || "").slice(0, 220), status: e.status ?? null });
+    }
+    while (ubAlerts.length > 30) ubAlerts.shift();
+    ubAlertsUnread++;
+  } catch {}
+}
+function ubAlertsPending() { return ubAlertsUnread; }
+function ubAlertsRead() { const n = ubAlertsUnread; ubAlertsUnread = 0; return n; }
+function ubAlertsHint() {
+  return ubAlertsUnread > 0 ? ` 📬 ${ubAlertsUnread} alerta(s) novo(s) do console — leia com n_ubrowser_act {action:"console", filter:"errors"}` : "";
+}
 
 function ubFlush() {
   while (ubWaiters.length && ubQueue.length) {
@@ -63,9 +81,20 @@ function ubEnsure() {
         try { req.on("close", () => { const i = ubWaiters.findIndex((w) => w.res === res); if (i >= 0) { ubWaiters.splice(i, 1); clearTimeout(t); } }); } catch (e) { process.stderr.write(`[canivete] ub poll close-hook falhou (${e?.message || e})\n`); } // cliente caiu antes dos 25s: libera o waiter (era leak até o timeout)
         return;
       }
-      if (req.method === "POST" && (u.pathname === "/hello" || u.pathname === "/result" || u.pathname === "/exec")) {
+      if (req.method === "POST" && (u.pathname === "/hello" || u.pathname === "/result" || u.pathname === "/exec" || u.pathname === "/ubpush")) {
         let body = "";
         await new Promise((ok, fail) => { const ch = []; let n = 0; req.on("data", (c) => { n += c.length; if (n > 20 * 1024 * 1024) fail(new Error("body > 20MB")); else ch.push(c); }); req.on("end", () => { body = Buffer.concat(ch).toString("utf8"); ok(); }); req.on("error", fail); });
+        if (u.pathname === "/ubpush") {
+          // push proativo de erro (mon-hook → content → background): buffer + avisa host.
+          let p = {};
+          try { p = JSON.parse(body); } catch {}
+          ubAlertsPush(p.tabId, p.title, p.url, p.entries);
+          try {
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "warning", logger: "canivete", data: `📬 console: erro novo em ${String(p.title || p.url || "aba").slice(0, 60)} — leia com n_ubrowser_act {action:"console", filter:"errors"}` } }) + "\n");
+          } catch {}
+          res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true}');
+          return;
+        }
         if (u.pathname === "/hello") { try { ubExtInfo = JSON.parse(body).info || null; } catch (e) { process.stderr.write(`[canivete] ub /hello json inválido (${e?.message || e})\n`); } ubLastPoll = Date.now(); }
         else if (u.pathname === "/result") { let p = {}; try { p = JSON.parse(body); } catch (e) { process.stderr.write(`[canivete] ub /result json inválido (${e?.message || e})\n`); } const payBytes = Buffer.byteLength(body || "", "utf8"); if (payBytes > UB_WARNPAY) process.stderr.write(`[canivete] ub /result grande (${payBytes}B id=${p?.id || "?"})\n`); const q = ubPending.get(p.id); if (q) { ubPending.delete(p.id); clearTimeout(q.timer); if (payBytes > UB_MAXPAY) { const s = body || ""; const chunks = []; for (let i = 0; i < s.length; i += UB_CHUNK) chunks.push(s.slice(i, i + UB_CHUNK)); q.resolve({ id: p.id, ok: true, chunks, chunked: true, bytes: payBytes, note: "resposta fatiada em chunks; use max/compact/offset p/ refinar" }); } else q.resolve(p); } }
         else {
@@ -119,5 +148,5 @@ function ubSend(cmd, args = {}, timeoutMs = UB_TIMEOUT_DEFAULT) {
 
 import { riskOf as ubRisk } from "./risk.mjs";
 
-export { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT };
+export { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubAlertsPush, ubAlertsPending, ubAlertsRead, ubAlertsHint };
 export function ubStats() { return { queued: ubQueue.length, ext: ubExtInfo, port: UB_PORT, lastPollAgoMs: ubLastPoll ? Date.now() - ubLastPoll : -1 }; }

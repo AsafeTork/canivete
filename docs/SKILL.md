@@ -1,14 +1,14 @@
 ---
 name: canivete
-description: Use for full local dev via canivete MCP tools (filesystem, shell, web, subagents, DevEngine, headless browser, owner's logged-in Chrome). Global, works in any project or CLI.
+description: Use for full local dev via canivete MCP tools (filesystem, shell, web, DevEngine, headless browser, owner's logged-in Chrome). Global, works in any project or CLI.
 ---
 
-# Canivete — toolkit MCP universal (55 tools `n_*`)
+# Canivete — toolkit MCP universal (46 tools `n_*`)
 
 Servidor: `src/server.mjs` (zero deps, Node 22+). Registro por CLI em `examples/`.
-Runner de subagentes: opencode (total) ou genérico (`CANIVETE_RUN_TEMPLATE`).
+MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 
-## Tools (55) — 1 linha cada (nomes conferidos via `rg 'reg\("n_' src/`)
+## Tools (46) — 1 linha cada (nomes conferidos via `rg 'reg\("n_' src/`)
 
 ### Filesystem + execução (8)
 
@@ -37,22 +37,9 @@ Runner de subagentes: opencode (total) ou genérico (`CANIVETE_RUN_TEMPLATE`).
 | `n_github` | repo/releases/commits/issues (60 req/h, 10min). |
 | `n_npm` | Pacote npm (versão/licença/deps/downloads mês; 1h). |
 
-### Orquestração (12)
+### Tarefas (2) — subagentes desativados
 
-| Tool | Uso |
-|---|---|
-| `n_task` | Spawn (`model` obrigatório opencode; `background:true` + `depends_on`/`label`/`ephemeral`). Tipos: `mcp-only` (só `n_*`) `explore` `quick` `general` `reviewer`. |
-| `n_task_wait` | `any` (1º) / `all` (todas); clamp ~170s — **chame de novo** se rodando. |
-| `n_list_models` | **PASSO 1** antes de `n_task` (escolha obrigatória no modo opencode). |
-| `n_task_status` | Estado sem bloquear (modelo, `mailbox:N`, `idle`, `interrupted`). |
-| `n_task_send` | Msg p/ mailbox (`main`/task, `ttl_ms`); conclusão sempre avisa `main`. |
-| `n_task_recv` | Lê+esvazia (destrutivo; `timeout` máx 170s). |
-| `n_task_peek` | Espia sem esvaziar. |
-| `n_task_tail` | Transcrição parcial ao vivo (progresso). |
-| `n_task_notifications` | Notifs + correio dormindo (esvazia notifs). |
-| `n_task_delete` | Exclui; `running` mata; `all`/`ephemeral` p/ limpeza. |
-| `n_todowrite` | Lista in-memory (`replace`/`append`); volátil. |
-| `n_todo` | Lê lista in-memory. |
+`n_task` + família (`wait/status/send/recv/peek/tail/notifications/delete/models`) **não registradas** (RAM; reative com `CANIVETE_TASK_ENABLE=1`).
 
 ### DevEngine (8) — roteamento: arch→investigate→impact→patch→test
 
@@ -98,9 +85,7 @@ Runner de subagentes: opencode (total) ou genérico (`CANIVETE_RUN_TEMPLATE`).
 ## Tarefas longas (progresso sem sleep cego)
 
 - `n_bash`: `timeout` default 120s, **máx 600000 (10min)**. Passou → `n_manage_background_process({action:"start", command})` + `read_logs`/`status`/`stop`.
-- `n_task background:true` → **1×** `n_task_wait({task_ids, wait:"all"|"any", timeout:600000})`; clamp ~170s (`CANIVETE_HOST_GUARD_MS`) → **chame de novo**, não é erro. Ao vivo: `n_task_tail`; sem bloquear: `n_task_status`.
-- Workflow: fan-out N× `background:true` → `wait any/all` → `send/recv/peek`. Subagente sempre `send({task_id:"main", message:"done <id> + resumo"})`. Sem teto de quantidade (spawn nunca recusa); `CANIVETE_MAX_POLLS=8`.
-- Modelo obrigatório (opencode): `n_list_models` → `model` em `n_task`. Tipos: `mcp-only|explore|quick|general|reviewer`.
+- Todos in-memory: `n_todowrite` / `n_todo` p/ planejar.
 
 ## Erros comuns
 
@@ -117,21 +102,19 @@ Runner de subagentes: opencode (total) ou genérico (`CANIVETE_RUN_TEMPLATE`).
 | `evaluate → undefined` | Falta `return ...`; CSP bloqueado não tem workaround. |
 | `shot` fundo sem print | Traga p/ frente ou `n_browser_screenshot`. |
 | `n_bash` timeout | `timeout` até 600000 ou background + `read_logs`. |
-| `n_task` sem runner | `CANIVETE_RUNNER` + `CANIVETE_RUN_TEMPLATE="{prompt} {model} {agent} {id}"`. |
-| `wait timeout — ainda rodando` | Chame `n_task_wait` de novo (`tail`/`status` p/ progresso). |
 | Qualquer erro/falta/gargalo | `n_report` em vez de improvisar. |
 
 ## Env (`CANIVETE_*`)
 
 Execução/limites: `CANIVETE_CWD` (repo), `CANIVETE_RUNNER` (`opencode`) + `CANIVETE_RUN_TEMPLATE`, `CANIVETE_HOST_GUARD_MS` (170000), `CANIVETE_MAX_POLLS` (8), `CANIVETE_MAX_BODY` (2MB remoto), `CANIVETE_CTX_BUDGET` (200000), `CANIVETE_MAX_MSGS` (100)/`CANIVETE_MAX_MSG_CHARS` (4000), `CANIVETE_WALK_CAP` (8000)/`CANIVETE_WALK_DEPTH` (8).
 Browser: `CANIVETE_CHROME_BIN` (auto-detect), `CANIVETE_CDP_PORT` (19322), `CANIVETE_CDP_TIMEOUT` (25000, WS open 10000), `CANIVETE_BROWSER_TIMEOUT_MS` (40000; PDF 60000), `CANIVETE_BROWSER_ALLOW_PRIVATE` (`1` libera intranet), `CANIVETE_CHROME_PROFILE`, `CANIVETE_BRIDGE_PORT` (19422), `CANIVETE_TOKEN`/`CANIVETE_TOKEN_FILE` (`~/.config/canivete/token.txt`).
-Tasks/skills: `CANIVETE_AGENTS`, `CANIVETE_MODELS_FILE` (`config/models.json`), `CANIVETE_TASK_PREFIX`, `CANIVETE_DB_TIMEOUT_MS` (5000)/`CANIVETE_EXPORT_TIMEOUT_MS` (8000), `CANIVETE_SKILLS_PATHS`, `CANIVETE_WATCH_MAIN`/`CANIVETE_WATCH`, `CANIVETE_SERVER_NAME`, `MCP_BROKER_DIR` (mailbox).
+Tasks/skills: `CANIVETE_TASK_ENABLE` (`1` reativa `n_task*`), `CANIVETE_SKILLS_PATHS`, `CANIVETE_SERVER_NAME`.
 
 ## Doutrina
 
 - Ozônio: só age quando o dono pede. Destrutivo/idiota nunca sem pedido explícito; alto risco exige `confirm`.
 - Obediência auditável: nunca faça na mão o que tem tool; siga o roteamento (arch→investigate→impact→patch→test); sem evidência arquivo:linha = recusado. Principal confere `n_task_status`.
-- Confie no MCP (sem polling manual): 1 wait longo em vez de sleep loops; subagente sempre avisa `main` ao concluir; notificações acordam quem espera.
+- Confie no MCP (sem polling manual): 1 espera longa com teto em vez de sleep loops.
 - Refine em produção: `n_report` p/ todo erro/falta/gargalo em vez de improvisar.
 
 ## ubrowser em 30s
@@ -149,13 +132,13 @@ Tasks/skills: `CANIVETE_AGENTS`, `CANIVETE_MODELS_FILE` (`config/models.json`), 
 3. WhatsApp abrir chat:
 `n_whatsapp({"action":"open","name":"Nome do chat"})` → `n_whatsapp({"action":"read","name":"Nome do chat"})`
 
-## ubrowser dentro de n_task (economia)
+## Economia no ubrowser (tokens)
 
-Subagente com browser = 500MB filho + snapshots gigantes retidos em `tailRaw`. Sem economia o pai estoura `CANIVETE_CTX_BUDGET`.
+Snapshot gigante estoura `CANIVETE_CTX_BUDGET`. Regras (valem p/ qualquer agente):
 
 1. `compact:true` sempre — `n_ubrowser_snapshot({"tab":"trecho","compact":true})` (~60% menos tokens; auto-compact acima de 30 elementos; `compact:false` só p/ detalhe `selector+x/y`).
 2. `max:30` — nunca default 50/120 em subagente; pagine com `offset` (`max:30 offset:0/30/...`) até o fim.
-3. Nunca screenshot salvo em `result` — `n_ubrowser_shot` (e `n_browser_screenshot` com `scale:0.5`) SÓ quando o dono pedir evidência visual; imagem nunca vai p/ `result`/mailbox/`tail`, só confirmação textual.
+3. Nunca screenshot gigante no contexto — `n_ubrowser_shot` (e `n_browser_screenshot` com `scale:0.5`) SÓ quando o dono pedir evidência visual; fora isso, confirmação textual.
 4. `read` distill — `n_ubrowser_read({"tab":"trecho","mode":"distill"})` default (~4000 chars, `maxChars:2500`/`maxLinks:15`); `mode:"raw"` só opt-out.
 5. 1 snapshot por decisão, não loop — 1 `snapshot` → 1 `act` (`changed`/`after` confirma sem re-ler); nunca `snapshot` em loop; virtualizada faz `scan {pages:4}` antes, vazio relista `tabs` + F5.
 

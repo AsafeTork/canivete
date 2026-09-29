@@ -1,19 +1,19 @@
 # canivete — MCP universal em um arquivo de ideia, vários arquivos de verdade
 
-Toolkit MCP completo (55 tools `n_*`, **zero dependências**, Node 22+) que funciona em **qualquer CLI com suporte a MCP** (opencode, Claude Code, etc.) e em **qualquer projeto**:
+Toolkit MCP completo (46 tools `n_*`, **zero dependências**, Node 22+) que funciona em **qualquer CLI com suporte a MCP** (opencode, Claude Code, etc.) e em **qualquer projeto**:
 
 - **Filesystem + execução (8):** ler/listar/criar/editar/patch/shell/glob/grep — com truncamento explícito e edição segura.
 - **Web sem chave (2+7):** fetch enxuto (`<article>/<main>`) + search em 7 backends públicos + câmbio/CEP/CNPJ/IP/clima/GitHub/npm (com cache TTL).
-- **Orquestração (12):** spawn de subagentes em paralelo + mailbox em disco + todos + modelos. Runner plugável.
+- **Tarefas (2):** todos in-memory. Subagentes **desativados** (RAM; reative com `CANIVETE_TASK_ENABLE=1`).
 - **DevEngine (8):** resumo de arquitetura sem varrer, investigação de bug (12→1), impacto de mudança, patch validado por AST, testes afetados, processos em fundo, estado da UI, DAG com rollback.
 - **Browsers (11):** Chrome headless próprio via CDP (navegar com JS, snapshot, agir, screenshot, PDF) + **seu Chrome logado** via extensão local (ler, snapshot, agir, print, cursor independente, aba em fundo).
   - `n_ubrowser_act`: `select selector text → escolhe opção; highlight selector → destaca elemento; waittext text → aguarda texto aparecer; type selector text → digita`.
 - **Meta (6):** catálogo, pergunta ao humano, skills, plan, report, contexto.
 - **WhatsApp (1):** gateway Baileys + fallback no Chrome logado.
 
-## Tools (55) — tabela por categoria
+## Tools (46) — tabela por categoria
 
-> Nomes conferidos via `rg 'reg\("n_' src/` (55 matches). Descubra em runtime com `n_tools_info`.
+> Nomes conferidos via `rg 'reg\("n_' src/`. Descubra em runtime com `n_tools_info`.
 
 ### Filesystem + execução (8)
 
@@ -47,20 +47,13 @@ Toolkit MCP completo (55 tools `n_*`, **zero dependências**, Node 22+) que func
 | `n_github` | Repo/releases/commits/issues (60 req/h sem token, cache 10min). |
 | `n_npm` | Info de pacote npm (versão, licença, deps, downloads do último mês; cache 1h). |
 
-### Orquestração — subagentes + mailbox (12)
+### Tarefas (2)
+
+Subagentes (`n_task` + mailbox) **desativados** — spawn consome RAM que a caixa não tem.
+Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 
 | Tool | Para que (1 linha) |
 |---|---|
-| `n_task` | Spawn subagente (`model` obrigatório no modo opencode; `background:true` não bloqueia). |
-| `n_task_wait` | Espera tasks (`any` = 1º que terminar, `all` = todas; clamp ~170s — chame de novo). |
-| `n_list_models` | **PASSO 1** antes de `n_task`: lista modelos válidos (modo opencode exige escolha). |
-| `n_task_status` | Lista/detalha subagentes (status, modelo, `mailbox:N`, `idle`, `interrupted`); nunca bloqueia. |
-| `n_task_send` | Envia msg p/ mailbox (`main` ou task; `ttl_ms` opcional); não-bloqueante. |
-| `n_task_recv` | Lê e **esvazia** mailbox (destrutivo; `filter`/`timeout` até 170s). |
-| `n_task_peek` | Espia mailbox **sem** esvaziar (últimas N + idade). |
-| `n_task_tail` | Transcrição parcial ao vivo do subagente (o que está gerando agora). |
-| `n_task_notifications` | Notifs de tasks + correio dormindo (esvazia notifs). |
-| `n_task_delete` | Exclui task/mailbox; em `running` mata o processo. |
 | `n_todowrite` | Cria/substitui lista de tarefas in-memory (`replace`/`append`). |
 | `n_todo` | Lê a lista de tarefas in-memory. |
 
@@ -93,9 +86,9 @@ Toolkit MCP completo (55 tools `n_*`, **zero dependências**, Node 22+) que func
 |---|---|
 | `n_ubrowser_status` | **Antes de tudo**: ponte/extensão conectada? (offline → janela normal + popup ATIVO). |
 | `n_ubrowser_tabs` | Abas do dono (id, janela, título, url; IDs mudam — prefira `tab:"trecho"`). |
-| `n_ubrowser_read` | Lê aba com login (default `distill` enxuto; `raw` = texto integral + links). |
-| `n_ubrowser_snapshot` | Clicáveis da aba (`max` até 120 + `offset`; `scan` antes p/ lista virtualizada). |
-| `n_ubrowser_act` | Automação no Chrome logado (goto/click/fill/type/select/scroll/`flow`; alto risco exige `confirm`). |
+| `n_ubrowser_read` | Lê aba com login (`distill` enxuto; `raw` integral + links; value separado do placeholder). |
+| `n_ubrowser_snapshot` | Clicáveis (`max`+`offset`; `find` localiza; `scan` antes p/ virtualizada; `shadow:` p/ web components; refs morrem na navegação). |
+| `n_ubrowser_act` | Automação no Chrome logado (`fill` substitui, `type` anexa, `wait`=waitMs; alto risco exige `confirm`). |
 | `n_ubrowser_shot` | Print só da aba **VISÍVEL** (fundo não imprime — use `n_browser_screenshot` p/ fundo). |
 
 ### WhatsApp dedicado (1)
@@ -108,7 +101,7 @@ Toolkit MCP completo (55 tools `n_*`, **zero dependências**, Node 22+) que func
 
 | Tool | Para que (1 linha) |
 |---|---|
-| `n_tools_info` | Catálogo agrupado das 55 tools (descubra o que chamar). |
+| `n_tools_info` | Catálogo agrupado das tools (descubra o que chamar). |
 | `n_question` | Registra pergunta p/ o humano (o agente pergunta diretamente). |
 | `n_skill` | Carrega `SKILL.md` por nome (`refresh:true` lista/recarrega). |
 | `n_plan` | Aviso: plan mode só via `/plan` na TUI (não alternável pelo MCP). |
@@ -125,16 +118,8 @@ Regra: **nunca sleep em loop** — 1 espera longa com teto + erro acionável no 
   → `read_logs` (progresso, últimos 4k chars) → `status` → `stop`/`restart`.
   `send` NÃO escreve stdin por design (use `restart` com `env`). Cheque a UI com
   `n_inspect_ui_state({url, expect, retries})`.
-- **Subagentes em fundo:** `n_task({prompt, model, background:true, subagent_type})`
-  → **UMA** chamada `n_task_wait({task_ids, wait:"all"|"any", timeout:600000})`.
-  O servidor espera por você até o clamp do host (~170s, `CANIVETE_HOST_GUARD_MS`);
-  se ainda estiver rodando, **chame `n_task_wait` de novo** (não é erro).
-  Progresso ao vivo: `n_task_tail({task_id})`; estado sem bloquear: `n_task_status`.
-  Limites: sem teto de quantidade de tasks (spawn nunca recusa por carga); `CANIVETE_MAX_POLLS` (8 polls ativos).
-- **Mailbox acorda:** subagente sempre finaliza com `n_task_send({task_id:"main", message:"done <id> + resumo"})`;
-  o principal lê via `n_task_notifications` / `n_task_recv({timeout})`. Nunca termine com mailbox cheia.
-- **Modelo obrigatório (modo opencode):** `n_list_models` → escolha → passe `model` em `n_task`.
-  Sem o binário do runner, `n_task` devolve erro claro (o resto funciona).
+- **Subagentes:** desativados (RAM) — `n_task` e família não registradas. Reative com `CANIVETE_TASK_ENABLE=1`.
+- **Todos in-memory:** `n_todowrite` / `n_todo` p/ planejar a sessão.
 
 ## Erros comuns (mensagem → causa → o que fazer)
 
@@ -145,14 +130,12 @@ Regra: **nunca sleep em loop** — 1 espera longa com teto + erro acionável no 
 | `EXTENSAO_OFFLINE` / `TIMEOUT_EXTENSAO` / `timeout 60s aguardando extensão` | Chrome fechado, janela anônima, popup pausado ou token divergente | `n_ubrowser_status` diagnostica: Chrome aberto, **janela normal** (anônima é invisível), popup **ATIVO**, token igual a `~/.config/canivete/token.txt`; SW dormente acorda em ~1min (popup → Testar conexão). |
 | `SSRF bloqueado: host privado/intranet` | `n_browser_*` bloqueia intranet por padrão | Use URL pública ou `CANIVETE_BROWSER_ALLOW_PRIVATE=1` p/ permitir intranet. |
 | `chrome://…` / Web Store sem ação | Chrome bloqueia content script nessas páginas | Limite do Chrome — automatize só páginas web normais. |
-| Aba sumiu / `NOTFOUND` / snapshot vazio | IDs de aba mudam a cada restart/navegação; lista virtualizada só tem visíveis no DOM | Reliste `n_ubrowser_tabs`; prefira `tab:"trecho título/URL"` a `tabId`; `scan {pages:4}` antes de `snapshot`; F5 + `ping` se versão velha. |
+| Aba sumiu / `NOTFOUND` / snapshot vazio | IDs de aba mudam a cada restart/navegação; lista virtualizada só tem visíveis no DOM | Reliste `n_ubrowser_tabs`; prefira `tab:"trecho título/URL"` a `tabId`; `scan {pages:4}` antes de `snapshot`; `find:"texto"` p/ localizar sem despejar; `shadow:` no selector p/ web components; F5 + `ping` se versão velha. |
 | `evaluate` devolve `undefined` / CSP | Falta `return ...` no JS ou CSP bloqueou | Retorne valor (`return ...`); CSP bloqueado não tem workaround via extensão. |
 | `Chrome só imprime aba VISÍVEL` | Print de aba em fundo | Traga p/ frente ou use `n_browser_screenshot` headless. |
 | `n_bash` timeout / `exit=timeout` | Comando passou do `timeout` | Aumente `timeout` até 600000 ou rode em background (`n_manage_background_process` + `read_logs`). |
-| `n_task sem runner` / `binário 'opencode' não encontrado` | Runner ausente | Instale o binário ou modo genérico: `CANIVETE_RUNNER` + `CANIVETE_RUN_TEMPLATE="claude -p {prompt}"`. |
 | `patch check failed` / `oldString not found` | Diff com paths errados ou trecho inexato | `stat:true` p/ ver arquivos; paths relativos ao repo; `n_read` + copiar trecho exato (espaços/quebras). |
 | `body > N bytes` (modo remoto) | POST acima de `CANIVETE_MAX_BODY` (default 2MB) | Reduza o payload ou eleve `CANIVETE_MAX_BODY`. |
-| `wait timeout — ainda rodando` | `n_task_wait` bateu no clamp ~170s | **Não é falha**: chame `n_task_wait` de novo; acompanhe com `n_task_tail`/`n_task_status`. |
 | Erro/falta/gargalo em qualquer tool | Comportamento inesperado ou capacidade ausente | Use `n_report({kind, where, expected, got})` em vez de improvisar. |
 
 ## Quickstart (5 min)
@@ -207,34 +190,12 @@ Broker em `~/.config/canivete/` (persiste; `/tmp` apagava tudo no reboot).
 
 Exemplos prontos em `examples/`.
 
-## Runner de subagentes (`n_task`)
+## Subagentes (`n_task` — desativado)
 
-**Modo LLM direto (default quando `CANIVETE_RUNNER` não é `opencode` e sem `CANIVETE_RUN_TEMPLATE`):** POST HTTPS direto ao provedor OpenAI-compatível (Groq, Cerebras, Gemini, DeepSeek, Ollama, OpenRouter, etc.), **zero opencode**, sem spawn nem serve. Modelo é o id do provedor (ex: `llama-3.3-70b-versatile`).
-
-```bash
-# Exemplo com Groq (substitua a chave):
-CANIVETE_LLM_PROVIDER=groq CANIVETE_LLM_API_KEY=gsk_... node src/server.mjs
-# Ou chaves em ~/.config/canivete/llm.env (0600, via EnvironmentFile do serviço):
-# CANIVETE_LLM_BASE_URL, CANIVETE_LLM_API_KEY, CANIVETE_LLM_MODEL
-# Fallbacks: CANIVETE_LLM_2_..., CANIVETE_LLM_3_, ..._4_, ..._5_
-# Providers suportados: groq|cerebras|gemini|openrouter|deepseek|openai|ollama
-```
-
-- Padrão (`CANIVETE_TASK_MODE=attach`): reusa `opencode serve`/TUI aberto e **nunca inicia processo sozinho** (RAM); se nada no ar, fallback p/ spawn.
-- `auto`: como attach, mas sobe um serve gerenciado em `127.0.0.1:19425` se fora do ar (1 processo p/ N tasks) → fallback spawn.
-- `serve`: só serve (erro se inacessível). `spawn`: só spawn clássico.
-- Receita zero-processo-novo: abra o TUI com `opencode --port 4096` e fixe `CANIVETE_SERVE_URL=http://127.0.0.1:4096`.
-- **Nota sobre zen free:** chamada HTTPS direta ao zen é bloqueada por gate anti-abuso (fingerprint TLS do binário oficial; curl/Node/Go/Chrome-UA: `FreeTierError`). O binário oficial passa no gate por construção. Use um provedor com API key para LLM direto.
-
-## Correio que acorda (mailbox push)
-
-`send` grava em disco compartilhado (`MCP_BROKER_DIR`, padrão por projeto; fixe
-`MCP_BROKER_DIR=/tmp/canivete-shared` para um correio único entre projetos).
-Cada servidor observa `TASK_ID` próprio + `main` (se `CANIVETE_WATCH_MAIN=1`) e
-empurra 📬 automático na sessão — ninguém dorme sem ler. Extras via `CANIVETE_WATCH`
-(vírgula). No modo remoto o push não atravessa HTTP: vale o handshake
-(`recv` com timeout + regra de ouro no prompt do agente) e o scan de
-"correio dormindo" em `n_task_notifications` + aviso ao enviar p/ task parada.
+Spawn de subagentes **desativado por padrão**: cada spawn é um processo `opencode`
+(~700MB) e a caixa não tem RAM. O código está intacto — reative com
+`CANIVETE_TASK_ENABLE=1` no ambiente do serviço. Docs históricas da família
+`n_task*` + mailbox + runner/serve foram removidas desta página nessa versão.
 
 ## Segurança (doutrina do dono)
 
@@ -248,31 +209,22 @@ empurra 📬 automático na sessão — ninguém dorme sem ler. Extras via `CANI
 | Var | Default | O quê |
 |---|---|---|
 | `CANIVETE_CWD` | `process.cwd()` | raiz do projeto (fs/shell) |
-| `CANIVETE_RUNNER` | `opencode` | binário de subagentes |
-| `CANIVETE_TASK_MODE` | `auto` | `auto` (serve→fallback spawn) \| `attach` (reusa, nunca inicia) \| `serve` (só serve) \| `spawn` (só spawn) |
-| `CANIVETE_SERVE_PORT` | `19425` | porta do `opencode serve` gerenciado (`0` = desliga serve) |
-| `CANIVETE_SERVE_URL` | `http://127.0.0.1:<porta>` | override (ex: TUI com `--port 4096`) |
-| `CANIVETE_RUN_TEMPLATE` | — | template genérico `{prompt} {model} {agent} {id}` |
-| `CANIVETE_MODELS_FILE` | `config/models.json` | lista de modelos |
-| `CANIVETE_AGENTS` | lista padrão | tipos de subagente |
+| `CANIVETE_TASK_ENABLE` | — | `1` reativa a família `n_task*` (subagentes; desligado por RAM) |
 | `CANIVETE_HOST_GUARD_MS` | `170000` | teto de resposta (antes do timeout do host) |
 | `CANIVETE_TOKEN` / `CANIVETE_TOKEN_FILE` | `~/.config/canivete/token.txt` (autogerado) | auth da extensão |
 | `CANIVETE_BRIDGE_PORT` | `19422` | ponte da extensão |
 | `CANIVETE_CDP_PORT` | `19322` | Chrome headless (CDP) |
 | `CANIVETE_CHROME_BIN` | auto-detect | binário do Chrome |
 | `CANIVETE_CHROME_PROFILE` | `/tmp/canivete-chrome-profile` | perfil headless |
-| `CANIVETE_MAX_POLLS` | `8` | teto de polls ativos aguardando subagente |
+| `CANIVETE_MAX_POLLS` | `8` | teto de polls ativos (só com `CANIVETE_TASK_ENABLE=1`) |
 | `CANIVETE_BROWSER_TIMEOUT_MS` | `40000` | timeout do Chrome headless (`n_browser_*`; PDF usa `CANIVETE_BROWSER_PDF_TIMEOUT_MS` ou este, default 60s) |
 | `CANIVETE_BROWSER_ALLOW_PRIVATE` | — | `1` libera intranet nos `n_browser_*` (default bloqueia SSRF) |
 | `CANIVETE_CDP_TIMEOUT` | `25000` (WS open `10000`) | timeout CDP/WS do headless |
 | `CANIVETE_MAX_BODY` | `2MB` | teto do POST no modo remoto `--http` (excedeu → `body > N bytes`) |
-| `CANIVETE_CHROME_BIN` (`CHROME_BIN`) | auto-detect | binário do Chrome headless |
 | `CANIVETE_CTX_BUDGET` | `200000` | orçamento de chars da sessão (ver `n_ctx_status`) |
-| `CANIVETE_MAX_MSGS` / `CANIVETE_MAX_MSG_CHARS` | `100` / `4000` | teto da mailbox (qtd/tamanho por msg) |
-| `CANIVETE_DB_TIMEOUT_MS` / `CANIVETE_EXPORT_TIMEOUT_MS` | `5000` / `8000` | timeouts internos de tasks (DB/export) |
 | `CANIVETE_WALK_CAP` / `CANIVETE_WALK_DEPTH` | `8000` / `8` | teto de arquivos/profundidade nas varreduras |
-| `CANIVETE_TASK_PREFIX` | `canivete-task-` | prefixo dos ids de task |
-| `CANIVETE_SERVER_NAME` | `canivete` | nome do servidor (mailbox/persistência) |
+| `CANIVETE_TASK_PREFIX` | `canivete-task-` | prefixo dos ids de task (só com `CANIVETE_TASK_ENABLE=1`) |
+| `CANIVETE_SERVER_NAME` | `canivete` | nome do servidor (persistência) |
 | `CANIVETE_SKILLS_PATHS` | — | dirs extras de skills (`:`) |
 
 ## Solução de problemas
@@ -281,7 +233,6 @@ empurra 📬 automático na sessão — ninguém dorme sem ler. Extras via `CANI
 - **Extensão offline**: Chrome aberto, janela normal, popup ATIVO, token igual ao arquivo. `n_ubrowser_status` diagnostica.
 - **SW dormente**: popup → Testar conexão; alarms reacordam em ~1min.
 - **`chrome://`**: Chrome bloqueia automação nessas páginas (limite dele).
-- **`n_task` sem runner**: instale o binário ou configure o template genérico.
 
 ## Layout
 
@@ -291,7 +242,7 @@ src/lib/ctx.mjs         config/env, registro, helpers compartilhados
 src/lib/fs.mjs          filesystem + shell
 src/lib/web.mjs         fetch + search + cache
 src/lib/apis.mjs        APIs públicas sem chave
-src/lib/tasks.mjs       orquestração + mailbox + meta(skills)
+src/lib/tasks.mjs       todos in-memory (+ orquestração/mailbox dormentes atrás de CANIVETE_TASK_ENABLE=1) + meta(skills)
 src/lib/devengine.mjs   análise estática + validação + DAG
 src/lib/cdp.mjs         núcleo CDP (headless)
 src/lib/tools-browser.mjs   browser_* (headless)
