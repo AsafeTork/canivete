@@ -1106,7 +1106,18 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     (async () => {
       try {
         const r = await fetch(settings.url + "/health", { signal: AbortSignal.timeout(5000) });
-        reply({ ok: r.ok, http: r.status, body: (await r.text()).slice(0, 120) });
+        if (!r.ok) { reply({ ok: false, error: "ponte fora (" + r.status + ")" }); return; }
+        // /health não tem auth — o token se valida com probe autenticado.
+        // Sem isso o popup dizia "OK" p/ qualquer texto colado (falso verde).
+        if (!settings.token) { reply({ ok: true, http: r.status, body: (await r.text()).slice(0, 120), token: "sem token salvo — cole o token.txt" }); return; }
+        try {
+          const pr = await fetch(settings.url + "/hello?token=" + encodeURIComponent(settings.token), {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ info: { probe: true } }), signal: AbortSignal.timeout(5000),
+          });
+          if (pr.status === 401) { reply({ ok: false, error: "token INCORRETO — confira ~/.config/canivete/token.txt e cole de novo" }); return; }
+          reply({ ok: true, http: r.status, body: (await r.text()).slice(0, 120), token: "token OK" });
+        } catch (e) { reply({ ok: false, error: "ponte OK mas probe do token falhou: " + String(e.message || e).slice(0, 120) }); }
       } catch (e) { reply({ ok: false, error: String(e.message || e).slice(0, 160) }); }
     })();
     return true;

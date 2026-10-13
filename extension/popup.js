@@ -10,7 +10,14 @@ async function refresh() {
 document.getElementById("save").onclick = async () => {
   const token = document.getElementById("token").value.trim();
   await chrome.storage.local.set({ token });
-  refresh();
+  await refresh();
+  // valida de verdade (Salvar sozinho aceitava qualquer texto — falso verde):
+  const d = document.getElementById("diag");
+  d.textContent = "verificando token…";
+  try {
+    const r = await chrome.runtime.sendMessage({ cmd: "pingBridge" });
+    d.textContent = r.ok ? ("ponte OK + " + (r.token || "token?")) : ("FALHA: " + (r.error || r.http));
+  } catch (e) { d.textContent = "SW sem resposta (dormente?) — aguarde 1 min e tente de novo"; }
 };
 document.getElementById("toggle").onclick = async () => {
   const s = await chrome.storage.local.get(["enabled"]);
@@ -22,7 +29,7 @@ document.getElementById("test").onclick = async () => {
   d.textContent = "testando…";
   try {
     const r = await chrome.runtime.sendMessage({ cmd: "pingBridge" });
-    d.textContent = r.ok ? "ponte OK (" + r.http + " " + r.body + ")" : "FALHA: " + (r.error || r.http);
+    d.textContent = r.ok ? ("ponte OK (" + r.http + " " + r.body + ") + " + (r.token || "token?")) : ("FALHA: " + (r.error || r.http));
   } catch (e) { d.textContent = "SW sem resposta (dormente?) — aguarde 1 min e tente de novo"; }
 };
 (async () => {

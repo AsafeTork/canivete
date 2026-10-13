@@ -95,7 +95,15 @@ function ubEnsure() {
           res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true}');
           return;
         }
-        if (u.pathname === "/hello") { try { ubExtInfo = JSON.parse(body).info || null; } catch (e) { process.stderr.write(`[canivete] ub /hello json inválido (${e?.message || e})\n`); } ubLastPoll = Date.now(); }
+        if (u.pathname === "/hello") {
+          // probe de token (popup "Testar conexão"): autentica mas não suja estado
+          // (não atualiza ubExtInfo/lastPoll — só diz se o token confere).
+          let hi = null;
+          try { hi = JSON.parse(body).info || null; } catch (e) { process.stderr.write(`[canivete] ub /hello json inválido (${e?.message || e})\n`); }
+          if (hi && hi.probe) { res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"probe":true}'); return; }
+          ubExtInfo = hi;
+          ubLastPoll = Date.now();
+        }
         else if (u.pathname === "/result") { let p = {}; try { p = JSON.parse(body); } catch (e) { process.stderr.write(`[canivete] ub /result json inválido (${e?.message || e})\n`); } const payBytes = Buffer.byteLength(body || "", "utf8"); if (payBytes > UB_WARNPAY) process.stderr.write(`[canivete] ub /result grande (${payBytes}B id=${p?.id || "?"})\n`); const q = ubPending.get(p.id); if (q) { ubPending.delete(p.id); clearTimeout(q.timer); if (payBytes > UB_MAXPAY) { const s = body || ""; const chunks = []; for (let i = 0; i < s.length; i += UB_CHUNK) chunks.push(s.slice(i, i + UB_CHUNK)); q.resolve({ id: p.id, ok: true, chunks, chunked: true, bytes: payBytes, note: "resposta fatiada em chunks; use max/compact/offset p/ refinar" }); } else q.resolve(p); } }
         else {
           // /exec: drive local (localhost+token) sem MCP stdio — mesma trava anti-destrutiva
