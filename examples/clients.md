@@ -25,6 +25,7 @@ claude mcp add canivete -- node /caminho/para/canivete/src/server.mjs
 #     "CANIVETE_CTX_BUDGET": "200000"     # orçamento p/ n_ctx_status
 #   }
 #   NOTA: subagentes (n_task*) desativados por RAM — reative com CANIVETE_TASK_ENABLE=1.
+#   Runner legado (só vale com a família task ativa): CANIVETE_RUNNER + CANIVETE_RUN_TEMPLATE.
 
 # Tarefas longas (com progresso, sem sleep cego):
 #   shell ≤10min:   n_bash({command:"npm install", timeout:600000})

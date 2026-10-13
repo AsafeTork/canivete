@@ -1,6 +1,7 @@
 // canivete — tools do navegador LOGADO do dono (ubrowser_*)
 import { reg, devOut, trimOut } from "./ctx.mjs";
 import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsHint } from "./ubridge.mjs";
+import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks } from "../core/snapshot.mjs";
 // recovery sem mudar protocolo: só texto de erro acionável (janela NORMAL, popup, token) + fallback headless
 const UB_REC = "Recovery dono: 1) Chrome janela NORMAL mesmo perfil (sem anonimo) 2) popup extensao UBrowser ATIVO 3) token ~/.config/canivete/token.txt igual na extensao 4) rode n_ubrowser_status p/ confirmar";
 const UB_FB = "Sem login? fallback headless: n_browser_navigate / n_browser_screenshot";
@@ -19,16 +20,18 @@ reg("n_ubrowser_status", {
 
 reg("n_ubrowser_tabs", {
   description: "Abas do Chrome do dono (id, janela, anônima?, título, url). Diagnostica janela/perfil errado. Nas demais tools passe tab:\"trecho\" (resolve sozinho, http(s) primeiro, chrome:// por último) — tabId numérico só se o trecho ambíguo.",
-  inputSchema: { type: "object", properties: {}, required: [] },
-  run: async () => {
+  inputSchema: { type: "object", properties: { filter: { type: "string", description: "opcional: substring em título+url (case-insensitive)" }, max: { type: "number", default: 50, description: "máx abas (default 50, teto 200)" } }, required: [] },
+  run: async ({ filter, max } = {}) => {
     const t0 = Date.now();
-    const r = await ubSend("tabs.list", {});
+    const r = await ubSend("tabs.list", { ...(filter ? { filter } : {}), ...(max ? { max } : {}) });
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const tabs = r.data.tabs || r.data || [];
     const wins = r.data.windows || [];
     const slim = (Array.isArray(tabs) ? tabs : []).map((t) => ({ id: t.id, window: t.windowId ?? t.window ?? t.win, title: t.title, url: t.url }));
-    return devOut({ summary: `${slim.length} aba(s) em ${wins.length || "?"} janela(s)`, data: { tabs: slim }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_read", reason: "Ler aba ativa" }] });
+    const f = ubTabsFilterMax(slim, filter, max);
+    const omitNote = f.omitted ? ` (...[+${f.omitted} omitidos — refine filter])` : "";
+    return devOut({ summary: `${f.tabs.length} aba(s) em ${wins.length || "?"} janela(s)${omitNote}`, data: { tabs: f.tabs, ...(f.omitted ? { omitted: f.omitted } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_read", reason: "Ler aba ativa" }] });
   },
 });
 
@@ -56,20 +59,8 @@ reg("n_ubrowser_read", {
 const UB_SNAP_ROLE_SCORE = { button: 3, link: 3, textbox: 3, combobox: 3, checkbox: 3, radio: 3, switch: 3, slider: 3, searchbox: 3, spinbutton: 2, menuitem: 2, menuitemcheckbox: 2, menuitemradio: 2, tab: 2, option: 1, listitem: 1, row: 1, heading: 0, img: -2, generic: -2, "": -2 };
 const UB_SNAP_KEEP_NAMELESS = new Set(["button", "link", "textbox", "combobox", "checkbox", "radio", "switch", "slider", "searchbox", "spinbutton", "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "option"]);
 const UB_SNAP_BYTE_BUDGET = 12000; // ~3k tokens: acima disso corta CAMPOS (nunca elementos — contagem intacta)
-function ubSnapIsEditable(el) {
-  if (!el) return false;
-  if (el.tag === "input" || el.tag === "textarea") return true;
-  if (el.contentEditable === "true" || el.contentEditable === true) return true;
-  try { return Array.isArray(el.attributes) && el.attributes.some((x) => x && x.name === "contenteditable"); } catch { return false; }
-}
-function ubSnapLabel(el) { return String(el?.name ?? "").trim() || String(el?.text ?? "").trim(); }
-function ubSnapRole(el) { return String(el?.role ?? "").trim().toLowerCase(); }
-function ubSnapHasBox(el) { return (Number(el?.w) || 0) > 0 && (Number(el?.h) || 0) > 0; }
-function ubSnapInViewport(el) {
-  if (!ubSnapHasBox(el)) return false;
-  const x = Number(el.x) || 0, y = Number(el.y) || 0, w = Number(el.w) || 0, h = Number(el.h) || 0;
-  return x > -w && y > -h && x < 4000 && y < 4000;
-}
+// Primitivos puros (label/role/box/viewport/editable/bytes/fold/dedup): ver core/snapshot.mjs — fonte única.
+// Mantidos aqui: junk/score/rank/auto-compact (regras específicas do ubrowser: layer boost, editáveis por último).
 function ubSnapIsJunk(el) {
   if (!el || typeof el !== "object") return true;
   if (ubSnapLabel(el)) return false; // com nome/texto nunca é junk
@@ -95,43 +86,6 @@ function ubSnapRank(els) {
     .map((el, i) => ({ el, i, s: ubSnapScore(el) }))
     .sort((a, b) => (b.s - a.s) || ((a.el?.y || 0) - (b.el?.y || 0)) || ((a.el?.x || 0) - (b.el?.x || 0)) || (a.i - b.i))
     .map((r) => r.el);
-}
-function ubSnapBytes(els) { try { return JSON.stringify(els).length; } catch { return 0; } }
-function ubSnapFoldKey(el) { return `${String(el?.role || "")}|${String(el?.text || el?.name || "").slice(0, 24).toLowerCase()}`; }
-function ubSnapFold(els, minRun = 6) {
-  const out = [];
-  let i = 0, folded = 0;
-  while (i < els.length) {
-    const k = ubSnapFoldKey(els[i]);
-    let j = i + 1;
-    while (j < els.length && ubSnapFoldKey(els[j]) === k) j++;
-    const run = j - i;
-    if (run >= minRun && k.split("|")[0]) {
-      folded++;
-      const refs = els.slice(i, j).map((e) => e.ref).filter((r) => r !== undefined);
-      const first = els[i];
-      out.push({ ...first, text: `${first.text || first.name || ""} … +${run - 1} similares`, folded: run, foldRefs: refs });
-    } else {
-      for (let m = i; m < j; m++) out.push(els[m]);
-    }
-    i = j;
-  }
-  return { elements: out, folded };
-}
-function ubSnapDedupLinks(els) {
-  const seenHref = new Set();
-  const out = [];
-  let dupes = 0;
-  for (const el of els) {
-    const h = el && el.role === "link" ? String(el.href || "") : "";
-    if (h) {
-      const k = h.split("#")[0];
-      if (seenHref.has(k)) { dupes++; continue; }
-      seenHref.add(k);
-    }
-    out.push(el);
-  }
-  return { elements: out, dupes };
 }
 // auto-compact-por-campos: N1 path/state/level/type/href → N2 x/y/w/h (layout; cursor re-mede via selector) → N3 name/text 60→40 → N4 shape compact+selector (ação intacta). depth e layer/layerLabel NUNCA caem — hierarquia e camada p/ o LLM. Contagem SEMPRE intacta.
 function ubSnapAutoCompactFields(els, budget = UB_SNAP_BYTE_BUDGET) {
@@ -174,6 +128,60 @@ function ubSnapCacheResolve(key, ref) {
   if (!hit) return { ok: false, error: `ref ${ref} expirada (snapshot mudou/navegou) — re-snapshot e use a ref nova` };
   return { ok: true, selector: hit.selector };
 }
+
+// UB_OWNER_PURE_START — puros do tools-owner (tabs filter/max, retry do evaluate,
+// undefined-vs-null, remontagem chunked, chave do shot). Sem I/O: testáveis via node.
+function ubTabsFilterMax(tabs, filter, max) {
+  try {
+    const list = Array.isArray(tabs) ? tabs : [];
+    const needle = String(filter || "").trim().toLowerCase();
+    const cap = Math.min(Math.max(Number(max) || 50, 1), 200);
+    const kept = needle
+      ? list.filter((t) => { try { return (((t.title || "") + " " + (t.url || "")).toLowerCase().includes(needle)); } catch { return false; } })
+      : list.slice();
+    const omitted = Math.max(kept.length - cap, 0);
+    return { tabs: kept.slice(0, cap), omitted };
+  } catch { return { tabs: Array.isArray(tabs) ? tabs.slice(0, 50) : [], omitted: 0 }; }
+}
+// Retry do evaluate: vale a VERDADE MAIS NOVA — adota r2 seja ok ou erro;
+// pendings (__timeout/__offline, sem resposta) mantêm o comportamento antigo.
+function ubEvalPickRetry(r, r2) {
+  try {
+    if (r2 && (("ok" in r2) || r2.__timeout || r2.__offline)) return r2;
+    return r;
+  } catch { return r; }
+}
+// undefined-vs-null: "undefined" = rodou e retornou undefined; "null" = null ou
+// falha de transporte; "value" = tem valor (inclui 0/false/"").
+function ubEvalNullKind(d) {
+  try {
+    if (d && typeof d === "object" && d.undefined === true) return "undefined";
+    const v = d ? d.value ?? null : null;
+    if (v === null) return "null";
+    return "value";
+  } catch { return "null"; }
+}
+// Chunked (>500kB fatiado pelo bridge): remonta chunks.join("") → JSON → data;
+// falha → erro acionável em vez de degradar p/ null-warn.
+function ubReassembleChunks(r) {
+  try {
+    if (!r || !r.chunked || !Array.isArray(r.chunks)) return { ok: false, error: "not-chunked" };
+    const full = r.chunks.join("");
+    const parsed = JSON.parse(full);
+    if (parsed && typeof parsed === "object" && ("data" in parsed)) return { ok: true, data: parsed.data };
+    return { ok: true, data: parsed };
+  } catch { return { ok: false, error: "resposta grande — refine com max/compact/offset" }; }
+}
+function ubShotCacheKey({ tabId, tab }, data) {
+  try {
+    if (data && data.tab && data.tab.id !== undefined && data.tab.id !== null) return `id:${data.tab.id}`;
+    if (tabId !== undefined && tabId !== null && String(tabId) !== "") return `id:${tabId}`;
+    if (tab) return `tab:${String(tab).toLowerCase()}`;
+    return "active";
+  } catch { return "active"; }
+}
+// UB_OWNER_PURE_END
+const UB_SHOT_LAST = new Map(); // hash do último shot por aba (frescor v14)
 
 reg("n_ubrowser_snapshot", {
   description: "Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). find=\"texto\": localiza com ±3 contexto sem despejar tudo. layer=\"modal|menu|popover|tooltip\": foca SÓ na camada (modal de 2 botões sem ler a página); sem filtro e com overlay aberto, a camada vai primeiro sozinha. Listas grandes dobram sozinhas (marcador … +N similares com refs). Links repetidos caem no dedup. shadow: na frente do selector = dentro de web component (clicável). imgs com alt/src entram. compact=true economiza ~60% tokens (mantém layer). max (50-120) + offset pagina. Lista virtualizada (WhatsApp): act scan antes. Rank: viewport→nome→papel.",
@@ -302,15 +310,22 @@ reg("n_ubrowser_act", {
     if (a.action === "console") ubAlertsRead();
     let r = await ubSend(map[a.action], { ...a });
     // #43a: evaluate null intermitente (race com JS da página) — 1 retry após 800ms antes de declarar null.
+    // v14: vale a verdade mais nova — adota r2 seja ok ou erro (só pendings mantêm o antigo).
     if (a.action === "evaluate" && r && r.ok && (r.data?.value ?? null) === null && !r.data?.error) {
       await new Promise((res) => setTimeout(res, 800));
       const r2 = await ubSend(map[a.action], { ...a });
-      if (r2 && (r2.ok || r2.__timeout || r2.__offline)) r = r2;
+      r = ubEvalPickRetry(r, r2);
     }
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     const d = r.data || {};
     if (a.action === "evaluate") {
+      // v14 chunked (>500kB): remonta em vez de degradar p/ null-warn.
+      if (r.chunked && Array.isArray(r.chunks)) {
+        const re = ubReassembleChunks(r);
+        if (!re.ok) return devOut({ status: "error", summary: `${re.error} (${r.bytes || "?"} bytes) | ${UB_FB}`, data: { action: a.action, risk, value: null, chunked: true }, telemetry: { execution_time_ms: Date.now() - t0 } });
+        return devOut({ summary: "[evaluate] ok (chunked)", data: { action: a.action, risk, value: (re.data && typeof re.data === "object" && ("value" in re.data)) ? re.data.value : re.data, cspBlocked: false, chunked: true }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_shot", reason: "Confirmar visualmente" }] });
+      }
       const value = d.value ?? null;
       const errStr = String(d.error ?? d.message ?? d.details ?? "");
       const cspBlocked = /CSP|Content-Security|blocked|eval/i.test(errStr);
@@ -319,6 +334,8 @@ reg("n_ubrowser_act", {
       if (!pageLoaded) return devOut({ status: "error", summary: `página não carregou — recovery: reload via n_ubrowser_act + waittext e tente de novo | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: false, selectorFound: false, pageLoaded: false }, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (cspBlocked) return devOut({ status: "error", summary: `CSP bloqueou avaliação JS — use n_ubrowser_read / n_ubrowser_snapshot em vez de evaluate | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: true, selectorFound: selFound, error: d.error }, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (a.selector && !selFound) return devOut({ status: "error", summary: `seletor não achou elemento — recovery: rode n_ubrowser_snapshot p/ selector atual + confira aba ativa | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: false, selectorFound: false }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      // v14: undefined (rodou, sem valor) ≠ null/falha de transporte — mensagens distintas.
+      if (!a.selector && ubEvalNullKind(d) === "undefined") return devOut({ status: "warn", summary: `evaluate executou e retornou undefined — termine o JS com o valor desejado | ${UB_FB}`, data: { action: a.action, risk, value: null, undefined: true, cspBlocked: false, selectorFound: selFound, note: d.note || undefined }, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (!a.selector && value === null) return devOut({ status: "warn", summary: `evaluate retornou null${d.note ? ` — ${String(d.note).slice(0, 160)}` : " — termine JS com valor + confira n_ubrowser_snapshot/read"} | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: false, selectorFound: selFound, note: d.note || undefined }, telemetry: { execution_time_ms: Date.now() - t0 } });
       return devOut({ summary: "[evaluate] ok", data: { action: a.action, risk, value, cspBlocked: false, selectorFound: selFound }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_shot", reason: "Confirmar visualmente" }] });
     }
@@ -453,12 +470,24 @@ reg("n_ubrowser_shot", {
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (r.data?.background) return devOut({ status: "error", summary: "Chrome só imprime aba VISÍVEL — traga p/ frente ou use n_browser_screenshot headless", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    // v14 frescor: hash do shot por aba — imagem idêntica à anterior vira aviso, não verde falso.
+    try {
+      const h = r.data?.hash || null;
+      if (h) {
+        const key = ubShotCacheKey({ tabId, tab }, r.data);
+        const prev = UB_SHOT_LAST.get(key);
+        UB_SHOT_LAST.set(key, h);
+        if (UB_SHOT_LAST.size > 20) UB_SHOT_LAST.delete(UB_SHOT_LAST.keys().next().value);
+        if (prev && prev === h) return devOut({ status: "warn", summary: `imagem idêntica à anterior (hash ${h}) — repita após settle (página pode não ter aquietado) | ${UB_FB}`, data: { hash: h, capturedAt: r.data?.capturedAt || null, tab: r.data?.tab || null }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      }
+    } catch {}
     const b64 = String(r.data.dataUrl || "").split(",")[1] || "";
     if (!b64) return devOut({ status: "error", summary: `screenshot vazio — traga aba p/ frente e tente de novo | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const kb = Math.round((b64.length * 0.75) / 1024);
     const truncated = b64.length > 1500000;
     const tip = (truncated || kb > 500) ? " — dica: scale:0.5 = metade dos bytes" : "";
-    return { content: [{ type: "text", text: `Screenshot ${r.data.tab?.title || ""} — ${r.data.tab?.url || ""} (${kb} kB base64${truncated ? ", truncado em 1500k chars" : ""})${tip}` }, { type: "image", data: truncated ? b64.slice(0, 1500000) : b64, mimeType: "image/png" }] };
+    const mime = String(r.data?.mime || "").startsWith("image/") ? String(r.data.mime) : "image/png";
+    return { content: [{ type: "text", text: `Screenshot ${r.data.tab?.title || ""} — ${r.data.tab?.url || ""} (${kb} kB base64${truncated ? ", truncado em 1500k chars" : ""})${tip}` }, { type: "image", data: truncated ? b64.slice(0, 1500000) : b64, mimeType: mime }] };
   },
 });
 

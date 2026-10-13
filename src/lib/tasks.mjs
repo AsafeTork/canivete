@@ -1,10 +1,11 @@
 // canivete — orquestração: spawn de subagentes (runner plugável) + mailbox + todos + meta(skills)
 import { spawn, execFileSync } from "node:child_process";
-import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
+import { mkdir, writeFile, unlink, stat } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, watch } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { reg, out, trimOut, CWD, HOME, sendToHost } from "./ctx.mjs";
+import { reg, out, trimOut, CWD, HOME, sendToHost, atomicWriteFile } from "./ctx.mjs";
+import { escapeShellArg, escapeSql } from "../core/shell.mjs";
 import { llmChat, llmMissing, llmModels } from "./llm.mjs";
 
 const todo = [];
@@ -180,15 +181,7 @@ function serveAbort(sessionId) {
   serveFetch(`/session/${sessionId}/abort`, { method: "POST", timeout: 10000 }).catch((e) => logWarn(`serveAbort falhou ${sessionId}: ${e?.message || e}`));
 }
 
-// ---- segurança: escapes contra injeção shell/SQL (prompt/model/agent/id vêm do LLM) ----
-// Shell: envolve em aspas simples; `'` interno vira `'"'"'` (fecha, aspas-duplas, reabre).
-function escapeShellArg(s) {
-  return `'${String(s ?? "").replace(/'/g, `'"'"'`)}'`;
-}
-// SQL (SQLite via `opencode db "<sql>"`): dobra `'` para não quebrar o literal nem injetar.
-function escapeSql(s) {
-  return String(s ?? "").replace(/'/g, "''");
-}
+// ---- segurança: escapes contra injeção shell/SQL — ver core/shell.mjs (fonte única) ----
 // Timeouts curtos: a chamada ao binário é síncrona (bloqueia o event-loop);
 // 5s/8s limitam a janela — caches abaixo evitam as chamadas quentes.
 const DB_QUERY_TIMEOUT_MS = Number(process.env.CANIVETE_DB_TIMEOUT_MS) || 15000;
@@ -246,9 +239,7 @@ async function writeJson(file, data) {
   const cur = prev
     .then(async () => {
       await mkdir(dirname(file), { recursive: true });
-      const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-      await writeFile(tmp, JSON.stringify(data));
-      await rename(tmp, file);
+      await atomicWriteFile(file, JSON.stringify(data));
     })
     .catch((e) => { try { console.error(`[canivete-tasks] writeJson falhou ${file}: ${e?.message || e}`); } catch {} });
   writeLocks.set(file, cur);

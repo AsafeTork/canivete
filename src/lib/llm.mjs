@@ -94,10 +94,21 @@ async function llmChat(messages, opts = {}) {
   if (!providers.length) return { ok: false, error: llmMissing() };
   const timeoutMs = Number(process.env.CANIVETE_LLM_TIMEOUT) || 120000;
   const maxTokens = Number(process.env.CANIVETE_LLM_MAX_TOKENS) || 2000;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const isRetryableLlm = (err) => /HTTP (429|5\d\d)|timeout|temporar|econn|socket|abort/i.test(String(err || ""));
+  const t0 = Date.now();
+  const maxTotalMs = Math.max(15000, (Number(process.env.CANIVETE_LLM_TOTAL_TIMEOUT) || 300000));
   const errors = [];
   for (const p of providers) {
-    const r = await chatOne(p, messages, { maxTokens: opts.maxTokens || maxTokens, timeoutMs: opts.timeoutMs || timeoutMs });
+    if (Date.now() - t0 > maxTotalMs) { errors.push("teto total excedido — abortando fallbacks"); break; }
+    let r = await chatOne(p, messages, { maxTokens: opts.maxTokens || maxTokens, timeoutMs: opts.timeoutMs || timeoutMs });
     if (r.ok) return r;
+    if (isRetryableLlm(r.error) && (Date.now() - t0 + 1000) <= maxTotalMs) {
+      await sleep(1000);
+      const r2 = await chatOne(p, messages, { maxTokens: opts.maxTokens || maxTokens, timeoutMs: opts.timeoutMs || timeoutMs });
+      if (r2.ok) return r2;
+      r = r2;
+    }
     errors.push(r.error);
   }
   return { ok: false, error: `todos os provedores falharam (${providers.length}): ${errors.join(" | ").slice(0, 800)}` };

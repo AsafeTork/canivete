@@ -35,10 +35,13 @@ reg("n_report", {
       expected: { type: "string", description: "O que deveria acontecer" },
       got: { type: "string", description: "O que aconteceu (erro exato)" },
       repro: { type: "string", description: "Passos mínimos p/ reproduzir" },
+      blockedBy: { type: "string", description: "O que travou (opcional)" },
+      suggestedCapability: { type: "string", description: "Capacidade/tool sugerida (opcional)" },
+      dryRun: { type: "boolean", default: false, description: "Se true, só mostra preview sem escrever" },
     },
     required: ["kind", "where", "expected", "got"],
   },
-  run: async ({ kind, where, expected, got, repro }) => {
+  run: async ({ kind, where, expected, got, repro, blockedBy, suggestedCapability, dryRun }) => {
     if (!KINDS.includes(kind)) return out(`kind inválido: ${kind} (use ${KINDS.join("|")})`, true);
     if (!where || !expected || !got) return out("where+expected+got obrigatórios", true);
     const entry = {
@@ -48,7 +51,10 @@ reg("n_report", {
       expected: String(expected).slice(0, 500),
       got: String(got).slice(0, 1000),
       repro: String(repro || "").slice(0, 1000),
+      blockedBy: String(blockedBy || "").slice(0, 500),
+      suggestedCapability: String(suggestedCapability || "").slice(0, 500),
     };
+    if (dryRun) return out(`dryRun preview (nada escrito):\n${JSON.stringify(entry, null, 2)}`);
     try {
       const p = inboxPath();
       mkdirSync(dirname(p), { recursive: true });
@@ -57,6 +63,6 @@ reg("n_report", {
     } catch (e) {
       return out(`inbox indisponível: ${e.message}`, true);
     }
-    return out(`report ${entry.id} registrado (${kind} em ${where}) — obrigado, isso refina a ferramenta. Siga pelo alternativo e cite o id.`);
+    return out(`report ${entry.id} registrado (${kind} em ${where}) — obrigado, isso refina a ferramenta. Siga pelo alternativo e cite o id. Triagem: operador lê ~/.config/canivete/issues.jsonl (sem SLA).`);
   },
 });

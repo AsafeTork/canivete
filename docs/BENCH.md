@@ -1,7 +1,8 @@
 # BENCH canivete — 2026-09-10T17:26:22.868Z
 
-Gerado por `node test/bench.mjs` no deployment real (http 19423).
-Limite razoável: 1500ms. Acima disso = rede/página/modelo (física) ou código (culpa do dev).
+> SNAPSHOT HISTÓRICO (era 52 tools, com `n_task*` ativo). Não reflete o estado atual
+> (46 tools, subagentes desligados). Regenere com `node test/bench.mjs` p/ números frescos.
+> Limite razoável: 1500ms. Acima disso = rede/página/modelo (física) ou código (culpa do dev).
 
 | tool | ms | resultado |
 |---|---|---|

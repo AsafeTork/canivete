@@ -4,8 +4,10 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { UA } from "./ctx.mjs";
+import { sleep } from "../core/retry.mjs";
 
-const CHROME_BIN = process.env.CANIVETE_CHROME_BIN || ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find((p) => existsSync(p)) || "google-chrome";
+const CHROME_BIN = process.env.CANIVETE_CHROME_BIN || process.env.CHROME_BIN || ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find((p) => existsSync(p)) || "google-chrome";
+if (/headless-shell/i.test(CHROME_BIN)) console.warn("[canivete:cdp] headless-shell detectado — imagens/screenshot degradados; use chromium/chrome full via CANIVETE_CHROME_BIN");
 const BASE_CDP_PORT = Number(process.env.CANIVETE_CDP_PORT || process.env.OPENCODE_CDP_PORT) || 19322;
 let CDP_PORT = BASE_CDP_PORT;
 const CHROME_PROFILE = process.env.CANIVETE_CHROME_PROFILE || join(tmpdir(), "canivete-chrome-profile");
@@ -27,7 +29,7 @@ const CDP_TIMEOUT_MS = Number(process.env.CANIVETE_CDP_TIMEOUT) || 25000;
 const WS_OPEN_TIMEOUT_MS = Number(process.env.CANIVETE_CDP_TIMEOUT) || 10000;
 const RECONNECT_BACKOFF_MS = 1000;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// (sleep importado de ../core/retry.mjs — sem duplicata local)
 
 // TEXT-FIRST: navegador em background só texto; render full só no print (screenshot/pdf).
 // Desativa com CANIVETE_BROWSER_FULLRENDER=1 (retorna ao comportamento anterior, sem bloqueio).

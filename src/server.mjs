@@ -4,6 +4,8 @@
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { TOOLS, reg, out, sendToHost, CTX, CTX_BUDGET } from "./lib/ctx.mjs";
+import { TOOL_GROUPS, groupOf as groupOfCore, firstSentence as firstSentenceCore } from "./core/taxonomy.mjs";
+import { buildToolsList, dispatchStdio } from "./core/rpc.mjs";
 import { sweepTask, safeTaskIds, readJson, TASKS_DIR } from "./lib/tasks.mjs";
 import { ubEnsure } from "./lib/ubridge.mjs";
 import "./lib/fs.mjs";
@@ -20,20 +22,15 @@ reg("n_tools_info", {
   description: "Catálogo agrupado do canivete: filesystem+exec, web/APIs sem chave, orquestração, DevEngine, browsers e meta. Use para descobrir o que o MCP faz e qual tool chamar.",
   inputSchema: { type: "object", properties: {}, required: [] },
   run: () => {
-    const first = (d = "") => (String(d).match(/^[^.!?]+[.!?]?/)?.[0] ?? String(d)).trim();
+    const first = firstSentenceCore;
     const g = (names) => names.map((n) => { const t = TOOLS.get(n); return t ? `${t.name} — ${first(t.description)}` : n; }).join("\n");
     const taskOn = TOOLS.has("n_task");
     const orchNames = ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"].filter((n) => TOOLS.has(n));
-    const groups = [
-      { title: "Filesystem + execução", hint: "ler/listar/criar/editar/patch/shell/glob/grep", names: ["n_read", "n_list", "n_write", "n_edit", "n_apply_patch", "n_bash", "n_glob", "n_grep"] },
-      { title: "Web + APIs públicas sem chave", hint: "fetch enxuto, search 7 backends, currency/cep/cnpj/ip/weather/github/npm", names: ["n_webfetch", "n_websearch", "n_currency", "n_cep", "n_cnpj", "n_ipinfo", "n_weather", "n_github", "n_npm"] },
-      { title: "Browser headless", hint: "CDP zero-deps: navegar com JS, snapshot, agir, screenshot, pdf", names: ["n_browser_navigate", "n_browser_snapshot", "n_browser_act", "n_browser_screenshot", "n_browser_pdf"] },
-      { title: "Navegador LOGADO do dono", hint: "via extensão local: status, abas, ler, snapshot, agir, print", names: ["n_ubrowser_status", "n_ubrowser_tabs", "n_ubrowser_read", "n_ubrowser_snapshot", "n_ubrowser_act", "n_ubrowser_shot"] },
-      { title: taskOn ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)", hint: taskOn ? "spawn sync/async, wait any/all, status com modelo+mailbox, send/recv/peek/tail não-bloqueante, delete, models, todos" : "todos in-memory; subagentes voltam com CANIVETE_TASK_ENABLE=1", names: orchNames },
-      { title: "DevEngine AI-Native", hint: "arquitetura sem varrer, investigar causa (12→1), impacto, patch AST, testes afetados, bg proc, UI state, DAG", names: ["n_get_architecture_summary", "n_investigate_issue", "n_analyze_change_impact", "n_apply_semantic_patch", "n_execute_targeted_tests", "n_manage_background_process", "n_inspect_ui_state", "n_orchestrate_task"] },
-      { title: "Meta", hint: "catálogo, pergunta humana, skill, plan, report, contexto", names: ["n_tools_info", "n_question", "n_skill", "n_plan", "n_report", "n_ctx_status"] },
-      { title: "WhatsApp dedicado", hint: "state|chats|open|read|send no Chrome logado", names: ["n_whatsapp"] },
-    ];
+    const groups = TOOL_GROUPS.map((gr) =>
+      gr.title === "Orquestração"
+        ? { title: taskOn ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)", hint: taskOn ? "spawn sync/async, wait any/all, status com modelo+mailbox, send/recv/peek/tail não-bloqueante, delete, models, todos" : "todos in-memory; subagentes voltam com CANIVETE_TASK_ENABLE=1", names: orchNames }
+        : gr
+    );
     const listed = new Set(groups.flatMap((gr) => gr.names));
     const extras = [...TOOLS.keys()].filter((n) => !listed.has(n));
     const lines = [
@@ -73,18 +70,13 @@ reg("n_find_tools", {
     if (!query) return out("n_find_tools: query vazia — informe keyword(s) para buscar em nome+descrição.");
     const limit = Math.min(Math.max(Number(args.limit) || 8, 1), 20);
     const terms = query.split(/\s+/).filter(Boolean);
-    const groups = [
-      { title: "Filesystem + execução", names: ["n_read", "n_list", "n_write", "n_edit", "n_apply_patch", "n_bash", "n_glob", "n_grep"] },
-      { title: "Web + APIs públicas sem chave", names: ["n_webfetch", "n_websearch", "n_currency", "n_cep", "n_cnpj", "n_ipinfo", "n_weather", "n_github", "n_npm"] },
-      { title: "Browser headless", names: ["n_browser_navigate", "n_browser_snapshot", "n_browser_act", "n_browser_screenshot", "n_browser_pdf"] },
-      { title: "Navegador LOGADO do dono", names: ["n_ubrowser_status", "n_ubrowser_tabs", "n_ubrowser_read", "n_ubrowser_snapshot", "n_ubrowser_act", "n_ubrowser_shot"] },
-      { title: TOOLS.has("n_task") ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)", names: ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"].filter((n) => TOOLS.has(n)) },
-      { title: "DevEngine AI-Native", names: ["n_get_architecture_summary", "n_investigate_issue", "n_analyze_change_impact", "n_apply_semantic_patch", "n_execute_targeted_tests", "n_manage_background_process", "n_inspect_ui_state", "n_orchestrate_task"] },
-      { title: "Meta", names: ["n_tools_info", "n_find_tools", "n_question", "n_skill", "n_plan", "n_report", "n_ctx_status"] },
-      { title: "WhatsApp dedicado", names: ["n_whatsapp"] },
-    ];
-    const groupOf = (n) => groups.find((gr) => gr.names.includes(n))?.title ?? "Outras";
-    const firstSentence = (d = "") => (String(d).match(/^[^.!?]+[.!?]?/)?.[0] ?? String(d)).trim();
+    const groups = TOOL_GROUPS.map((gr) =>
+      gr.title === "Orquestração"
+        ? { title: TOOLS.has("n_task") ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)", names: ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"].filter((n) => TOOLS.has(n)) }
+        : gr
+    );
+    const groupOf = (n) => groupOfCore(n, groups);
+    const firstSentence = firstSentenceCore;
     const scored = [];
     for (const t of TOOLS.values()) {
       const name = t.name.toLowerCase();
@@ -122,20 +114,9 @@ if (httpIdx >= 0) {
   await new Promise(() => {});
 }
 
-// Annotations de risco p/ tools/list — padrão MCP Mar/2025 (readOnlyHint/destructiveHint/idempotentHint).
+// Annotations de risco p/ tools/list — ver core/rpc.mjs:annotationsFor (fonte única).
 // Heurística por nome (determinística, sem I/O): read/list/glob/grep/search/fetch/status/tabs/snapshot → readOnly;
 // write/edit/patch/bash/delete/send/act/fill/type → destructive; resto → idempotent.
-// Nota: se o host/protocolo não aceitar campo extra `annotations`, trocar por `_annotations` (mesmo objeto) —
-// campo com prefixo `_` é ignorado por hosts estritos sem quebrar o loop stdio. Ordem alfabética p/ prompt-cache.
-const READ_ONLY_RE = /read|list|glob|grep|search|fetch|status|tabs|snapshot/i;
-const DESTRUCTIVE_RE = /write|edit|patch|bash|delete|send|fill|type/i;
-const DESTRUCTIVE_ACT_RE = /(^|_)act(_|$)/i; // evita falso-positivo em *impact (ex: n_analyze_change_impact)
-const annotationsFor = (name = "") => {
-  if (DESTRUCTIVE_RE.test(name) || DESTRUCTIVE_ACT_RE.test(name))
-    return { readOnlyHint: false, destructiveHint: true, idempotentHint: false };
-  if (READ_ONLY_RE.test(name)) return { readOnlyHint: true, destructiveHint: false, idempotentHint: true };
-  return { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
-};
 
 // Self-check de startup (warn-and-continue: nunca aborta o boot — só console.error).
 try {
@@ -234,53 +215,7 @@ rl.on("line", async (raw) => {
   } catch {
     return;
   }
-  if (msg.method?.startsWith("notifications/")) return;
-  if (msg.id === undefined || msg.id === null) return;
-  if (msg.method === "initialize") {
-    sendToHost({
-      id: msg.id,
-      result: {
-        protocolVersion: msg.params?.protocolVersion || "2024-11-05",
-        capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "canivete", version: "1.0.0" },
-      },
-    });
-    return;
-  }
-  if (msg.method === "ping") {
-    sendToHost({ id: msg.id, result: {} });
-    return;
-  }
-  if (msg.method === "tools/list") {
-    sendToHost({
-      id: msg.id,
-      result: {
-        tools: [...TOOLS.values()]
-          .sort((a, b) => a.name.localeCompare(b.name))
-          .map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: t.inputSchema,
-            annotations: annotationsFor(t.name),
-          })),
-      },
-    });
-    return;
-  }
-  if (msg.method === "tools/call") {
-    const { name, arguments: args } = msg.params || {};
-    const tool = TOOLS.get(name);
-    if (!tool) {
-      sendToHost({ id: msg.id, result: { content: [{ type: "text", text: `unknown tool: ${name}` }], isError: true } });
-      return;
-    }
-    try {
-      const result = await tool.run(args || {});
-      sendToHost({ id: msg.id, result });
-    } catch (e) {
-      sendToHost({ id: msg.id, result: { content: [{ type: "text", text: `tool error: ${e?.message || e}` }], isError: true } });
-    }
-    return;
-  }
-
+  // Dispatch compartilhado (ver core/rpc.mjs) — mesma semântica do modo remoto.
+  const resp = await dispatchStdio(msg, TOOLS, sendToHost);
+  if (resp) sendToHost(resp);
 });

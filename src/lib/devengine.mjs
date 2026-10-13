@@ -4,6 +4,8 @@ import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { reg, out, devOut, trimOut, estTokens, fpath, exec, walkFiles, escapeRe, WALK_CAP, isSkippable, CWD, HOME, SKIP_DIRS, atomicWriteFile } from "./ctx.mjs";
+import { indexSymbols as extractSymbols } from "../core/symbols.mjs";
+import { escapeShellArg as shq } from "../core/shell.mjs";
 import { tasks, taskId, persistTask, resolveTask } from "./tasks.mjs";
 
 function loadPkg() {
@@ -27,18 +29,7 @@ function scanFunctions() {
   } catch {}
   return fns;
 }
-function extractSymbols(text, rel) {
-  const syms = [];
-  const re = /(?:export\s+(?:async\s+)?(?:function|const|let|var|class)\s+(\w+))|(?:function\s+(\w+)\s*\()|(?:class\s+(\w+))/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const name = m[1] || m[2] || m[3];
-    if (name) syms.push({ name, file: rel, line: text.slice(0, m.index).split("\n").length });
-  }
-  const compRe = /(?:export\s+default\s+function\s+(\w+))/g;
-  while ((m = compRe.exec(text))) syms.push({ name: m[1], file: rel, line: text.slice(0, m.index).split("\n").length });
-  return syms;
-}
+// extractSymbols: ver core/symbols.mjs (indexSymbols — mesma implementação, fonte única).
 function buildSymbolIndex(limit = 300) {
   const files = [];
   walkFiles(CWD, files);
@@ -818,7 +809,6 @@ reg("n_inspect_ui_state", {
     let rt = Number(retries ?? 0);
     if (!Number.isFinite(rt)) rt = 0;
     rt = Math.max(0, Math.min(3, Math.floor(rt)));
-    const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
     let code = "";
     let found = null;
     let attempts = 0;

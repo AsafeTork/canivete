@@ -1,13 +1,14 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "canivete": {
-      "type": "remote",
-      "url": "http://127.0.0.1:19423/mcp",
-      "enabled": true,
-      "oauth": false,
-      "headers": { "X-Token": "{file:/home/voce/.config/canivete/token.txt}" },
-      "timeout": 180000
+    "servers": {
+      "canivete": {
+        "type": "remote",
+        "url": "http://127.0.0.1:19423/mcp",
+        "oauth": false,
+        "headers": { "X-Token": "{file:/home/voce/.config/canivete/token.txt}" },
+        "timeout": 180000
+      }
     }
   }
 }

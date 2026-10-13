@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "13"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "14"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -2505,7 +2505,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
           else reply({ ok: false, error: "EVAL_ERROR: " + String((e && e.message) || e).slice(0, 300) });
           return;
         }
-        if (typeof val === "undefined") { reply({ ok: true, data: { value: null, note: "expressão não retornou valor — termine o JS com o valor desejado" } }); return; }
+        if (typeof val === "undefined") { reply({ ok: true, data: { value: null, undefined: true, note: "executou e retornou undefined — termine o JS com o valor desejado" } }); return; }
         if (val === null) { reply({ ok: true, data: { value: null, note: "resultado null — seletor pode não ter casado ou JS retornou null (verifique seletor)" } }); return; }
         let out = val;
         try { out = JSON.parse(JSON.stringify(val)); }

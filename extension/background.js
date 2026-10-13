@@ -29,9 +29,35 @@ try {
   });
 } catch {}
 
-const UB_EXPECTED = "13"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "14"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 const injectedTabs = new Set(); // fallback manual 1x por aba/sessão (registro cobre o resto)
 const ubPushLast = new Map(); // debounce do /ubpush por tabId (4s)
+// ubpush trailing-edge (v14): 1ª borda envia na hora (leading); rajada dentro da
+// janela de 4s acumula (última vale) e descarrega na borda com `dropped:N` —
+// nada some em silêncio. Puro agendamento + I/O isolado em ubPushSend; nunca lança.
+const ubPushPend = new Map(); // tabId → {entry, dropped, timer}
+async function ubPushSend(tabId, entry, dropped) {
+  try {
+    let tab = null;
+    try { tab = await chrome.tabs.get(tabId); } catch {}
+    await fetch(settings.url + "/ubpush?token=" + encodeURIComponent(settings.token || ""), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tabId, title: (tab && tab.title) || "", url: (tab && tab.url) || "", entries: [entry].slice(0, 3), ...((dropped || 0) > 0 ? { dropped } : {}) }),
+      signal: AbortSignal.timeout(8000),
+    }).catch(() => {});
+  } catch {}
+}
+function ubPushFlush(tabId) {
+  try {
+    const p = ubPushPend.get(tabId);
+    if (!p) return;
+    ubPushPend.delete(tabId);
+    ubPushLast.set(tabId, Date.now());
+    if (ubPushLast.size > 20) ubPushLast.delete(ubPushLast.keys().next().value);
+    ubPushSend(tabId, p.entry, p.dropped || 0);
+  } catch {}
+}
 
 // registra content.js permanente: injeta sozinho em toda página http/https (sobrevive a F5/navegação)
 (async () => {
@@ -41,6 +67,16 @@ const ubPushLast = new Map(); // debounce do /ubpush por tabId (4s)
       { id: "ub-main", matches: ["http://*/*", "https://*/*"], js: ["content.js"], runAt: "document_start", persistAcrossSessions: true },
     ]);
   } catch (e) { diag.lastError = "regcs: " + String(e.message || e).slice(0, 100); }
+})();
+// mon-hook (MAIN, observabilidade console+rede): mesmo padrão do ub-main acima —
+// páginas novas já nascem com `hooked:true` sem precisar de ping-falha prévio.
+(async () => {
+  try {
+    await chrome.scripting.unregisterContentScripts({ ids: ["ub-mon"] }).catch(() => {});
+    await chrome.scripting.registerContentScripts([
+      { id: "ub-mon", matches: ["http://*/*", "https://*/*"], js: ["mon-hook.js"], runAt: "document_start", persistAcrossSessions: true, world: "MAIN" },
+    ]);
+  } catch (e) { diag.lastError = "regmon: " + String(e.message || e).slice(0, 100); }
 })();
 
 async function activeTabId() {
@@ -158,10 +194,19 @@ async function handle(cmd, a = {}) {
     ]);
     const byWin = {};
     for (const t of tabs) byWin[t.windowId] = (byWin[t.windowId] || 0) + 1;
+    // v14: filter/max opcionais (substring título+url, default 50, teto 200 — callers antigos inalterados).
+    let pool = tabs;
+    try {
+      const needle = String((a && a.filter) || "").trim().toLowerCase();
+      if (needle) pool = tabs.filter((t) => { try { return (((t.title || "") + " " + (t.url || "")).toLowerCase().includes(needle)); } catch { return false; } });
+    } catch {}
+    let cap = 50;
+    try { cap = Math.min(Math.max(Number(a && a.max) || 50, 1), 200); } catch {}
     return {
-      tabs: tabs.slice(0, 50).map((t) => ({ id: t.id, windowId: t.windowId, incognito: !!t.incognito, pinned: !!t.pinned, title: (t.title || "").slice(0, 100), url: t.url || "", active: !!t.active })),
+      tabs: pool.slice(0, cap).map((t) => ({ id: t.id, windowId: t.windowId, incognito: !!t.incognito, pinned: !!t.pinned, title: (t.title || "").slice(0, 100), url: t.url || "", active: !!t.active })),
       windows: wins.map((w) => ({ id: w.id, focused: !!w.focused, incognito: !!w.incognito, state: w.state, tabs: byWin[w.id] || 0 })),
       incognitoAllowed: !!incog,
+      ...(pool.length > cap ? { omitted: pool.length - cap } : {}),
     };
   }
   if (cmd === "tab.focus") {
@@ -417,6 +462,15 @@ function ubSnapItems(d) {
     return [];
   } catch { return []; }
 }
+// Hash djb2 (hex, 8 chars) do dataUrl p/ frescor do shot (v14). Pura, sem I/O. Nunca lanca excecao.
+function ubShotHash(s) {
+  try {
+    const str = String(s || "");
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = (((h << 5) + h + str.charCodeAt(i)) | 0);
+    return ("0000000" + ((h >>> 0).toString(16))).slice(-8);
+  } catch { return null; }
+}
 // Junta whatChanged de duas fontes (delta do content + url e title do background).
 // Pura, sem I/O. Nunca lanca excecao.
 function ubMergeWhatChanged(a, b) {
@@ -452,6 +506,7 @@ async function ubTrustedClick(tabId, x, y, opts) {
     const target = { tabId };
     const px = Math.round(Number(x) || 0), py = Math.round(Number(y) || 0);
     const dbl = !!(opts && opts.dblclick);
+    try { await chrome.debugger.detach(target).catch(() => {}); } catch {} // zombie-detach best-effort antes do attach
     try {
       await chrome.debugger.attach(target, "1.3");
     } catch (e) {
@@ -701,6 +756,19 @@ async function ubTrustedClick(tabId, x, y, opts) {
   if (cmd === "tab.evaluate") {
     if (!a.js) throw new Error("js obrigatório");
     const id = a.tabId || (await activeTabId());
+    // v14: mundo ISOLADO primeiro (via content — imune à CSP da página, prefixos
+    // CSP_BLOCKED/NOTFOUND preservados); falha → fallback no eval MAIN abaixo
+    // (isolado não enxerga vars JS da página). Forma {value} idêntica nos dois.
+    try {
+      const iso = await ask(id, "evaluate", a);
+      if (iso && typeof iso === "object" && ("value" in iso)) return iso;
+      if (iso && typeof iso === "object") return { value: iso.value ?? null, ...iso };
+      return { value: iso ?? null };
+    } catch (e) {
+      const m = String((e && e.message) || e || "");
+      if (/NOTFOUND|SELECTOR_ERROR|EVAL_EMPTY/.test(m)) throw e; // MAIN não resolve seletor — repassa o erro preciso
+      // CSP_BLOCKED / sem-handler / transporte: cai no eval MAIN abaixo
+    }
     // wrapper: separa "rodou e retornou undefined" de "eval bloqueado/throw" e de
     // "script nem executou" (resultado vazio = aba navegando/descartada — era null silencioso, #45/#46).
     const runEval = async () => {
@@ -733,7 +801,7 @@ async function ubTrustedClick(tabId, x, y, opts) {
     }
     const raw = (r.result && typeof r.result === "object" && "v" in r.result) ? r.result.v : r.result;
     const v = raw;
-    if (typeof v === "undefined") return { value: null, note: "expressão executou e retornou undefined — termine o JS com o valor desejado" };
+    if (typeof v === "undefined") return { value: null, undefined: true, note: "executou e retornou undefined — termine o JS com o valor desejado" };
     return { value: typeof v === "string" ? v.slice(0, 4000) : v };
   }
   if (cmd === "tab.console") {
@@ -768,8 +836,29 @@ async function ubTrustedClick(tabId, x, y, opts) {
     const cur = await activeTabId().catch(() => null);
     if (cur && cur !== id) throw new Error("print só na aba VISÍVEL — traga p/ frente (fundo: use read/snapshot, foco é intocável)");
     const t = await getTabOrThrow(id);
-    const url = await chrome.tabs.captureVisibleTab(t.windowId, { format: "png" });
-    return { dataUrl: url, tab: { id, title: t.title, url: t.url } };
+    // v14 frescor: aquieta SPA + 2 frames antes de capturar (evita print no meio do paint).
+    try { await ask(id, "settle", { timeoutMs: 1500 }).catch(() => {}); } catch {}
+    try {
+      await withTimeout(chrome.scripting.executeScript({
+        target: { tabId: id }, world: "MAIN",
+        func: () => new Promise((res) => { try { requestAnimationFrame(() => requestAnimationFrame(() => res(true))); } catch { res(false); } }),
+      }), 5000, "shot raf");
+    } catch {}
+    // scale<1: jpeg q60 (metade dos bytes); mime vai no payload (tools-owner tolera vírgula).
+    const small = Number(a.scale) < 1;
+    let url = null, mime = "image/png";
+    try {
+      url = small
+        ? await chrome.tabs.captureVisibleTab(t.windowId, { format: "jpeg", quality: 60 })
+        : await chrome.tabs.captureVisibleTab(t.windowId, { format: "png" });
+      if (url && url.indexOf("data:image/jpeg") === 0) mime = "image/jpeg";
+    } catch (e) {
+      url = await chrome.tabs.captureVisibleTab(t.windowId, { format: "png" });
+      mime = "image/png";
+    }
+    let hash = null;
+    try { hash = ubShotHash(url); } catch {}
+    return { dataUrl: url, hash, capturedAt: Date.now(), mime, tab: { id, title: t.title, url: t.url } };
   }
   if (cmd === "tab.count") {
     if (!a.selector) throw new Error("selector obrigatório");
@@ -949,18 +1038,22 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
         const tabId = (_s && _s.tab && _s.tab.id) || 0;
         const now = Date.now();
         const last = ubPushLast.get(tabId) || 0;
-        if (now - last < 4000) return;
-        ubPushLast.set(tabId, now);
         if (ubPushLast.size > 20) ubPushLast.delete(ubPushLast.keys().next().value);
-        let tab = null;
-        try { tab = await chrome.tabs.get(tabId); } catch {}
-        const entry = msg.__ubMonAlert;
-        await fetch(settings.url + "/ubpush?token=" + encodeURIComponent(settings.token || ""), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ tabId, title: (tab && tab.title) || "", url: (tab && tab.url) || "", entries: [entry].slice(0, 3) }),
-          signal: AbortSignal.timeout(8000),
-        }).catch(() => {});
+        if (now - last >= 4000 && !ubPushPend.has(tabId)) {
+          ubPushLast.set(tabId, now); // leading: envia na hora
+          ubPushSend(tabId, msg.__ubMonAlert, 0);
+          return;
+        }
+        // dentro da janela: acumula (última vale; anterior conta como dropped) e
+        // descarrega na borda da janela em vez de descartar em silêncio.
+        const prev = ubPushPend.get(tabId);
+        try { if (prev && prev.timer) clearTimeout(prev.timer); } catch {}
+        const dropped = (prev && prev.entry) ? ((prev.dropped || 0) + 1) : 0;
+        const wait = Math.min(Math.max((last || now) + 4000 - now, 500), 4000);
+        let timer = null;
+        try { timer = setTimeout(() => ubPushFlush(tabId), wait); } catch {}
+        ubPushPend.set(tabId, { entry: msg.__ubMonAlert, dropped, timer });
+        if (ubPushPend.size > 20) ubPushPend.delete(ubPushPend.keys().next().value);
       } catch {}
     })();
     return false;

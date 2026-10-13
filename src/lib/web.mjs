@@ -1,36 +1,15 @@
 // canivete — web: fetch enxuto + search multi-backend + cache TTL
 // ENV: nenhum CANIVETE_* lido neste arquivo — knobs são args/valores fixos abaixo.
 //   - CANIVETE_SEARCH_MAX: NÃO existe (removido após paginação page/perPage; ver n_websearch).
-//   - cache TTLs: n_webfetch 15min (15*60*1000, só ok sem err); n_websearch 10min (10*60*1000); fresh:true pula leitura mas regrava.
-//   - ttlCache cap: size>300 → poda expirados até <=200, senão evict FIFO (keys().next()).
+//   - cache TTLs: n_webfetch 15min (15*60*1000, só ok sem err); n_websearch 10min (10*60*1000); fresh:true pula leitura mas regrava via cacheSet.
+//   - cache cap (core/cache.mjs): size>300 → poda expirados até <=200, senão evict FIFO (keys().next()).
 //   - timeouts: n_webfetch arg timeout default 60000 clamp 5000-120000 (AbortController); httpJson default 30000 (ctx.mjs), overrides: News 12000 / DDG-instant 10000 / WikiExtract 12000 / Wiki 12000 / HN 12000 / GitHub 10000 / DDG-html 12000.
 //   - retry: n_webfetch 2 tentativas sleep 1000 (429/5xx/rede); fetchRetry(tries=2, delays 1000+2000) p/ status 0/429/5xx, httpJson nunca lança (rede=status 0).
 //   - paginação: numResults POR FONTE default 8 clamp 1-20 (News/HN/GitHub fixos em 4, Wiki/DDG-html usam n); page default 1 clamp 1..totalPages; perPage default 30 clamp 1-200 (pós-dedupe).
 //   - caps texto: n_webfetch maxChars default 12000 clamp 500-60000; links máx 40; S()=240 / probeMeta=160 / desc=300 / h1=200; trimOut default MAX_OUT=30000 (ctx.mjs).
 import { reg, out, trimOut, httpJson, escapeRe, UA } from "./ctx.mjs";
-
-const ttlCache = new Map();
-function cached(key, ttlMs, fn, ok) {
-  const hit = ttlCache.get(key);
-  if (hit && Date.now() - hit.ts < ttlMs) return Promise.resolve(hit.val);
-  return Promise.resolve()
-    .then(fn)
-    .then((val) => {
-      if (!ok || ok(val)) {
-        // evita crescimento descontrolado: remove entradas expiradas primeiro
-        if (ttlCache.size > 300) {
-          const now = Date.now();
-          for (const [k, v] of ttlCache) {
-            if (now - v.ts >= ttlMs) ttlCache.delete(k);
-            if (ttlCache.size <= 200) break;
-          }
-          if (ttlCache.size > 300) ttlCache.delete(ttlCache.keys().next().value);
-        }
-        ttlCache.set(key, { ts: Date.now(), val });
-      }
-      return val;
-    });
-}
+import { cached, cacheSet } from "../core/cache.mjs";
+import { sleep, fetchRetry } from "../core/retry.mjs";
 
 // ── helpers webfetch: trunc/extrato (S/probeMeta/mainContent/extractPrice) ──
 const S = (s, n = 240) => (s ? String(s).replace(/\s+/g, " ").trim().slice(0, n) : "");
@@ -529,32 +508,8 @@ function dedupeItems(groups, query = "") {
   return [...map.values()];
 }
 
-// Retry com backoff p/ 429/5xx/rede (status 0): 2 tentativas, 1s+2s. httpJson nunca lança (rede=status 0).
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function fetchRetry(fn, tries = 2) {
-  const delays = [1000, 2000];
-  let last;
-  for (let i = 0; i < tries; i++) {
-    try {
-      last = await fn();
-    } catch (e) {
-      last = { status: 0, data: null, text: e?.message || "fetch error" };
-      if (i === tries - 1) return last;
-      await sleep(delays[i] ?? 2000);
-      continue;
-    }
-    if (last && typeof last.status === "number") {
-      const s = last.status;
-      const transient = s === 0 || s === 429 || (s >= 500 && s < 600);
-      if (transient && i < tries - 1) {
-        await sleep(delays[i] ?? 2000);
-        continue;
-      }
-    }
-    return last;
-  }
-  return last;
-}
+// Retry com backoff p/ 429/5xx/rede (status 0): ver core/retry.mjs
+// (web: 2 tentativas 1s+2s; httpJson nunca lança — rede=status 0).
 
 // ── websearch: n_websearch (cache 10min, numResults/fonte + page/perPage pós-dedupe) ──
 reg("n_websearch", {
@@ -615,9 +570,9 @@ reg("n_websearch", {
       const result = await fetchGroups();
       groups = result.list;
       had429 = result.had429;
-      if (groups.length) ttlCache.set(key, { ts: Date.now(), val: result });
+      if (groups.length) cacheSet(key, result, 10 * 60 * 1000);
     } else {
-      const result = await cached(key, 10 * 60 * 1000, fetchGroups);
+      const result = await cached(key, 10 * 60 * 1000, fetchGroups, (r) => r.list?.length > 0);
       groups = result.list;
       had429 = result.had429;
     }

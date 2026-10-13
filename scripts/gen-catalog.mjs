@@ -5,7 +5,7 @@
 // - importar src/server.mjs registra tudo e mantém o processo vivo
 //   (readline stdio + sweep + modo --http), além de risco de duplo registro.
 // - test/smoke.mjs já evita importar o server pelo mesmo motivo.
-// Por isso: parse estático via regex `reg("n_*", { description: ... })`
+// Por isso: parse estático via regex `(reg|regTask)("n_*", { description: ... })`
 // em src/lib/*.mjs + src/server.mjs, gerando tabela nome|arquivo|1ª frase.
 // SEM importar código do servidor (só node:fs/path/url).
 //
@@ -20,12 +20,12 @@ const LIB_DIR = join(ROOT, "src", "lib");
 const SERVER_FILE = join(ROOT, "src", "server.mjs");
 const OUT_FILE = join(ROOT, "docs", "TOOLS.md");
 
-// reg("n_xxx", { description: "..." | '...' | `...` })
+// reg("n_xxx", ...) ou regTask("n_xxx", ...) { description: "..." | '...' | `...` })
 // - nome sempre aspas duplas hoje (suporta simples p/ futuro)
 // - description é a 1ª chave do objeto; captura até a aspa de fechamento
 //   respeitando escapes (\" \\ \n etc.), com flag s p/ suportar `...` multilinha.
 const REG_RE =
-  /reg\(\s*["'](n_[A-Za-z0-9_]+)["']\s*,\s*\{\s*description\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/gs;
+  /(?:reg|regTask)\(\s*["'](n_[A-Za-z0-9_]+)["']\s*,\s*\{\s*description\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/gs;
 
 function decodeDouble(inner) {
   try {
@@ -110,7 +110,7 @@ function main() {
     "",
     "> GERADO AUTOMATICAMENTE por `node scripts/gen-catalog.mjs` — NÃO EDITE MANUALMENTE.",
     `> Fonte: parse estático de \`reg("n_*", { description: ... })\` em \`src/lib/*.mjs\` + \`src/server.mjs\` (sem importar o servidor — importar \`src/server.mjs\` registra tudo e mantém o processo vivo via watch/readline).`,
-    `> Total: ${tools.length} tools. Gerado em ${date}.`,
+    `> Total: ${tools.length - 10} tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = ${tools.length}). Gerado em ${date}.`,
     "",
     "| nome | arquivo | descrição (1ª frase) |",
     "|---|---|---|",

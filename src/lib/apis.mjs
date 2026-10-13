@@ -1,6 +1,7 @@
 // canivete — APIs públicas sem chave (currency/cep/cnpj/ipinfo/weather/github/npm)
 import { reg, out, httpJson, trimOut } from "./ctx.mjs";
-import { cached } from "./web.mjs";
+import { cached, createTtlCache, memoTtl } from "../core/cache.mjs";
+import { sleep, fetchRetry } from "../core/retry.mjs";
 
 // CACHE INTELLIGENCE (só apis.mjs, sem mudar resultados):
 // - normaliza chaves (moeda upper/trim, CEP/CNPJ só dígitos, ip trim, lat/lon 2 casas)
@@ -8,52 +9,13 @@ import { cached } from "./web.mjs";
 // - memo em-memória do out() final, além do `cached` (web.mjs). Sucesso usa TTL do
 //   tool; falha (isError, ex: offline) usa negative-cache curto 60s p/ 2ª chamada ~0ms
 //   sem stale longo. 304/etag NÃO (httpJson sem suporte).
-const memo = new Map();
+const memo = createTtlCache({ max: 500 });
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TTL_CEP_CNPJ_MS = 7 * DAY_MS;
 const TTL_NEG_MS = 60 * 1000;
-function memoGet(key) {
-  const hit = memo.get(key);
-  if (!hit) return undefined;
-  if (Date.now() > hit.exp) {
-    memo.delete(key);
-    return undefined;
-  }
-  return hit.val;
-}
-function memoSet(key, val, ttlMs) {
-  if (memo.size >= 500) memo.delete(memo.keys().next().value);
-  memo.set(key, { exp: Date.now() + ttlMs, val });
-}
-function memoTtl(baseTtlMs, val) {
-  return val?.isError ? Math.min(baseTtlMs, TTL_NEG_MS) : baseTtlMs;
-}
-
-// Retry local com backoff: tenta até `tries` vezes (default 3), intervalo 500ms,2s.
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function fetchRetry(fn, tries = 3) {
-  const delays = [500, 2000];
-  let last;
-  for (let i = 0; i < tries; i++) {
-    try {
-      last = await fn();
-      // httpJson nunca lança: sinaliza rede via status 0. Retry em erro transitório.
-      if (last && typeof last.status === "number") {
-        const s = last.status;
-        const transient = s === 0 || s === 429 || (s >= 500 && s < 600);
-        if (transient && i < tries - 1) {
-          await sleep(delays[i] ?? 2000);
-          continue;
-        }
-      }
-      return last;
-    } catch (e) {
-      if (i === tries - 1) throw e;
-      await sleep(delays[i] ?? 2000);
-    }
-  }
-  return last;
-}
+function memoGet(key) { return memo.get(key); }
+function memoSet(key, val, ttlMs) { memo.set(key, val, ttlMs); }
+// memoTtl vem do core (negative-cache curto p/ falhas). TTL_NEG_MS mantido p/ compat.
 
 reg("n_currency", {
   description: "Taxa de câmbio/conversão (ECB/Frankfurter, diário, cache 1h). Converte valores e precifica. Ex: {from:\"BRL\", to:\"USD,EUR\" ou [\"USD\",\"EUR\"], amount:100, invert:false}. Retorna tabela: 1 origem = X destino + valor convertido. Com invert:true inverte (1 USD = N BRL).",

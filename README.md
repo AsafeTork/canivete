@@ -86,10 +86,10 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 |---|---|
 | `n_ubrowser_status` | **Antes de tudo**: ponte/extensão conectada? (offline → janela normal + popup ATIVO). |
 | `n_ubrowser_tabs` | Abas do dono (id, janela, título, url; IDs mudam — prefira `tab:"trecho"`). |
-| `n_ubrowser_read` | Lê aba com login (`distill` enxuto; `raw` integral + links; value separado do placeholder). |
-| `n_ubrowser_snapshot` | Clicáveis (`max`+`offset`; `find` localiza; `scan` antes p/ virtualizada; `shadow:` p/ web components; refs morrem na navegação). |
-| `n_ubrowser_act` | Automação no Chrome logado (`fill` substitui, `type` anexa, `wait`=waitMs; alto risco exige `confirm`). |
-| `n_ubrowser_shot` | Print só da aba **VISÍVEL** (fundo não imprime — use `n_browser_screenshot` p/ fundo). |
+| `n_ubrowser_read` | Lê aba com login (`distill` enxuto; `raw` integral + links; `outline:true` só estrutura; value separado do placeholder). |
+| `n_ubrowser_snapshot` | Clicáveis (`max`+`offset`; `find` localiza ±3 contexto; `layer:"modal\|menu\|popover\|tooltip"` foca só a camada; `scan` antes p/ virtualizada; `shadow:` p/ web components; refs morrem na navegação). |
+| `n_ubrowser_act` | Automação no Chrome logado (mira: selector, `ref` do snapshot ou `text:"trecho"`; `fill` substitui, `type` anexa; `wait`=waitMs; `console` lê erros+rede — erros chegam sozinhos via push; `tooltip`/`catchup`/`aesthetic` sem clique; `expectUrl/Text/Gone` afirma sem reler; `snap:true` pós-navegação economiza 1 call; clique retorna `verified`; alto risco exige `confirm`). |
+| `n_ubrowser_shot` | Print só da aba **VISÍVEL** (fundo não imprime — use `n_browser_screenshot` p/ fundo; confirme ação via `verified`/`delta` antes de printar). |
 
 ### WhatsApp dedicado (1)
 
@@ -105,7 +105,7 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 | `n_question` | Registra pergunta p/ o humano (o agente pergunta diretamente). |
 | `n_skill` | Carrega `SKILL.md` por nome (`refresh:true` lista/recarrega). |
 | `n_plan` | Aviso: plan mode só via `/plan` na TUI (não alternável pelo MCP). |
-| `n_report` | Reporta erro/falta/gargalo p/ refinar a tool (**obrigatório** em vez de improvisar). |
+| `n_report` | Reporta erro/falta/gargalo p/ refinar a tool (**obrigatório** em vez de improvisar; inbox com rotação em 500). |
 | `n_ctx_status` | Gasto da sessão (calls/chars/~tokens) vs `CANIVETE_CTX_BUDGET`; estouro → `distill/compact`. |
 
 ## Tarefas longas (com progresso, sem sleep cego)
@@ -154,6 +154,12 @@ node src/server.mjs   # fala MCP via stdio; o token da extensão é gerado sozin
 
 ```json
 { "mcp": { "canivete": { "type": "local", "command": ["node", "/caminho/canivete/src/server.mjs"], "enabled": true } } }
+```
+
+**opencode v2** (config `mcp.servers`, `enabled` virou `disabled` invertido):
+
+```json
+{ "mcp": { "servers": { "canivete": { "type": "local", "command": ["node", "/caminho/canivete/src/server.mjs"] } } } }
 ```
 
 **Claude Code:**
@@ -226,6 +232,10 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 | `CANIVETE_TASK_PREFIX` | `canivete-task-` | prefixo dos ids de task (só com `CANIVETE_TASK_ENABLE=1`) |
 | `CANIVETE_SERVER_NAME` | `canivete` | nome do servidor (persistência) |
 | `CANIVETE_SKILLS_PATHS` | — | dirs extras de skills (`:`) |
+| `CANIVETE_TASK_MODE` / `CANIVETE_SERVE_PORT` / `CANIVETE_SERVE_URL` | `auto` / `19425` / `http://127.0.0.1:<porta>` | runner opencode legado (só com `CANIVETE_TASK_ENABLE=1`) |
+| `CANIVETE_RUNNER` / `CANIVETE_RUN_TEMPLATE` | `opencode` / — | runner legado (`{prompt} {model} {agent} {id}`; só com `CANIVETE_TASK_ENABLE=1`) |
+| `CANIVETE_LLM_PROVIDER` + `CANIVETE_LLM_API_KEY` + `CANIVETE_LLM_MODEL` | — | LLM direto OpenAI-compatível (`groq\|cerebras\|gemini\|openrouter\|deepseek\|openai\|ollama` + fallbacks `_2.._5`) |
+| `CANIVETE_LLM_TIMEOUT` / `CANIVETE_LLM_MAX_TOKENS` | — | teto de espera / resposta do LLM direto |
 
 ## Solução de problemas
 
@@ -237,20 +247,27 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 ## Layout
 
 ```
-src/server.mjs          entrada MCP (protocolo + n_tools_info)
+src/server.mjs          entrada MCP (protocolo + n_tools_info; dispatch em core/rpc.mjs)
+src/remote.mjs          modo --http (mesmo dispatch via core/rpc.mjs)
+src/core/cache.mjs      cache TTL único (web + apis; hit/miss + negative-cache)
+src/core/retry.mjs      sleep + fetchRetry únicos (web 2x + apis 3x preservados)
+src/core/symbols.mjs    extração de símbolos (fs p/ n_read + devengine p/ índice)
+src/core/snapshot.mjs   primitivos de ranking (label/role/box/fold/dedup compartilhados)
+src/core/taxonomy.mjs   grupos do catálogo — fonte única (info + find)
+src/core/rpc.mjs        dispatch JSON-RPC + annotations (stdio + http)
 src/lib/ctx.mjs         config/env, registro, helpers compartilhados
-src/lib/fs.mjs          filesystem + shell
-src/lib/web.mjs         fetch + search + cache
-src/lib/apis.mjs        APIs públicas sem chave
+src/lib/fs.mjs          filesystem + shell (symbols via core)
+src/lib/web.mjs         fetch + search + cache (cache/retry via core)
+src/lib/apis.mjs        APIs públicas sem chave (cache/retry via core)
 src/lib/tasks.mjs       todos in-memory (+ orquestração/mailbox dormentes atrás de CANIVETE_TASK_ENABLE=1) + meta(skills)
-src/lib/devengine.mjs   análise estática + validação + DAG
+src/lib/devengine.mjs   análise estática + validação + DAG (symbols via core)
 src/lib/cdp.mjs         núcleo CDP (headless)
 src/lib/tools-browser.mjs   browser_* (headless)
 src/lib/ubridge.mjs     ponte da extensão (HTTP + token + /exec)
 src/lib/tools-owner.mjs     ubrowser_* (Chrome do dono)
 src/lib/risk.mjs        trava anti-destrutiva (compartilhada)
 config/models.json      modelos (modo opencode)
-extension/              extensão MV3 do Chrome do dono
+extension/              extensão MV3 do Chrome do dono (background.js ponte+cursor trusted, content.js DOM, mon-hook.js console+rede, wa-hook.js WhatsApp, popup)
 examples/               configs prontas por CLI
 docs/                   skill global de referência
 test/smoke.mjs          fumaça offline-segura

@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { TOOLS } from "./lib/ctx.mjs";
+import { dispatchHttpItem } from "./core/rpc.mjs";
 import "./lib/fs.mjs";
 import "./lib/web.mjs";
 import "./lib/apis.mjs";
@@ -66,23 +67,11 @@ export async function serveHttp(port, token) {
       try { msg = JSON.parse(body); } catch { res.writeHead(400); res.end("bad json"); return; }
       const batch = Array.isArray(msg) ? msg : [msg];
       const out = [];
+      // Dispatch compartilhado (ver core/rpc.mjs) — mesma semântica do stdio,
+      // formato remoto (ordem de registro, descrição em 120 chars, sem annotations).
       for (const m of batch) {
-        if (!m || m.method?.startsWith("notifications/") || m.id === undefined || m.id === null) continue;
-        if (m.method === "initialize") {
-          out.push({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: m.params?.protocolVersion || "2024-11-05", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "canivete", version: "1.0.0" } } });
-        } else if (m.method === "ping") {
-          out.push({ jsonrpc: "2.0", id: m.id, result: {} });
-        } else if (m.method === "tools/list") {
-          out.push({ jsonrpc: "2.0", id: m.id, result: { tools: [...TOOLS.values()].map((t) => ({ name: t.name, description: t.description.slice(0,120), inputSchema: t.inputSchema })) } });
-        } else if (m.method === "tools/call") {
-          const { name: tn, arguments: args } = m.params || {};
-          const tool = TOOLS.get(tn);
-          if (!tool) { out.push({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: `unknown tool: ${tn}` }], isError: true } }); continue; }
-          try { out.push({ jsonrpc: "2.0", id: m.id, result: await tool.run(args || {}) }); }
-          catch (e) { out.push({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: `tool error: ${e?.message || e}` }], isError: true } }); }
-        } else {
-          out.push({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: `unknown method: ${m.method}` } });
-        }
+        const r = await dispatchHttpItem(m, TOOLS);
+        if (r) out.push(r);
       }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(Array.isArray(msg) ? out : out[0] || {}));

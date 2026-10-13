@@ -13,6 +13,7 @@ import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node
 import { join, dirname, basename } from "node:path";
 import { userInfo } from "node:os";
 import { reg, out, trimOut, fpath, exec, walkFiles, humanSize, escapeRe, CWD, SKIP_DIRS, atomicWriteFile } from "./ctx.mjs";
+import { extractFileSymbols as extractSymbols } from "../core/symbols.mjs";
 
 function globToRegex(pattern) {
   let re = "";
@@ -51,27 +52,7 @@ let RUN_AS = "?";
 try { RUN_AS = userInfo().username || "?"; } catch {}
 
 // --- custo: symbols/rank/collapse. Custo zero quando opt-in ausente (fast-path) ---
-const SYM_KW = new Set(["if", "for", "while", "switch", "catch", "with", "else", "do", "try", "finally", "return", "import", "export", "function", "class", "const", "let", "var", "new", "typeof", "await", "async", "yield", "case", "break", "continue", "throw", "delete", "in", "of", "instanceof", "void"]);
-function extractSymbols(text, rel) {
-  const syms = [];
-  const rp = String(rel || "");
-  const isPy = /\.py$/i.test(rp);
-  const isMd = /\.md$/i.test(rp);
-  const lines = String(text).split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    let m;
-    if ((m = /^\s*reg\(\s*["']([A-Za-z0-9_\-]+)["']/.exec(l))) syms.push({ n: i + 1, kind: "tool", name: m[1] });
-    else if (!isPy && (m = /^\s*(?:export\s+default\s+|export\s+)?class\s+([A-Za-z_$][\w$]*)/.exec(l))) syms.push({ n: i + 1, kind: "class", name: m[1] });
-    else if (!isPy && (m = /^\s*(?:export\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/.exec(l))) syms.push({ n: i + 1, kind: "function", name: m[1] });
-    else if (!isPy && (m = /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>|function\b)/.exec(l))) syms.push({ n: i + 1, kind: /=>/.test(l) ? "arrow" : "function", name: m[1] });
-    else if (isPy && (m = /^\s*(def|class)\s+([A-Za-z_]\w*)/.exec(l))) syms.push({ n: i + 1, kind: m[1] === "class" ? "class" : "function", name: m[2] });
-    else if (!isPy && !isMd && (m = /^\s*(?:static\s+)?(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/.exec(l))) {
-      if (!SYM_KW.has(m[1])) syms.push({ n: i + 1, kind: "method", name: m[1] });
-    } else if (isMd && (m = /^\s*(#{1,6})\s+(.{1,120})\s*$/.exec(l))) syms.push({ n: i + 1, kind: "h" + m[1].length, name: m[2] });
-  }
-  return syms;
-}
+// extractSymbols: ver core/symbols.mjs (extractFileSymbols — mesma implementação, fonte única).
 
 const BASH_TAIL_KEEP = 15; // tail integral: últimas N linhas de conteúdo nunca entram no RLE
 const PROG_RE = /(\d+\s*%|\bdownloading\b|\bdownloaded\b|\bprogress\b|█|▓|▒|░|■|□|◆|◇|\b\d+\s*\/\s*\d+\b)/i;

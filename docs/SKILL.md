@@ -65,9 +65,9 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `n_browser_pdf` | PDF em `/tmp`. |
 | `n_ubrowser_status` | **Antes de tudo** no Chrome do dono (offline → janela normal + popup ATIVO). |
 | `n_ubrowser_tabs` | Abas (IDs mudam; prefira `tab:"trecho"`). |
-| `n_ubrowser_read` | Aba logada (`distill` default; `raw` integral+links). |
-| `n_ubrowser_snapshot` | Clicáveis (`max` ≤120 + `offset`; `scan` antes p/ virtualizada). |
-| `n_ubrowser_act` | goto/click/fill/type/select/scroll/highlight/waittext/evaluate/cursor/new/scan/flow (alto risco exige `confirm`; fechar abas e roubar foco NÃO existem). |
+| `n_ubrowser_read` | Aba logada (`distill` default; `raw` integral+links; `outline:true` só estrutura). |
+| `n_ubrowser_snapshot` | Clicáveis (`max` ≤120 + `offset`; `find` ±3 contexto; `layer:"modal\|menu\|popover\|tooltip"` foca a camada; `scan` antes p/ virtualizada). |
+| `n_ubrowser_act` | goto/click(`ref`/selector/`text=`)/fill(type anexa)/select/scroll/highlight/waittext(`wait`=waitMs)/evaluate(retry+nota)/cursor(trusted)/tooltip/catchup/aesthetic/new/scan/count/attr/html/flow/`console`(erros+rede; chegam sozinhos via push)/`expectUrl/Text/Gone`/`snap:true` (alto risco exige `confirm`; fechar abas e roubar foco NÃO existem). |
 | `n_ubrowser_shot` | Print só aba **VISÍVEL** (fundo → `n_browser_screenshot`). |
 
 ### Meta (6) + WhatsApp (1)
@@ -98,9 +98,10 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `EXTENSAO_OFFLINE` / `timeout 60s` extensão | `n_ubrowser_status`: janela NORMAL, popup ATIVO, token `~/.config/canivete/token.txt`. |
 | `SSRF bloqueado: host privado` | URL pública ou `CANIVETE_BROWSER_ALLOW_PRIVATE=1`. |
 | `chrome://` sem ação | Bloqueio do Chrome (só páginas web). |
-| Aba `NOTFOUND` / snapshot vazio | Reliste `tabs`; use `tab:"trecho"`; `scan {pages:4}` antes de `snapshot`. |
-| `evaluate → undefined` | Falta `return ...`; CSP bloqueado não tem workaround. |
-| `shot` fundo sem print | Traga p/ frente ou `n_browser_screenshot`. |
+| Aba `NOTFOUND` / snapshot vazio | Reliste `tabs`; use `tab:"trecho"`; `scan {pages:4}` antes de `snapshot`; `find`/`layer` p/ localizar sem despejar. Alvo que sumiu volta com WHERE (`removed\|hidden\|scrolled-out\|recycled`); `resolve=moved\|recycled` = re-resolvido sozinho. |
+| `evaluate → undefined`/null | Falta `return ...`; há 1 retry automático e a `note` diz o motivo; CSP bloqueado não tem workaround (use `read`/`snapshot`). |
+| Erro novo no console/rede | Chega sozinho: push na hora + 📬 nas respostas — leia com `act {action:"console", filter:"errors"}`. |
+| `shot` fundo sem print | Traga p/ frente ou `n_browser_screenshot`; prefira confirmar via `verified`/`delta` antes de printar. |
 | `n_bash` timeout | `timeout` até 600000 ou background + `read_logs`. |
 | Qualquer erro/falta/gargalo | `n_report` em vez de improvisar. |
 
@@ -112,8 +113,8 @@ Tasks/skills: `CANIVETE_TASK_ENABLE` (`1` reativa `n_task*`), `CANIVETE_SKILLS_P
 
 ## Doutrina
 
-- Ozônio: só age quando o dono pede. Destrutivo/idiota nunca sem pedido explícito; alto risco exige `confirm`.
-- Obediência auditável: nunca faça na mão o que tem tool; siga o roteamento (arch→investigate→impact→patch→test); sem evidência arquivo:linha = recusado. Principal confere `n_task_status`.
+- Dono: só age quando o dono pede. Destrutivo/idiota nunca sem pedido explícito; alto risco exige `confirm`.
+- Obediência auditável: nunca faça na mão o que tem tool; siga o roteamento (arch→investigate→impact→patch→test); sem evidência arquivo:linha = recusado.
 - Confie no MCP (sem polling manual): 1 espera longa com teto em vez de sleep loops.
 - Refine em produção: `n_report` p/ todo erro/falta/gargalo em vez de improvisar.
 
@@ -122,11 +123,11 @@ Tasks/skills: `CANIVETE_TASK_ENABLE` (`1` reativa `n_task*`), `CANIVETE_SKILLS_P
 1. Ler página logada:
 `n_ubrowser_status` → `n_ubrowser_tabs` → `n_ubrowser_read({"tab":"trecho título/URL"})`
 2. Clicar com snapshot compact:
-`n_ubrowser_snapshot({"tab":"trecho","compact":true})` → `n_ubrowser_act({"action":"click","selector":"SELETOR"})`
+`n_ubrowser_snapshot({"tab":"trecho","compact":true})` → `n_ubrowser_act({"action":"click","ref":N})` (ou `selector`/`text="trecho"`)
 ### Onde clicar (snapshot compact → role+name → act)
 1. `n_ubrowser_snapshot({"tab":"trecho","compact":true})` → linhas `ref|tag|text` com `role+name` (ex. `button "Entrar"`).
-2. Escolha pelo `role+name`, não por `tabId`/`ref` (IDs mudam a cada restart/navegação — use `tab:"trecho"`).
-3. `n_ubrowser_act({"action":"click","tab":"trecho","selector":"SELETOR"})` com o `selector` da linha escolhida.
+2. Escolha pelo `role+name`, mire por `ref` (válido até a próxima navegação) ou `selector`; nunca `tabId` (IDs mudam — use `tab:"trecho"`).
+3. Modal aberto com 2 botões? `snapshot({"layer":"modal"})` — só a camada, sem ler a página.
 4. Lista virtualizada? `act({action:"scan",pages:4})` antes do `snapshot`; vazio? `tabs` + F5 e `snapshot` de novo.
 5. Aba de fundo? `read`/`snapshot` funcionam; `shot` só imprime a aba VISÍVEL (detalhe: `compact:false` traz `selector+x/y`).
 3. WhatsApp abrir chat:
@@ -140,7 +141,8 @@ Snapshot gigante estoura `CANIVETE_CTX_BUDGET`. Regras (valem p/ qualquer agente
 2. `max:30` — nunca default 50/120 em subagente; pagine com `offset` (`max:30 offset:0/30/...`) até o fim.
 3. Nunca screenshot gigante no contexto — `n_ubrowser_shot` (e `n_browser_screenshot` com `scale:0.5`) SÓ quando o dono pedir evidência visual; fora isso, confirmação textual.
 4. `read` distill — `n_ubrowser_read({"tab":"trecho","mode":"distill"})` default (~4000 chars, `maxChars:2500`/`maxLinks:15`); `mode:"raw"` só opt-out.
-5. 1 snapshot por decisão, não loop — 1 `snapshot` → 1 `act` (`changed`/`after` confirma sem re-ler); nunca `snapshot` em loop; virtualizada faz `scan {pages:4}` antes, vazio relista `tabs` + F5.
+5. 1 snapshot por decisão, não loop — 1 `snapshot` → 1 `act` (`verified`/`delta`/`changed` confirmam sem re-ler); nunca `snapshot` em loop; virtualizada faz `scan {pages:4}` antes, vazio relista `tabs` + F5.
+6. Avisos efêmeros (toast que some no clique) vêm no `delta` (`🔔 aviso:`) — sem call extra; erros de console/rede chegam via push + 📬.
 
 ## Troubleshooting ubrowser
 - Lista virtualizada (só visíveis no DOM) → `tab.scan` antes de `snapshot`.

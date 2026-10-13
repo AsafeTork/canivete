@@ -2,7 +2,7 @@
 import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { reg, devOut, trimOut, fpath, humanSize, exec } from "./ctx.mjs";
 import { probeMeta, mainContent } from "./web.mjs";
 import { withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN as CHROME_BIN_CDP } from "./cdp.mjs";
@@ -23,6 +23,15 @@ const CHROME_BIN = (() => {
   ]) {
     try { if (existsSync(p)) return p; } catch {}
   }
+  // Playwright cache DEPOIS dos paths de sistema (prioridade preservada; env sempre vence acima).
+  try {
+    const pwBase = join(homedir(), ".cache", "ms-playwright");
+    const dirs = readdirSync(pwBase).filter((d) => d.startsWith("chromium-")).sort().reverse();
+    for (const d of dirs) {
+      const p = join(pwBase, d, "chrome-linux", "chrome");
+      try { if (existsSync(p)) return p; } catch {}
+    }
+  } catch {}
   return CHROME_BIN_CDP || "google-chrome";
 })();
 
@@ -79,7 +88,7 @@ function isRetryableCdpError(e) {
   return /timeout|closed|econn|epipe|socket|ws\b|target|session|cdp|enable|navigate/i.test(String(e?.message || ""));
 }
 function actionableCdpError(e, label, retried) {
-  const hint = "dica acionável: confira CHROME_BIN (CANIVETE_CHROME_BIN/CHROME_BIN), porta CDP livre e tente com waitMs menor; se persistir, rode n_browser_snapshot p/ validar a aba";
+  const hint = `dica acionável: confira CHROME_BIN (CANIVETE_CHROME_BIN/CHROME_BIN) [bin=${CHROME_BIN}], porta CDP livre e tente com waitMs menor; se persistir, rode n_browser_snapshot p/ validar a aba`;
   const err = new Error(`${label} falhou${retried ? " (após 1 retry)" : ""}: ${e?.message || e} — ${hint}`);
   err.cause = e;
   return err;
@@ -233,7 +242,7 @@ reg("n_browser_act", {
     type: "object",
     properties: {
       action: { type: "string", enum: ["goto", "back", "forward", "reload", "click", "fill", "press", "scroll", "wait", "wait_selector", "evaluate"] },
-      url: { type: "string" }, selector: { type: "string", description: "CSS (wait_selector só CSS)" }, text: { type: "string" },
+      url: { type: "string" }, selector: { type: "string", description: "CSS (wait_selector só CSS; evaluate: pré-valida e lança 'elemento não encontrado' se ausente)" }, text: { type: "string" },
       key: { type: "string", description: "Enter|Tab|Escape|ArrowDown..." }, js: { type: "string" },
       ms: { type: "number" }, direction: { type: "string", enum: ["up", "down", "top", "bottom"] },
       submit: { type: "boolean" }, waitMs: { type: "number" },
@@ -277,7 +286,12 @@ reg("n_browser_act", {
         if (act === "wait") { await new Promise((r) => setTimeout(r, Math.min(Number(a.ms) || 2000, 15000))); return await withConsole(await cdpState(send)); }
         if (act === "evaluate") {
           if (!a.js) throw new Error("js obrigatório p/ evaluate");
-          const r = await send("Runtime.evaluate", { expression: a.js, returnByValue: true, awaitPromise: true }, 15000);
+          if (a.selector) {
+            const chk = await send("Runtime.evaluate", { expression: RESOLVE_JS(a.selector), returnByValue: true }, 5000);
+            if (String(chk.result?.value).startsWith("NOTFOUND")) throw new Error(`elemento não encontrado: ${a.selector} — rode n_browser_snapshot`);
+          }
+          const r = await send("Runtime.evaluate", { expression: a.js, returnByValue: true, awaitPromise: true, allowUnsafeEvalBlockedByCSP: true }, 15000);
+          if (r.exceptionDetails) throw new Error(`evaluate threw: ${r.exceptionDetails.text || r.exceptionDetails.exception?.description || JSON.stringify(r.exceptionDetails).slice(0, 300)}`);
           const v = r.result?.value ?? r.result?.description;
           if (v == null) return await withConsole({ value: v ?? null, empty: true, note: "seletor não casou ou JS sem return — confira n_browser_snapshot", type: r.result?.type });
           return await withConsole({ value: v, type: r.result?.type });
@@ -415,7 +429,7 @@ reg("n_browser_pdf", {
       const st = await stat(file);
       if (st.size > 1000) return devOut({ summary: `PDF ${humanSize(st.size)} → ${file}`, data: { file, size: st.size, url }, telemetry: { execution_time_ms: Date.now() - t0 } });
     } catch {}
-    return devOut({ status: "error", summary: `pdf falhou: ${(r.se || r.so || "arquivo vazio").trim().slice(0, 200)} — confira CHROME_BIN (CANIVETE_CHROME_BIN/CHROME_BIN)`, data: { url }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    return devOut({ status: "error", summary: `pdf falhou: ${(r.se || r.so || "arquivo vazio").trim().slice(0, 200)} — confira CHROME_BIN (CANIVETE_CHROME_BIN/CHROME_BIN) [bin=${CHROME_BIN}]`, data: { url }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 

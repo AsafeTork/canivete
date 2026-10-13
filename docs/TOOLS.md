@@ -2,7 +2,7 @@
 
 > GERADO AUTOMATICAMENTE por `node scripts/gen-catalog.mjs` — NÃO EDITE MANUALMENTE.
 > Fonte: parse estático de `reg("n_*", { description: ... })` em `src/lib/*.mjs` + `src/server.mjs` (sem importar o servidor — importar `src/server.mjs` registra tudo e mantém o processo vivo via watch/readline).
-> Total: 46 tools. Gerado em 2026-09-28.
+> Total: 46 tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = 56). Gerado em 2026-10-13.
 
 | nome | arquivo | descrição (1ª frase) |
 |---|---|---|
@@ -30,6 +30,7 @@
 | `n_investigate_issue` | `src/lib/devengine.mjs` | DevEngine: busca keyword OR (12 hits→3) com score por proximidade (mesma linha > mesmo arquivo) + bônus nome-arquivo/símbolo + penalidade vendor + porquê 1 linha. |
 | `n_ipinfo` | `src/lib/apis.mjs` | Geolocalização de IP (ip-api.com, 45 req/min, cache 10min, com retry). |
 | `n_list` | `src/lib/fs.mjs` | Lista árvore de diretório com tamanhos (depth 1-6, maxLines 1500). |
+| `n_list_models` | `src/lib/tasks.mjs` | PASSO 1 antes de n_task: lista modelos disponíveis. |
 | `n_manage_background_process` | `src/lib/devengine.mjs` | DevEngine: start/stop/restart/status/read_logs de servidores sem bloquear. |
 | `n_npm` | `src/lib/apis.mjs` | Info do pacote npm (cache 1h, com retry). |
 | `n_orchestrate_task` | `src/lib/devengine.mjs` | DevEngine: DAG de tarefas com checkpoint/resume/rollback (git stash). |
@@ -38,6 +39,15 @@
 | `n_read` | `src/lib/fs.mjs` | Lê arquivo texto com números de linha (offset/limit, raw, maxChars até 100k) ou lista diretório simples. |
 | `n_report` | `src/lib/feedback.mjs` | Reporta erro/falta/gargalo p/ refinar a ferramenta (inbox global). |
 | `n_skill` | `src/lib/tasks.mjs` | Carrega SKILL.md por nome. |
+| `n_task` | `src/lib/tasks.mjs` | Subagente isolado. |
+| `n_task_delete` | `src/lib/tasks.mjs` | Exclui task(s)+mailbox p/ organizar. |
+| `n_task_notifications` | `src/lib/tasks.mjs` | Lê notifs de tasks + correio dormindo. |
+| `n_task_peek` | `src/lib/tasks.mjs` | Espia mailbox SEM esvaziar. |
+| `n_task_recv` | `src/lib/tasks.mjs` | Lê e esvazia mailbox (destrutivo). |
+| `n_task_send` | `src/lib/tasks.mjs` | Envia msg p/ mailbox (não-bloqueante). |
+| `n_task_status` | `src/lib/tasks.mjs` | Lista subagentes (id\|status\|tools\|elapsed\|modelo) ou detalha 1. |
+| `n_task_tail` | `src/lib/tasks.mjs` | Mostra o que o subagente está GERANDO agora (transcrição parcial ao vivo via arquivo de saída). |
+| `n_task_wait` | `src/lib/tasks.mjs` | Aguarda subagentes e retorna resultados. |
 | `n_todo` | `src/lib/tasks.mjs` | Read the in-memory task list. |
 | `n_todowrite` | `src/lib/tasks.mjs` | Substitui (replace, padrão) ou mescla (append por content igual) a lista in-memory. |
 | `n_tools_info` | `src/server.mjs` | Catálogo agrupado do canivete: filesystem+exec, web/APIs sem chave, orquestração, DevEngine, browsers e meta. |
