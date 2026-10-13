@@ -977,8 +977,30 @@ async function hello() {
 }
 
 // diagnóstico visível no popup
-const diag = { polls: 0, lastPollOk: "-", lastError: "-", helloOk: "-", startedAt: new Date().toLocaleTimeString(), online: false };
+const diag = { polls: 0, lastPollOk: "-", lastError: "-", helloOk: "-", autoUpdate: "-", startedAt: new Date().toLocaleTimeString(), online: false };
 let diagT = 0, loopBeat = 0, wasOnline = false, consecFails = 0;
+const ubBootAt = Date.now();
+let ubWantReload = false, ubSelfCheckAt = 0;
+// auto-update sozinho: compara o manifest DO DISCO com o carregado a cada ~60s idle;
+// versão diferente (git pull/edição) → marca reload, aplicado no próximo idle (quiescente).
+// Content já se auto-reinjeta (UB_EXPECTED); injetados (mon/wa-hook) lêem do disco a cada injeção.
+// Depois desta versão: sem reload manual, sem chrome://extensions. Convenção: bump em
+// manifest.json a cada mudança na extensão (é o gatilho).
+async function ubSelfUpdate() {
+  try {
+    const now = Date.now();
+    if (now - ubSelfCheckAt < 60000) return;
+    ubSelfCheckAt = now;
+    if (now - ubBootAt < 120000) return; // estabiliza a ponte antes de pensar em recarregar
+    const disk = await fetch(chrome.runtime.getURL("manifest.json?v=" + now)).then((r) => r.json());
+    let mine = "?";
+    try { mine = chrome.runtime.getManifest().version; } catch {}
+    if (disk && disk.version && mine && disk.version !== mine) {
+      ubWantReload = true;
+      try { diag.autoUpdate = `nova ${disk.version} no disco (rodando ${mine}) — recarrega no próximo idle`; saveDiag(); } catch {}
+    }
+  } catch {}
+}
 function setOnline(on, reason) {
   diag.online = on;
   if (on !== wasOnline) {
@@ -1017,7 +1039,19 @@ async function loop() {
       diag.lastPollOk = new Date().toLocaleTimeString();
       diag.lastError = "-";
       saveDiag();
-      if (!job) { await new Promise((r) => setTimeout(r, 1000)); continue; }
+      if (!job) {
+        if (ubWantReload) {
+          // quiescente: aplica a versão nova do disco agora (sem comando em voo)
+          try { diag.autoUpdate = "recarregando p/ versão nova…"; saveDiag(); } catch {}
+          try { chrome.runtime.reload(); } catch {}
+          await new Promise((r) => setTimeout(r, 5000));
+          ubWantReload = false;
+          continue;
+        }
+        try { await ubSelfUpdate(); } catch {}
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
       try {
         const data = await handle(job.cmd, job.args || {});
         await result(job.id, true, data);
