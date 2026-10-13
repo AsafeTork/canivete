@@ -99,6 +99,7 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `SSRF bloqueado: host privado` | URL pública ou `CANIVETE_BROWSER_ALLOW_PRIVATE=1`. |
 | `chrome://` sem ação | Bloqueio do Chrome (só páginas web). |
 | Aba `NOTFOUND` / snapshot vazio | Reliste `tabs`; use `tab:"trecho"`; `scan {pages:4}` antes de `snapshot`; `find`/`layer` p/ localizar sem despejar. Alvo que sumiu volta com WHERE (`removed\|hidden\|scrolled-out\|recycled`); `resolve=moved\|recycled` = re-resolvido sozinho. |
+| Extensão desatualizada (erro esquisito após update do repo) | `n_ubrowser_status` mostra `bg`/`ub` RODANDO aí — se diferente do disco, `act {action:"reload-extension"}` recarrega remoto (só vale a partir da versão com o comando; a 1ª vez é manual). |
 | `evaluate → undefined`/null | Falta `return ...`; há 1 retry automático e a `note` diz o motivo; CSP bloqueado não tem workaround (use `read`/`snapshot`). |
 | Erro novo no console/rede | Chega sozinho: push na hora + 📬 nas respostas — leia com `act {action:"console", filter:"errors"}`. |
 | `shot` fundo sem print | Traga p/ frente ou `n_browser_screenshot`; prefira confirmar via `verified`/`delta` antes de printar. |

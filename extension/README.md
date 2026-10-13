@@ -17,7 +17,7 @@ o background reinjeta o content sozinho quando detecta versão antiga).
 
 | Arquivo | Papel |
 |---|---|
-| `background.js` | Service worker: ponte HTTP `127.0.0.1:19422`, fila de comandos, cursor-remoto (clique TRUSTED via CDP com fallback sintético), escalada de clique com verificação, relay de alertas p/ `/ubpush`. |
+| `background.js` | Service worker: ponte HTTP `127.0.0.1:19422`, fila de comandos, cursor-remoto (clique TRUSTED via CDP com fallback sintético), escalada de clique com verificação, relay de alertas p/ `/ubpush`, auto-reload remoto (`tab.reload-extension`). |
 | `content.js` | Content script (mundo isolado): leitura, snapshot, ações DOM, shadow DOM, delta pós-ação, estética, cursor visual. |
 | `mon-hook.js` | Hook de observabilidade (mundo MAIN): console + erros JS + fetch/XHR; erros sobem sozinhos via push. |
 | `wa-hook.js` | Hook do WhatsApp Web (mundo MAIN): `state/chats/open/read/send/ids`. |

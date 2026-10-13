@@ -30,6 +30,9 @@ try {
 } catch {}
 
 const UB_EXPECTED = "14"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+// Versão do próprio worker (manifest): reportada no /hello + tab.diag → n_ubrowser_status
+// mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
+const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
 const injectedTabs = new Set(); // fallback manual 1x por aba/sessão (registro cobre o resto)
 const ubPushLast = new Map(); // debounce do /ubpush por tabId (4s)
 // ubpush trailing-edge (v14): 1ª borda envia na hora (leading); rajada dentro da
@@ -185,7 +188,7 @@ async function handle(cmd, a = {}) {
     a.tabId = found.id;
   }
   if (cmd === "ping") return { pong: true, url: settings.url };
-  if (cmd === "tab.diag") return { ...diag, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url };
+  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url };
   if (cmd === "tabs.list") {
     const [tabs, wins, incog] = await Promise.all([
       chrome.tabs.query({}),
@@ -830,6 +833,13 @@ async function ubTrustedClick(tabId, x, y, opts) {
     else if (flt === "console") entries = entries.filter((e) => e && e.kind === "console");
     return { hooked: true, filter: flt, count: entries.length, entries: entries.slice(-Math.min(Math.max(Number(a.limit) || 30, 1), 120)) };
   }
+  if (cmd === "tab.reload-extension") {
+    // auto-reload remoto: aplica código novo do disco sem passar pelo chrome://extensions
+    // (content script NUNCA injeta em chrome:// — runtime.reload é o único caminho).
+    // Responde ANTES de recarregar; a ponte reconecta sozinha (loop + alarms).
+    try { setTimeout(() => { try { chrome.runtime.reload(); } catch {} }, 800); } catch {}
+    return { reloading: true, bg: UB_BG, note: "extensão recarregando — a ponte reconecta sozinha em segundos" };
+  }
   if (cmd === "tab.shot") {
     // NUNCA troca de aba: só fotografa a aba VISÍVEL (fundo = sem print, use read)
     const id = a.tabId || (await activeTabId());
@@ -959,7 +969,7 @@ async function hello() {
     await fetch(settings.url + "/hello?token=" + encodeURIComponent(settings.token), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ info: { tabs: tabs.length, ua: navigator.userAgent.slice(0, 80) } }),
+      body: JSON.stringify({ info: { tabs: tabs.length, ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED } }),
     });
     diag.helloOk = new Date().toLocaleTimeString();
   } catch (e) { diag.lastError = "hello: " + (e.message || e); }
