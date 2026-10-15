@@ -2,7 +2,7 @@
 
 > GERADO AUTOMATICAMENTE por `node scripts/gen-catalog.mjs` — NÃO EDITE MANUALMENTE.
 > Fonte: parse estático de `reg("n_*", { description: ... })` em `src/lib/*.mjs` + `src/server.mjs` (sem importar o servidor — importar `src/server.mjs` registra tudo e mantém o processo vivo via watch/readline).
-> Total: 46 tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = 56). Gerado em 2026-10-13.
+> Total: 47 tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = 57). Gerado em 2026-10-15.
 
 | nome | arquivo | descrição (1ª frase) |
 |---|---|---|
@@ -11,6 +11,7 @@
 | `n_apply_semantic_patch` | `src/lib/devengine.mjs` | DevEngine: edição AST-validada (node --check, skip JSX). |
 | `n_bash` | `src/lib/fs.mjs` | Executa shell (bash -lc) no repo root: git, npm, node, curl. |
 | `n_browser_act` | `src/lib/tools-browser.mjs` | Interage via CDP: goto/back/forward/reload/click/fill/press/scroll/wait/wait_selector/evaluate. |
+| `n_browser_contrast` | `src/lib/tools-browser.mjs` | Contraste REAL medido em PIXEL (nao no DOM): captura o clip do elemento, decodifica o PNG em JS puro e compara a mediana do anel da borda com a do miolo -> razao WCAG 2.1. |
 | `n_browser_navigate` | `src/lib/tools-browser.mjs` | Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. |
 | `n_browser_pdf` | `src/lib/tools-browser.mjs` | Gera PDF da página via Chrome headless. |
 | `n_browser_screenshot` | `src/lib/tools-browser.mjs` | Captura PNG da página ou só de um elemento (selector CSS via clip). |

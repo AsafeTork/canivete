@@ -254,7 +254,28 @@ async function handle(cmd, a = {}) {
     return { id: t.id, url: t.url || a.url, background: !t.active };
   }
   if (cmd === "tab.close") {
-    throw new Error("FECHAR ABAS É PROIBIDO pelo dono (removido do MCP)");
+    // #67: fechar SÓ aba-fantasma do agente (about:blank). Regra do dono: NUNCA
+    // fechar aba dele — qualquer URL não-blank (http(s) ativo, chrome://, ...)
+    // exige confirm explícito. mode:"close_by_prefix" limpa TODAS as about:blank.
+    const isBlank = (u) => /^about:blank/i.test(String(u || "")) || String(u || "").trim().toLowerCase() === "blank";
+    if (a.mode === "close_by_prefix") {
+      // prefixo só pode ser blank: fechar "por prefixo" http(s) seria fechar aba do dono em massa.
+      const raw = String(a.urlPrefix || "about:blank").trim().toLowerCase();
+      const prefix = raw === "blank" ? "about:blank" : raw;
+      if (!/^about:blank/.test(prefix))
+        throw new Error(`close_by_prefix só aceita urlPrefix blank (about:blank) — fechar abas do dono (${raw.slice(0, 60)}) é PROIBIDO`);
+      const hits = (await chrome.tabs.query({})).filter((t) => String(t.url || "").startsWith(prefix));
+      const closed = [];
+      for (const t of hits) { try { await chrome.tabs.remove(t.id); closed.push(t.id); } catch {} }
+      return { closed: closed.length, tabIds: closed, prefix, ...(closed.length ? {} : { note: `nenhuma aba com prefixo "${prefix}"` }) };
+    }
+    const id = a.tabId || (await activeTabId());
+    const t = await getTabOrThrow(id);
+    const url = String(t.url || "");
+    if (!isBlank(url) && !(a.confirm && String(a.confirm).trim().length >= 4))
+      throw new Error(`aba do dono (${url.slice(0, 80) || "sem url"}) — NUNCA fecho aba do dono: fechar exige confirm="<frase do dono>"; p/ limpar fantasmas use {action:"close", mode:"close_by_prefix"}`);
+    await chrome.tabs.remove(id);
+    return { closed: 1, tabId: id, url, title: (t.title || "").slice(0, 100) };
   }
   if (cmd === "tab.back" || cmd === "tab.forward" || cmd === "tab.reload") {
     const id = a.tabId || (await activeTabId());

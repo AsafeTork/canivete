@@ -89,8 +89,9 @@ function reg(name, definition) {
   definition.run = async (args) => {
     const r = await orig(args);
     try {
+      // FIX 2: catálogo ganha lista de params por tool (ver annotateToolLines) — ANTES do cap p/ o teto valer no texto enriquecido.
       if (name === "n_tools_info" && r?.content?.[0] && typeof r.content[0].text === "string") {
-        r.content[0].text = capOut(r.content[0].text);
+        r.content[0].text = capOut(annotateToolLines(r.content[0].text));
       }
     } catch {}
     try {
@@ -268,7 +269,26 @@ async function atomicWriteFile(p, content, encoding = "utf8") {
   await rename(tmp, p);
 }
 
-function devOut({ status = "success", summary = "", data = {}, telemetry = {}, next = [], refs = [] }) {
+// FIX 1 (regra do feedback: a recuperação não pode ser enterrada no fim de uma linha run-on):
+// `hint` (array de strings curtas) renderiza como linhas PRÓPRIAS `→ DICA: ...` ANTES do resumo/JSON —
+// a primeira coisa que o agente lê num erro. Campo opcional: sem hint a saída é byte-idêntica ao formato antigo.
+function hintPrefix(hint) {
+  const items = Array.isArray(hint) ? hint : hint == null || hint === "" ? [] : [hint];
+  const lines = [];
+  for (const h of items) {
+    if (h == null) continue;
+    const t = String(h).trim();
+    if (t) lines.push(`${HINT_PREFIX}${t}`);
+  }
+  return lines.length ? `${lines.join("\n")}\n` : "";
+}
+// Alternativa de recuperação pronta p/ espalhar no devOut: devOut({ status:"error", summary:..., ...fallbackHint("use n_browser_snapshot") }).
+function fallbackHint(alt) {
+  const items = Array.isArray(alt) ? alt : [alt];
+  return { hint: items.map((s) => String(s ?? "").trim()).filter(Boolean) };
+}
+
+function devOut({ status = "success", summary = "", data = {}, telemetry = {}, next = [], refs = [], hint = [] }) {
   const payload = {
     status,
     summary,
@@ -277,7 +297,47 @@ function devOut({ status = "success", summary = "", data = {}, telemetry = {}, n
     next_suggested_actions: next,
     context_refs: refs,
   };
-  return out(JSON.stringify(payload, null, 2), status === "error");
+  // hint NÃO entra no JSON (schema estável): só nas linhas leading — ver hintPrefix.
+  return out(hintPrefix(hint) + JSON.stringify(payload, null, 2), status === "error");
+}
+
+// FIX 2: signature truncada no harness some com o catálogo — cada tool do n_tools_info lista seus params.
+// n_x [a|b|c] — desc : property names top-level do inputSchema, na ordem de declaração.
+// Cap por contagem (nenhum nome é cortado); tool sem params fica byte-idêntica.
+const HINT_PREFIX = "\u2192 DICA: "; // → DICA:
+const TOOL_LINE_SEP = " \u2014 "; // mesmo separador de server.mjs g(): `${t.name} — ${first(desc)}`
+const PARAM_SEP = "|";
+const PARAMS_PER_LINE = 12; // cobre toda tool real (maior schema: 37 em n_ubrowser_act → corta só a cauda)
+function paramNames(inputSchema) {
+  const props = inputSchema && typeof inputSchema === "object" ? inputSchema.properties : null;
+  if (!props || typeof props !== "object" || Array.isArray(props)) return [];
+  return Object.keys(props).filter((k) => typeof k === "string" && k.length > 0);
+}
+function paramsSuffix(inputSchema, cap = PARAMS_PER_LINE) {
+  const names = paramNames(inputSchema);
+  if (!names.length) return "";
+  const lim = Math.max(1, Number(cap) || PARAMS_PER_LINE);
+  const shown = names.slice(0, lim);
+  const rest = names.length - shown.length;
+  return ` [${shown.join(PARAM_SEP)}${rest > 0 ? `${PARAM_SEP}\u2026+${rest}` : ""}]`; // …+N = quantos params restam sem listar
+}
+// Reescreve as linhas `<tool> — <desc>` do catálogo inserindo a lista de params antes do separador.
+// Linhas sem tool conhecida (cabeçalho, grupos, hint) passam intactas.
+function annotateToolLines(text, tools = TOOLS, cap = PARAMS_PER_LINE) {
+  const map = tools instanceof Map ? tools : new Map(Object.entries(tools || {}));
+  const get = (n) => (map && typeof map.get === "function" ? map.get(n) : undefined);
+  return String(text ?? "")
+    .split("\n")
+    .map((line) => {
+      const i = line.indexOf(TOOL_LINE_SEP);
+      if (i <= 0) return line;
+      const name = line.slice(0, i);
+      const t = get(name);
+      if (!t) return line;
+      const suffix = paramsSuffix(t.inputSchema, cap);
+      return suffix ? `${name}${suffix}${line.slice(i)}` : line;
+    })
+    .join("\n");
 }
 function estTokens(s) {
   return Math.ceil(String(s || "").length / 4);
@@ -292,4 +352,4 @@ function sendToHost(obj) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...obj }) + "\n");
 }
 
-export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, capOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, estTokens, ctxStatusText, WALK_CAP, WALK_MAX_DEPTH, isSkippable, CTX, CTX_BUDGET, atomicWriteFile };
+export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, capOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, fallbackHint, hintPrefix, paramNames, paramsSuffix, annotateToolLines, HINT_PREFIX, TOOL_LINE_SEP, PARAM_SEP, PARAMS_PER_LINE, estTokens, ctxStatusText, WALK_CAP, WALK_MAX_DEPTH, isSkippable, CTX, CTX_BUDGET, atomicWriteFile };

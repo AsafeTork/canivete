@@ -1710,15 +1710,62 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
   items.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
   return items.map((it, i) => ({ ref: i, ...it }));
 }
-// ---- read principal: article/main sem nav/footer/ads/scripts + links com texto (máx 15) ----
+// #64: raiz principal do texto — landmark explícito (article/main/[role=main]) primeiro;
+// depois #app/[data-testid*=list] SÓ se carregarem a página (mini-widget = ruído); por fim o
+// MAIOR container de texto (desce enquanto o filho guarda ~todo o texto do pai).
+// Pura (só leitura); null = não achou (caller cai p/ body/clone).
+function ubMainRoot(doc) {
+  try {
+    const pick = (sel) => doc.querySelector(sel);
+    const strong = pick("article") || pick("main") || pick('[role="main"]');
+    if (strong) return strong;
+    const weak = pick("#app") || pick('[data-testid*="list"]');
+    if (weak) {
+      const wl = ((weak.textContent || "").trim()).length;
+      const total = ((doc.textContent || "").trim()).length;
+      if (wl >= 200 || wl >= total * 0.15) return weak;
+    }
+    const cands = doc.querySelectorAll("div,section,td,table");
+    let best = null, bestLen = -1;
+    for (let i = 0; i < cands.length && i < 1500; i++) {
+      const len = ((cands[i].textContent || "").trim()).length;
+      if (len > bestLen) { best = cands[i]; bestLen = len; }
+    }
+    if (!best || bestLen < 40) return null;
+    let cur = best;
+    for (let d = 0; d < 12; d++) {
+      let deep = null, deepLen = -1;
+      for (const c of cur.children) {
+        const l = ((c.textContent || "").trim()).length;
+        if (l > deepLen) { deep = c; deepLen = l; }
+      }
+      // desce só p/ container que guarda (quase) todo o texto do pai — folha é beco sem saída
+      if (!deep || !deep.children.length || deepLen < bestLen * 0.9) break;
+      cur = deep;
+    }
+    return cur.children.length ? cur : null; // sem filhos = nada a extrair: caller cai p/ body/clone
+  } catch { return null; }
+}
+// #64: texto curto em página GRANDE = conteúdo virtualizado/aria-hidden perdido — avisa
+// no summary em vez de entregar 21 chars como se a leitura estivesse completa.
+function ubShortWarn(chars, raw) {
+  try {
+    let domLen = 0;
+    try { domLen = (((document.body && document.body.textContent) || "").replace(/\s+/g, " ").trim()).length; } catch {}
+    if (chars >= 200 || domLen <= 2000) return "";
+    return `texto curto (${chars} chars) p/ pagina grande — tente ${raw ? "n_ubrowser_snapshot" : 'mode:"raw" ou n_ubrowser_snapshot'}`;
+  } catch { return ""; }
+}
+// ---- read principal: container principal sem nav/footer/ads/scripts + links com texto (máx 15) ----
 // Opera em CLONE p/ texto (nunca toca na página real); links via DOM vivo (href absoluto).
-// Qualidade: score de blocos por densidade (palavras/tags); fora de article/main descarta <25 palavras.
-function ubReadMain(maxChars = 2500, maxLinks = 15) {
+// Qualidade: score de blocos por densidade (palavras/tags); fora do container principal descarta <25 palavras.
+// scopeEl (selector vindo do read) restringe tudo a um container — erro "seletor não encontrado" no handler.
+function ubReadMain(maxChars = 2500, maxLinks = 15, scopeEl = null) {
   const mc = Math.min(Math.max(Number(maxChars) || 2500, 200), 6000);
   const ml = Math.min(Math.max(Number(maxLinks ?? 15) || 0, 0), 15);
-  const semEl = document.querySelector("article") || document.querySelector("main") || document.querySelector('[role="main"]');
-  const root = semEl || document.body;
-  const isSemantic = !!semEl;
+  const scope = scopeEl || ubMainRoot(document);
+  const root = scope || document.body;
+  const isSemantic = !!scope;
   let full = "";
   try {
     let clone = null;
@@ -1769,6 +1816,7 @@ function ubReadMain(maxChars = 2500, maxLinks = 15) {
     try { full = (((root && (root.innerText || root.textContent)) || "").replace(/\s+/g, " ").trim()); } catch { full = ""; }
   }
   const text = full.slice(0, mc);
+  const warn = ubShortWarn(text.length, true);
   let links = [];
   try {
     if (ml > 0 && root && root.querySelectorAll) {
@@ -1796,7 +1844,7 @@ function ubReadMain(maxChars = 2500, maxLinks = 15) {
       links = all.slice(0, ml);
     }
   } catch {}
-  return { text, links, stats: { chars: text.length, links: links.length, omitted: Math.max(full.length - text.length, 0) } };
+  return { text, links, ...(warn ? { warn } : {}), stats: { chars: text.length, links: links.length, omitted: Math.max(full.length - text.length, 0) } };
 }
 function ubIsCSPError(e) {
   return /Content Security Policy|unsafe-eval|Refused to (evaluate|execute)/i.test(String((e && e.message) || e || ""));
@@ -1832,12 +1880,14 @@ function ubOutline() {
   return { title: document.title, url: location.href, markdown, stats: { linhas: lines.length, headings: seen.size, links, botoes: btns, campos: fields, chars: markdown.length, outline: true } };
 }
 // ---- distill: texto enxuto e desduplicado (opera em CLONE, nunca na página real) ----
-function ubDistill(maxChars = 4000) {
+// scopeEl (selector do read) restringe a extração a um container; sem ele, raiz = MAIN.
+function ubDistill(maxChars = 4000, scopeEl = null) {
   const cap = Math.min(Math.max(Number(maxChars) || 4000, 200), 12000);
   // clone perfurado: shadow DOM aberto entra no clone (cloneNode puro perderia web components).
+  const src = scopeEl || document.documentElement;
   let clone = null;
-  try { clone = ubClonePierced(document.documentElement); } catch { clone = null; }
-  if (!clone) { try { clone = document.documentElement.cloneNode(true); } catch { return { title: document.title, url: location.href, markdown: "", stats: { linhas: 0, descartadas: 0, chars: 0 } }; } }
+  try { clone = ubClonePierced(src); } catch { clone = null; }
+  if (!clone) { try { clone = src.cloneNode(true); } catch { return { title: document.title, url: location.href, markdown: "", stats: { linhas: 0, descartadas: 0, chars: 0 } }; } }
   // 1) remove lixo: scripts/estilos + landmarks + ad-like por class/id
   const junkSel = 'script,style,noscript,template,header,footer,nav,aside';
   clone.querySelectorAll(junkSel).forEach((n) => n.remove());
@@ -1846,8 +1896,10 @@ function ubDistill(maxChars = 4000) {
     const s = ((n.className && typeof n.className === "string" ? n.className : "") + " " + (n.id || ""));
     if (s && adRe.test(s)) n.remove();
   });
-  // 2) raiz: article || main || [role=main] || body
-  const root = clone.querySelector("article") || clone.querySelector("main") || clone.querySelector('[role="main"]') || clone.querySelector("body") || clone;
+  // 2) raiz: selector manda (envólucro p/ o próprio elemento entrar nos blocks);
+  //    senão container principal ([role=main]/main/#app/[data-testid*=list]/maior container de texto).
+  let root = clone;
+  try { root = scopeEl ? (() => { const w = document.createElement("div"); w.appendChild(clone); return w; })() : (ubMainRoot(clone) || clone); } catch { root = clone; }
   const blocks = root.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,a,button,input,select,textarea,img[alt],tr,div,span");
   const seenText = new Set();
   const seenHref = new Set();
@@ -1929,7 +1981,8 @@ function ubDistill(maxChars = 4000) {
   }
   let markdown = lines.join("\n");
   if (markdown.length > cap) markdown = markdown.slice(0, cap);
-  return { title: document.title, url: location.href, markdown, stats: { linhas: lines.length, descartadas, chars: markdown.length } };
+  const warn = ubShortWarn(markdown.length, false);
+  return { title: document.title, url: location.href, markdown, ...(warn ? { warn } : {}), stats: { linhas: lines.length, descartadas, chars: markdown.length } };
 }
 
 // ponte de alerta: mon-hook (MAIN) grita CustomEvent p/ erro; content repassa ao
@@ -1955,15 +2008,21 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         reply({ ok: true, data: o });
         return;
       }
+      // #64b: selector escopa a leitura a um container (paridade com n_browser_screenshot).
+      let scopeEl = null;
+      if (a.selector) {
+        scopeEl = findEl(String(a.selector));
+        if (!scopeEl) return reply({ ok: false, error: "seletor não encontrado: " + String(a.selector).slice(0, 120) });
+      }
       if (a.mode === "distill") {
         const mc = Math.min(Math.max(Number(a.maxChars) || 4000, 200), 12000);
-        const d = ubDistill(mc);
+        const d = ubDistill(mc, scopeEl);
         reply({ ok: true, data: d });
         return;
       }
-      // Destilado leve: conteúdo principal (article/main, sem nav/footer/ads/scripts),
+      // Destilado leve: conteúdo principal (container principal, sem nav/footer/ads/scripts),
       // links ≤15 com texto, stats {chars, links, omitted}. Protocolo {ok,data} preservado.
-      const r = ubReadMain(a.maxChars, a.maxLinks);
+      const r = ubReadMain(a.maxChars, a.maxLinks, scopeEl);
       reply({
         ok: true,
         data: {
@@ -1971,13 +2030,19 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
           url: location.href,
           text: r.text,
           links: r.links,
+          ...(r.warn ? { warn: r.warn } : {}),
           stats: r.stats,
         },
       });
     } else if (msg.cmd === "distill") {
       try { await ubSettle({ timeout: 1500, quiet: 250 }); } catch {}
       const mc = Math.min(Math.max(Number(a.maxChars) || 4000, 200), 12000);
-      const d = ubDistill(mc);
+      let scopeEl = null;
+      if (a.selector) {
+        scopeEl = findEl(String(a.selector));
+        if (!scopeEl) return reply({ ok: false, error: "seletor não encontrado: " + String(a.selector).slice(0, 120) });
+      }
+      const d = ubDistill(mc, scopeEl);
       reply({ ok: true, data: d });
     } else if (msg.cmd === "html") {
       // inspeção real: outerHTML do seletor (p/ ver estrutura viva como no DevTools)

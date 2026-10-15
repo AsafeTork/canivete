@@ -58,6 +58,30 @@ async function cdpSetFullRender(send) {
   try { await send("Network.setBlockedURLs", { urls: [] }); } catch {}
   return true;
 }
+// #58: viewport REAL — o knob certo é Emulation.setDeviceMetricsOverride.
+// (O fallback --window-size só dimensiona a janela; em headless-shell/outros
+// ambientes o Chrome reescala depois e o PNG sai do tamanho errado.)
+// Retorna o viewport EFETIVO (innerWidth/innerHeight medidos DEPOIS do override)
+// p/ o caller avisar (WARN) quando divergir do pedido por >2px.
+async function cdpSetViewport(send, width, height, dsf = 1) {
+  const w = Math.min(Math.max(Number(width) || 1280, 320), 2560);
+  const h = Math.min(Math.max(Number(height) || 800, 320), 2560);
+  const s = Number(dsf) === 0.5 ? 0.5 : 1;
+  await send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: s, mobile: false });
+  let rw = w, rh = h;
+  try {
+    const r = await send("Runtime.evaluate", { expression: "({w: window.innerWidth, h: window.innerHeight})", returnByValue: true }, 5000);
+    const v = r?.result?.value || {};
+    if (Number(v.w) > 0) rw = Number(v.w);
+    if (Number(v.h) > 0) rh = Number(v.h);
+  } catch {}
+  return { width: w, height: h, scale: s, real: { width: rw, height: rh } };
+}
+// Solta o override depois do capture: sem isso o viewport da última screenshot
+// vaza p/ atos seguintes na MESMA aba (o headless reusa 1 aba cacheada 60s).
+async function cdpClearViewport(send) {
+  try { await send("Emulation.clearDeviceMetricsOverride"); } catch {}
+}
 // Log mínimo: só falhas de conexão/reconnect (nunca em hot-path de mensagens).
 const logConn = (...a) => console.warn("[canivete:cdp]", ...a);
 
@@ -498,4 +522,4 @@ async function cdpCookies(send) {
   return r.cookies || [];
 }
 
-export { ensureBrowser, withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, isTextFirstEnabled, TEXT_BLOCK_URLS, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN, CDP_PORT };
+export { ensureBrowser, withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, cdpSetViewport, cdpClearViewport, isTextFirstEnabled, TEXT_BLOCK_URLS, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN, CDP_PORT };

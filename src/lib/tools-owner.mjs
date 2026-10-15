@@ -36,11 +36,11 @@ reg("n_ubrowser_tabs", {
 });
 
 reg("n_ubrowser_read", {
-  description: "Lê aba do dono COM login (texto+links). Mire com tab:\"trecho\" ou tabId. mode=distill (default, enxuto) | raw (integral + links). outline=true: só estrutura (h1-h6 + contagens) p/ triagem. maxChars/maxLinks dão teto. AUTOMÁTICO: espera a página aquietar (SPA), perfura shadow DOM, inputs mostram value separado (`[campo text Nome] = \"João\"`). Pra JS use evaluate no act; pra erros/rede use act console.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" } }, required: [] },
-  run: async ({ tabId, tab, mode, maxChars, maxLinks, outline }) => {
+  description: "Lê aba do dono COM login (texto+links). Mire com tab:\"trecho\" ou tabId. mode=distill (default, enxuto) | raw (integral + links). outline=true: só estrutura (h1-h6 + contagens) p/ triagem. maxChars/maxLinks dão teto. AUTOMÁTICO: espera a página aquietar (SPA), perfura shadow DOM, inputs mostram value separado (`[campo text Nome] = \"João\"`). Pra JS use evaluate no act; pra erros/rede use act console. selector=\"CSS\" escopa a leitura a um container (#app, table, ...); texto curto em página grande ganha WARN no summary (tente mode:\"raw\" ou snapshot).",
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" }, selector: { type: "string", description: "CSS p/ escopar a leitura a um container (ex: \"#app\", \"table.turmas\") — erro \"seletor não encontrado\" se não achar" } }, required: [] },
+  run: async ({ tabId, tab, mode, maxChars, maxLinks, outline, selector }) => {
     const t0 = Date.now();
-    const r = await ubSend("tab.read", { tabId, tab, mode: mode || "distill", maxChars, maxLinks, ...(outline ? { outline: true } : {}) });
+    const r = await ubSend("tab.read", { tabId, tab, mode: mode || "distill", maxChars, maxLinks, ...(outline ? { outline: true } : {}), ...(selector ? { selector } : {}) });
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const body = r.data.markdown || r.data.text || "";
@@ -48,7 +48,8 @@ reg("n_ubrowser_read", {
     const links = allLinks.slice(0, 15);
     const omitted = allLinks.length > links.length ? allLinks.length - links.length : 0;
     const omitNote = omitted ? ` (+${omitted} links omitidos)` : "";
-    return devOut({ summary: `${r.data.title} — ${r.data.url}${r.data.markdown ? ` (destilado ${r.data.stats ? r.data.stats.chars + " chars" : ""})` : ""}${omitNote}${ubAlertsHint()}`, data: { title: r.data.title, url: r.data.url, text: trimOut(body, 6000), links, linksOmitted: omitted, stats: r.data.stats }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_snapshot", reason: "Mapear cliques" }] });
+    const warnNote = r.data.warn ? ` | ${r.data.warn}` : "";
+    return devOut({ summary: `${r.data.title} — ${r.data.url}${r.data.markdown ? ` (destilado ${r.data.stats ? r.data.stats.chars + " chars" : ""})` : ""}${omitNote}${warnNote}${ubAlertsHint()}`, data: { title: r.data.title, url: r.data.url, text: trimOut(body, 6000), links, linksOmitted: omitted, warn: r.data.warn || undefined, stats: r.data.stats }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_snapshot", reason: "Mapear cliques" }] });
   },
 });
 
@@ -251,11 +252,11 @@ reg("n_ubrowser_snapshot", {
 });
 
 reg("n_ubrowser_act", {
-  description: "AUTOMAÇÃO no Chrome LOGADO do dono (só quando ele pedir; NUNCA destrutivo sem pedido; alto risco exige confirm; FECHAR ABAS e ROUBAR FOCO PROIBIDOS). Mire por selector CSS, ref do snapshot OU text=\"trecho\" (qualquer elemento visível). EFICIÊNCIA (aja direto, sem enrolar): goto/new/back/forward/reload com snap:true já voltam top-10 (1 call a menos); click/fill/type/select/press retornam delta (o que mudou — sem re-snapshot p/ confirmar); flow = N cmds em 1 ida-volta; find no snapshot em vez de paginar. Funciona em aba de fundo (tabId). fill SUBSTITUI (Monaco/CodeMirror via API); type ANEXA. wait=waitMs reais (teto 15s). evaluate no MAIN (retry em null; CSP bloqueia → read/snapshot). console {filter:all|errors|net|console} lê erros+rede da aba (erros CHEGAM SOZINHOS via push + 📬 nas respostas). click/fill/type/select/press mostram 🔔 aviso efêmero no delta. scan {pages} p/ virtualizada. click/cursor retornam verified+whatChanged (verified:true = confie sem re-snapshot). tooltip {selector|x,y} revela tooltip via hover SEM clicar (só-leitura). snapshot marca layer=modal|menu|popover nos itens + overlay aberto no topo (aja dentro da camada). catchup {durationMs} pesca transientes (toasts/snackbars/aria-live, role=status|alert) que somem em segundos — volta apareceu/sumiu + texto, sem snapshot. Alvo que some entre snapshot e ação volta com WHERE (removed|hidden|scrolled-out|zero-box|recycled|never-found) em vez de NOTFOUND seco; scroll re-mede e re-resolve por texto/papel (até 3 tentativas, resolve=moved|recycled) em lista virtualizada. aesthetic julga layout (score 0-100 + issues até 12: contrast/tap-target/overflow-x/overlap/fonts) sem print — opinião visual direta. click/fill/type/select aceitam expectUrl/expectText/expectGone (assert pós-settle com PASS/FAIL no expect, sem re-ler a página). reload-extension recarrega a extensão remota (aplica código novo do disco; ponte reconecta sozinha).",
+  description: "AUTOMAÇÃO no Chrome LOGADO do dono (só quando ele pedir; NUNCA destrutivo sem pedido; alto risco exige confirm; FECHAR ABAS e ROUBAR FOCO PROIBIDOS). Mire por selector CSS, ref do snapshot OU text=\"trecho\" (qualquer elemento visível). EFICIÊNCIA (aja direto, sem enrolar): goto/new/back/forward/reload com snap:true já voltam top-10 (1 call a menos); click/fill/type/select/press retornam delta (o que mudou — sem re-snapshot p/ confirmar); flow = N cmds em 1 ida-volta; find no snapshot em vez de paginar. Funciona em aba de fundo (tabId). fill SUBSTITUI (Monaco/CodeMirror via API); type ANEXA. wait=waitMs reais (teto 15s). evaluate no MAIN (retry em null; CSP bloqueia → read/snapshot). console {filter:all|errors|net|console} lê erros+rede da aba (erros CHEGAM SOZINHOS via push + 📬 nas respostas). click/fill/type/select/press mostram 🔔 aviso efêmero no delta. scan {pages} p/ virtualizada. click/cursor retornam verified+whatChanged (verified:true = confie sem re-snapshot). tooltip {selector|x,y} revela tooltip via hover SEM clicar (só-leitura). snapshot marca layer=modal|menu|popover nos itens + overlay aberto no topo (aja dentro da camada). catchup {durationMs} pesca transientes (toasts/snackbars/aria-live, role=status|alert) que somem em segundos — volta apareceu/sumiu + texto, sem snapshot. Alvo que some entre snapshot e ação volta com WHERE (removed|hidden|scrolled-out|zero-box|recycled|never-found) em vez de NOTFOUND seco; scroll re-mede e re-resolve por texto/papel (até 3 tentativas, resolve=moved|recycled) em lista virtualizada. aesthetic julga layout (score 0-100 + issues até 12: contrast/tap-target/overflow-x/overlap/fonts) sem print — opinião visual direta. click/fill/type/select aceitam expectUrl/expectText/expectGone (assert pós-settle com PASS/FAIL no expect, sem re-ler a página). reload-extension recarrega a extensão remota (aplica código novo do disco; ponte reconecta sozinha). close fecha SÓ aba-fantasma do agente (about:blank) — aba do dono com http(s) ativo é RECUSADA sem confirm=\"<frase do dono>\"; {action:\"close\", mode:\"close_by_prefix\"} limpa TODAS as about:blank de uma vez.",
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "console"] },
+      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "console", "close"] },
       tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, url: { type: "string" }, selector: { type: "string" }, text: { type: "string" },
       ref: { type: "number", description: "ref do snapshot (resolve p/ selector via cache; expira se navegar — re-snapshot)" },
       name: { type: "string", description: "atributo p/ attr (href/src/value/text/html)" },
@@ -280,6 +281,8 @@ reg("n_ubrowser_act", {
       clear: { type: "boolean", description: "p/ console: limpa o buffer após ler" },
       pages: { type: "number", default: 4, description: "páginas de rolagem p/ scan (listas virtualizadas)" },
       durationMs: { type: "number", description: "p/ catchup: janela de pesca em ms (default 3000, teto 5000)" },
+      urlPrefix: { type: "string", description: "p/ close mode:\"close_by_prefix\": prefixo de URL (só about:blank — fechar abas do dono em massa é PROIBIDO)" },
+      mode: { type: "string", description: "p/ close: \"close_by_prefix\" fecha TODAS as abas com urlPrefix (default about:blank)" },
       expectUrl: { type: "string", description: "p/ click/fill/type/select: substring que deve aparecer na URL após settle" },
       expectText: { type: "string", description: "p/ click/fill/type/select: substring que deve aparecer no texto após settle" },
       expectGone: { type: "string", description: "p/ click/fill/type/select: selector que deve SUMIR após settle" },
@@ -289,7 +292,7 @@ reg("n_ubrowser_act", {
   },
   run: async (a) => {
     const t0 = Date.now();
-    if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow | exemplo: {action:"goto", tab:"trecho", url:"https://..."}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|close | exemplo: {action:"goto", tab:"trecho", url:"https://..."}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     // #48: ref do snapshot resolve p/ selector (cache por aba); selector explícito vence.
     if (a.ref !== undefined && a.ref !== null && String(a.ref) !== "" && !a.selector) {
       const res = ubSnapCacheResolve(ubSnapCacheKey({ tabId: a.tabId, tab: a.tab }), a.ref);
@@ -300,7 +303,7 @@ reg("n_ubrowser_act", {
     if (risk === "high" && !(a.confirm && a.confirm.trim().length >= 4))
       return devOut({ status: "error", summary: `BLOQUEADO (alto risco: pagamento/senha/excluir/apagar). Só com pedido EXPLÍCITO + confirm="<frase do dono>". Ação: ${a.action} ${a.selector || a.url || ""}`, data: { action: a.action, risk }, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (a.action === "wait") { await new Promise((r) => setTimeout(r, Math.min(Number(a.waitMs ?? a.ms) || 2000, 15000))); return devOut({ summary: "wait ok", data: { action: "wait" }, telemetry: { execution_time_ms: Date.now() - t0 } }); }
-    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", console: "tab.console" };
+    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", console: "tab.console", close: "tab.close" };
     if (!map[a.action]) return devOut({ status: "error", summary: `action "${a.action}" desconhecida — use tooltip p/ hover-to-reveal | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // tooltip exige alvo (selector vence; senão x+y) — falha local, sem ida-volta.
     if (a.action === "tooltip" && !a.selector && (a.x === undefined || a.y === undefined))
@@ -383,6 +386,18 @@ reg("n_ubrowser_act", {
       const kindNote = Object.entries(kinds).map(([k, n]) => `${k}×${n}`).join(", ");
       const top = issues.slice(0, 6).map((it) => `${it.kind}@${it.where}: ${it.detail}`).join(" | ").slice(0, 400);
       return devOut({ summary: `[aesthetic] score ${score}/100 — ${issues.length} issue(s)${kindNote ? ` (${kindNote})` : " (limpo)"}${top ? `: ${top}` : ""}`, data: { action: "aesthetic", risk, score, issues, stats }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_shot", reason: "Confirmar visualmente" }] });
+    }
+    if (a.action === "close") {
+      // #67: fechar aba-fantasma (about:blank) do agente. Aba do dono com http(s) ativo
+      // é RECUSADA pela extensão sem confirm explícito — recai aqui como erro do bridge.
+      if (a.mode === "close_by_prefix") {
+        const n = Number(d.closed) || 0;
+        const pfx = String(d.prefix || a.urlPrefix || "about:blank");
+        if (!n) return devOut({ status: "warn", summary: `[close] nenhuma aba com prefixo "${pfx}" — nada a limpar (só about:blank é aceito)`, data: { action: "close", mode: "close_by_prefix", risk, closed: 0, prefix: pfx }, telemetry: { execution_time_ms: Date.now() - t0 } });
+        return devOut({ summary: `[close risk=${risk}] ok — ${n} aba(s) fantasma (${pfx}) fechada(s) — aba do dono intocada`, data: { action: "close", mode: "close_by_prefix", risk, closed: n, tabIds: Array.isArray(d.tabIds) ? d.tabIds : [], prefix: pfx }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_tabs", reason: "Conferir abas restantes" }] });
+      }
+      const where = d.url ? String(d.url).slice(0, 80) : (a.tabId ? `tabId ${a.tabId}` : "aba ativa");
+      return devOut({ summary: `[close risk=${risk}] ok — fechei ${where} — aba do dono intocada`, data: { action: "close", risk, closed: d.closed ?? 1, tabId: d.tabId, url: d.url, title: d.title }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_tabs", reason: "Conferir abas restantes" }] });
     }
     const afterUrl = d.url ?? a.url ?? null;
     const afterTitle = d.title ?? null;

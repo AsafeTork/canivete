@@ -65,9 +65,9 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `n_browser_pdf` | PDF em `/tmp`. |
 | `n_ubrowser_status` | **Antes de tudo** no Chrome do dono (offline → janela normal + popup ATIVO). |
 | `n_ubrowser_tabs` | Abas (IDs mudam; prefira `tab:"trecho"`). |
-| `n_ubrowser_read` | Aba logada (`distill` default; `raw` integral+links; `outline:true` só estrutura). |
+| `n_ubrowser_read` | Aba logada (`distill` default; `raw` integral+links; `outline:true` só estrutura; `selector:"#app"` escopa a leitura). Texto curto em página grande → WARN no summary (tente `raw`/`snapshot`). |
 | `n_ubrowser_snapshot` | Clicáveis (`max` ≤120 + `offset`; `find` ±3 contexto; `layer:"modal\|menu\|popover\|tooltip"` foca a camada; `scan` antes p/ virtualizada). |
-| `n_ubrowser_act` | goto/click(`ref`/selector/`text=`)/fill(type anexa)/select/scroll/highlight/waittext(`wait`=waitMs)/evaluate(retry+nota)/cursor(trusted)/tooltip/catchup/aesthetic/new/scan/count/attr/html/flow/`console`(erros+rede; chegam sozinhos via push)/`expectUrl/Text/Gone`/`snap:true` (alto risco exige `confirm`; fechar abas e roubar foco NÃO existem). |
+| `n_ubrowser_act` | goto/click(`ref`/selector/`text=`)/fill(type anexa)/select/scroll/highlight/waittext(`wait`=waitMs)/evaluate(retry+nota)/cursor(trusted)/tooltip/catchup/aesthetic/new/scan/count/attr/html/flow/`console`(erros+rede; chegam sozinhos via push)/`expectUrl/Text/Gone`/`snap:true` (alto risco exige `confirm`; roubar foco NÃO existe; `close` só fecha aba `about:blank` do agente — aba do dono em http(s) exige `confirm`, e `mode:"close_by_prefix"` limpa todas as `about:blank`). |
 | `n_ubrowser_shot` | Print só aba **VISÍVEL** (fundo → `n_browser_screenshot`). |
 
 ### Meta (6) + WhatsApp (1)
@@ -153,6 +153,8 @@ Snapshot gigante estoura `CANIVETE_CTX_BUDGET`. Regras (valem p/ qualquer agente
 - Login agora permitido; só troca de senha/pagamento bloqueia (alto risco exige `confirm`).
 - `evaluate` precisa retornar valor (`return ...`); sem return vem `undefined`.
 - `n_ubrowser_act scan {pages:4, container?}` p/ listas virtualizadas (rola e coleta antes do `snapshot`).
+- `read` voltou curto em página grande (WARN `texto curto (N chars) p/ pagina grande`) → `mode:"raw"`, `selector:"#app"`/`"table"` p/ escopar, ou `n_ubrowser_snapshot` (conteúdo virtualizado/aria-hidden).
+- Abas `about:blank` fantasmas do agente acumulando → `n_ubrowser_act {action:"close", mode:"close_by_prefix"}` (limpa todas as blank; aba do dono em http(s) é RECUSADA sem `confirm`).
 - `tab:"trecho título/URL"` em read/snapshot/act/shot/scan (IDs mudam — prefira nome a `tabId`).
 
 ## Regra sem-sleep
