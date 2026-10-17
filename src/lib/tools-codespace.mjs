@@ -1,6 +1,7 @@
 // canivete — tools de CODESPACE (gh CLI logado do dono): ambiente de testes universal grátis.
 // 120 core-h/mês grátis (2-core = 60h) + 15 GB storage; sem cartão. Sem repo = template blank oficial.
 // Multi-conta: account="user" usa o token DESSE usuário (gh auth token -u) sem trocar a conta ativa global.
+// Login de contas novas: n_codespace_login gera LINK de 1 clique (device flow com user_code na URL) na hora do pedido.
 import { reg, devOut, fallbackHint, exec, trimOut } from "./ctx.mjs";
 
 const BLANK_REPO = "github/codespaces-blank"; // codespace SEM vínculo com projeto (template oficial)
@@ -57,15 +58,15 @@ const GH_CFG = () => (process.env.CANIVETE_GH_CONFIG_DIR ? { GH_CONFIG_DIR: proc
 async function runGh(args, { account, timeoutMs, cwd } = {}) {
   const env = { ...GH_CFG() };
   if (account) {
-    const t = await exec("gh", ["auth", "token", "--user", String(account)], { env: { ...GH_CFG() }, timeoutMs: 15000 });
+    const t = await exec("gh", ["auth", "token", "--user", String(account)], { env: { ...GH_CFG() }, timeout: 15000 });
     const tok = (t.so || "").trim().split(/\r?\n/)[0];
     if (t.code !== 0 || !tok || !tok.startsWith("gh")) {
       const { accounts } = await listAccounts();
-      throw new Error(`conta gh "${account}" não está logada/ativa (token não obtido) — contas válidas: ${accounts.filter((a) => a.valid).map((a) => a.user).join(", ") || "(nenhuma)"} | re-login: gh auth login -h github.com`);
+      throw new Error(`conta gh "${account}" não está logada/ativa (token não obtido) — contas válidas: ${accounts.filter((a) => a.valid).map((a) => a.user).join(", ") || "(nenhuma)"} | acumule: n_codespace_login gera link de 1 clique`);
     }
     env.GH_TOKEN = tok;
   }
-  return exec(args[0], args.slice(1), { timeoutMs: timeoutMs || EXEC_TMO, cwd, env });
+  return exec(args[0], args.slice(1), { timeout: timeoutMs || EXEC_TMO, cwd, env });
 }
 const ghError = (r) => `${/the codespace|Must have|scope|403|402/i.test(r.se) && !r.se.includes("is invalid") ? `gh: ${(r.se.split("\n")[0] || "").slice(0, 300)}` : (r.killed ? "timeout" : `exit ${r.code ?? "?"}`)}`;
 
@@ -75,9 +76,17 @@ export async function listAccounts() {
 }
 function scopeWrap(r) {
   return csScopeIssue(r.se || r.so)
-    ? { ...fallbackHint(`${SCOPE_HINT} (rode no terminal e autorize o one-time code no browser; depois confira com n_codespace_list)`) }
+    ? { ...fallbackHint("login sem codespace: rode n_codespace_login (gera o LINK de 1 clique na resposta e guarda o job; confira com n_codespace_login_status)") }
     : {};
 }
+
+// ---- login de contas novas: link de 1 clique gerado NA RESPOSTA da tool ----
+// job setsid sobrevive entre chamadas (filho do serviço, grupo próprio); log em /tmp com o loginId no nome.
+const LOGIN_SCOPES = () => (process.env.CANIVETE_CS_SCOPES || "repo,workflow,codespace,read:org,gist");
+function accSummary(auth) {
+  return `${auth.accounts.filter((a) => a.valid).length} conta(s) válida(s), ativa: ${auth.active || "?"}`;
+}
+
 
 // ---- 1) LIST: contas + codespaces (passo 1 sempre) ----
 reg("n_codespace_list", {
@@ -91,11 +100,14 @@ reg("n_codespace_list", {
       return devOut({ status: "error", summary: `${ghError(r)} — contas gh: ${auth.accounts.map((a) => `${a.user}${a.active ? " [ativa]" : a.valid ? "" : " (token inválido)"}`).join(", ") || "(nenhuma — gh auth login)"}`, data: { accounts: auth.accounts }, ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } });
     const cs = csParseList(r.so);
     const note = account && account !== auth.active ? ` (conta "${account}")` : "";
+    const bad = auth.accounts.filter((a) => !a.valid);
     return devOut({
       summary: `${cs.length} código(s) de espaço${note} | conta ativa: ${auth.active || "?"} | contas: ${auth.accounts.map((a) => a.user).join(", ")}`,
       data: { activeAccount: auth.active, accounts: auth.accounts, codespaces: cs, defaultRepo_sem_projetos: BLANK_REPO, default_machine: DEFAULT_MACHINE },
       telemetry: { execution_time_ms: Date.now() - t0 },
-      next: cs.length ? [{ tool: "n_codespace_exec", reason: "Rodar comando no codespace" }] : [{ tool: "n_codespace_create", reason: "Criar ambiente (sem repo = blank)" }],
+      next: bad.length
+        ? [{ tool: "n_codespace_login", reason: `Acumular/religar ${bad.length} conta(s) sem token válido (${bad.map((b) => b.user).join(", ")}) — link de 1 clique` }]
+        : cs.length ? [{ tool: "n_codespace_exec", reason: "Rodar comando no codespace" }] : [{ tool: "n_codespace_create", reason: "Criar ambiente (sem repo = blank)" }],
     });
   },
 });
@@ -174,5 +186,96 @@ reg("n_codespace_delete", {
     return r.killed || r.code !== 0
       ? devOut({ status: "error", summary: `${ghError(r)} — codespace não apagado`, data: { name }, ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } })
       : devOut({ summary: `codespace ${name} apagado — storage liberado`, data: { name }, telemetry: { execution_time_ms: Date.now() - t0 } });
+  },
+});
+
+// ---- 6) LOGIN: gera LINK de 1 clique na resposta (device flow com user_code na URL) ----
+// to: 1) dispara gh auth login -w em job setsid (sobrevive entre chamadas) 2) extrai o user_code do log
+// 3) monta https://github.com/login/device?user_code=CODE (302 confirmado — preenche o código sozinho)
+export function csLoginCode(text) {
+  const m = /one-time code:\s*([A-Z0-9]{4})-([A-Z0-9]{4})/.exec(String(text || ""));
+  return m ? `${m[1]}-${m[2]}` : null;
+}
+const LOGIN_JOBS = new Map(); // loginId -> { user, log, prevActive, startedAt }
+async function jobRunning(loginId, log) {
+  const r = await exec("pgrep", ["-f", `canivete-gh-login-${loginId}.log`], { timeout: 8000 });
+  return (r.so || "").trim().length > 0;
+}
+reg("n_codespace_login", {
+  description: "Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. codespace): job background emite o device code e a tool devolve github.com/login/device?user_code=CODE — o dono SÓ CLICA (e entra com a conta desejada no browser); a conta entra no catálogo do gh sozinha (multi-conta via account:\"user\"). Confira depois com n_codespace_login_status (loginId vem Aqui). Uso: quando n_codespace_list mostrar conta inválida/sem scope, OU para acumular outro usuário.",
+  inputSchema: { type: "object", properties: { user: { type: "string", description: "conta que o dono VAI logar (ex:\"Financia-Brasil\") — opcional, só p/ o status conferir a conta certa" }, scopes: { type: "string", default: "repo,workflow,codespace,read:org,gist", description: "scopes pedidos no login" } }, required: [] },
+  run: async ({ user, scopes } = {}) => {
+    const t0 = Date.now();
+    const auth = await listAccounts();
+    const scope = String(scopes || LOGIN_SCOPES()).replace(/[^a-z:,_-]/gi, "");
+    const loginId = `cs${Date.now().toString(36)}`;
+    const log = `/tmp/canivete-gh-login-${loginId}.log`;
+    const prevActive = auth.active; // login -w troca a ativa p/ a conta nova; restauramos no status
+    // jobs setsid: dispara e MORRE rápido (a tool não fica presa ao gh de 15min)
+    await exec("setsid", ["bash", "-c", `printf "\\n" | GH_CONFIG_DIR=\${CANIVETE_GH_CONFIG_DIR:-/etc/canivete/gh} gh auth login -h github.com -p https -s ${scope} -w > ${log} 2>&1`], { timeout: 20000 }).catch(() => {});
+    // espera o device code aparecer no log (até ~8s)
+    let code = null;
+    const { readFile } = await import("node:fs/promises");
+    for (let i = 0; i < 16 && !code; i++) {
+      try { code = csLoginCode(await readFile(log, "utf8")); } catch {}
+      if (!code) await new Promise((r2) => setTimeout(r2, 500));
+    }
+    if (!code) {
+      let tail = "";
+      try { tail = (await readFile(log, "utf8")).slice(-200); } catch {}
+      return devOut({ status: "error", summary: `device code não apareceu no log — job ${loginId} pode não ter iniciado (tail: ${tail.replace(/\n/g, " | ")})`, data: { loginId, log }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    }
+    LOGIN_JOBS.set(loginId, { user: user || null, log, prevActive, startedAt: Date.now() });
+    const link = `https://github.com/login/device?user_code=${code}`;
+    return devOut({
+      status: "warn",
+      summary: `1 CLIQUE p/ logar${user ? ` ${user}` : " (com a conta certa no browser)"}: ${link} — (job ${loginId} guardado; ${accSummary(auth)})`,
+      data: { loginId, link, code, log, user: user || null, scopes: scope, prevActive },
+      telemetry: { execution_time_ms: Date.now() - t0 },
+      next: [{ tool: "n_codespace_login_status", reason: "Confirmar a conta autorizada" }],
+    });
+  },
+});
+
+// ---- 7) LOGIN STATUS: autorizou? acumulou? ----
+reg("n_codespace_login_status", {
+  description: "Confere o job do n_codespace_login: a conta esperada virou válida? Também limpa job concluído (e restaura a conta ativa anterior quando o login trocou). Se der \"code expirado\", rode n_codespace_login de novo. cancel=true mata o job pendente sem logar.",
+  inputSchema: { type: "object", properties: { loginId: { type: "string", description: "id devolvido por n_codespace_login" }, cancel: { type: "boolean" } }, required: [] },
+  run: async ({ loginId, cancel } = {}) => {
+    const t0 = Date.now();
+    const auth = await listAccounts();
+    if (cancel && loginId) {
+      const j = LOGIN_JOBS.get(loginId);
+      if (j) {
+        await exec("pkill", ["-f", `canivete-gh-login-${loginId}.log`], { timeout: 8000 });
+        LOGIN_JOBS.delete(loginId);
+      }
+      return devOut({ summary: `job ${loginId} cancelado — ${accSummary(auth)}`, data: { accounts: auth.accounts }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    }
+    if (!loginId || !LOGIN_JOBS.has(loginId)) {
+      const pend = [...LOGIN_JOBS.keys()];
+      return devOut({ status: pend.length ? "warn" : "error", summary: pend.length ? `loginId desconhecido — jobs pendentes: ${pend.join(", ")}` : "nenhum job de login ativo — rode n_codespace_login p/ gerar link", data: { accounts: auth.accounts }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    }
+    const j = LOGIN_JOBS.get(loginId);
+    const me = j.user ? auth.accounts.find((a) => a.user === j.user) : null;
+    if (me && me.valid) {
+      // login -w trocou a ativa p/ a conta nova: restaura a corrente de trabalho anterior (ex.: AsafeTork)
+      if (j.prevActive && auth.active !== j.prevActive)
+        await exec("gh", ["auth", "switch", "-u", j.prevActive], { timeout: 15000 }).catch(() => {});
+      const auth2 = await listAccounts();
+      LOGIN_JOBS.delete(loginId);
+      await exec("rm", ["-f", j.log], { timeout: 8000 });
+      return devOut({ summary: `conta ${j.user} AUTORIZADA e acumulada no gh ✔ (ativa restaurada p/ ${auth2.active})`, data: { accounts: auth2.accounts, loginId, user: j.user }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_codespace_list", reason: "Codespaces da nova conta" }] });
+    }
+    const running = await jobRunning(loginId, j.log).catch(() => false);
+    if (!running) {
+      let tail = "";
+      try { tail = ((await (await import("node:fs/promises")).readFile(j.log, "utf8")) || "").slice(-300).replace(/\n/g, " | "); } catch {}
+      const mismatch = /credentials for (\S+), received credentials for (\S+)/.exec(tail);
+      LOGIN_JOBS.delete(loginId);
+      return devOut({ status: "error", summary: `job ${loginId} encerrou SEM logar${mismatch ? ` — espera "${mismatch[1]}", browser estava "${mismatch[2]}" (refaça na janela/com a conta certa)` : " — prob. code expirado/refusado; rode n_codespace_login de novo"}`, data: { tail: tail.slice(-200), accounts: auth.accounts }, telemetry: { execution_time_ms: Date.now() - t0 }, next: mismatch ? [] : [{ tool: "n_codespace_login", reason: "Gerar link novo" }] });
+    }
+    const mins = Math.round((Date.now() - j.startedAt) / 60000);
+    return devOut({ status: "warn", summary: `aguardando o CLIQUE (${mins}min) — ${accSummary(auth)}${j.user ? ` | esperando: ${j.user}` : ""} — code/device flow expira em ~15min; cancel:true aborta`, data: { loginId, accounts: auth.accounts, user: j.user }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
