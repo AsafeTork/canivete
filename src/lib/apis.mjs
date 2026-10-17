@@ -2,6 +2,7 @@
 import { reg, out, httpJson, trimOut } from "./ctx.mjs";
 import { cached, createTtlCache, memoTtl } from "../core/cache.mjs";
 import { sleep, fetchRetry } from "../core/retry.mjs";
+import { ghTokenFor } from "./gh.mjs"; // n_github autenticado: conta gh logada do dono = 5000 req/h
 
 // CACHE INTELLIGENCE (só apis.mjs, sem mudar resultados):
 // - normaliza chaves (moeda upper/trim, CEP/CNPJ só dígitos, ip trim, lat/lon 2 casas)
@@ -266,72 +267,202 @@ reg("n_weather", {
 });
 
 reg("n_github", {
-  description: "API do GitHub (60 req/h sem token, cache 10min, com retry). repo|releases|commits|issues. Quando usar: verificar repo/lib. Ex: {owner:\"vitejs\", repo:\"vite\", kind:\"releases\", limit:3}. kind=issues lista top 5 issues abertas (título + #número). Retorna stars, forks, issues, linguagem, licença.",
+  description: "API do GitHub (REST, somente leitura). Kinds: repo|releases|commits|issues|branches|user|file|search. Auth: account:\"<conta gh logada>\" (case-insensitive) = 5000 req/h; sem account usa env GITHUB_TOKEN/GH_TOKEN (5000 req/h); sem nada anônimo (60 req/h — rate limit cedo). kind=file lê arquivo cru no branch default (cap 12k; path de diretório lista arquivos). kind=search usa a sintaxe do GitHub Search (scope repos|issues|users). Contas gh: n_codespace_list. Última linha \"json:{...}\" é parseável (extras + auth). Cache 10min (search 3min). Ex: {owner:\"vitejs\", repo:\"vite\", kind:\"issues\", limit:3} · {user:\"AsafeTork\"} · {owner:\"AsafeTork\", repo:\"canivete\", kind:\"file\", path:\"package.json\"} · {q:\"canivete in:name\", scope:\"repos\"} · {owner:\"vitejs\", repo:\"vite\", account:\"Financia-Brasil\"}",
   inputSchema: {
     type: "object",
     properties: {
-      owner: { type: "string", description: "Dono do repositório. Ex: vitejs" },
-      repo: { type: "string", description: "Nome do repositório. Ex: vite" },
-      kind: { type: "string", enum: ["repo", "releases", "commits", "issues"], description: "Tipo de consulta: repo (detalhes), releases, commits ou issues (abertas top N). Padrão repo.", default: "repo" },
-      limit: { type: "number", description: "Qtd de itens p/ releases/commits/issues (padrão 5, máx 30)", default: 5 },
+      owner: { type: "string", description: "Dono do repositório (ex: vitejs). Exigido p/ kinds repo|releases|commits|issues|branches|file; kind:user aceita o owner como fallback (vira user)" },
+      repo: { type: "string", description: "Nome do repositório (ex: vite)" },
+      kind: { type: "string", enum: ["repo", "releases", "commits", "issues", "branches", "user", "file", "search"], description: "repo=detalhes | releases | commits | issues (abertas) | branches | user=perfil (usa user/owner) | file=arquivo (usa path) | search (usa q/scope). Padrão repo", default: "repo" },
+      limit: { type: "number", description: "Qtd de itens p/ releases|commits|issues|branches e per_page do search (padrão 5, máx 30)", default: 5 },
+      user: { type: "string", description: "kind:\"user\" — username a buscar (ex: AsafeTork); owner serve de fallback" },
+      path: { type: "string", description: "kind:\"file\" — caminho relativo no branch default (ex: package.json ou src/lib/ctx.mjs); diretório lista o conteúdo" },
+      q: { type: "string", description: "kind:\"search\" — query na sintaxe GitHub Search (ex: \"canivete in:name\", \"mcp stars:>100\"; issues: \"repo:vitejs/vite is:issue\")" },
+      scope: { type: "string", enum: ["repos", "issues", "users"], description: "kind:\"search\" — scope da busca: repos|issues|users (padrão repos)", default: "repos" },
+      account: { type: "string", description: "conta gh logada (case-insensitive; ex: \"Financia-Brasil\") p/ autenticar = 5000 req/h — anônimo só 60 req/h. Vazio = env GITHUB_TOKEN/GH_TOKEN. Conferir contas: n_codespace_list" },
     },
-    required: ["owner", "repo"],
+    required: [],
   },
-  run: async ({ owner, repo, kind, limit }) => {
+  run: async ({ owner, repo, kind, limit, user, path, q, scope, account }) => {
     const nameRe = /^[A-Za-z0-9_.-]+$/;
-    if (!owner || !nameRe.test(String(owner))) return out(`invalid owner: "${owner}". Use nome de usuário/org do GitHub (ex: vitejs).`, true);
-    if (!repo || !nameRe.test(String(repo))) return out(`invalid repo: "${repo}". Use nome do repositório (ex: vite).`, true);
-    const k = kind || "repo";
-    if (!["repo", "releases", "commits", "issues"].includes(k)) return out(`invalid kind: "${kind}". Use repo|releases|commits|issues.`, true);
-    try {
-      new URL(`https://api.github.com/repos/${owner}/${repo}`);
-    } catch {
-      return out(`invalid repo URL para "${owner}/${repo}". Confira owner/repo.`, true);
+    const KINDS = "repo|releases|commits|issues|branches|user|file|search";
+    // kind omitido: dados novos infere (user→perfil, q→search, path→file) — ex {"user":"AsafeTork"} funciona sem kind
+    const given = (v) => v != null && String(v).trim() !== "";
+    const k = given(kind) ? String(kind).trim() : given(user) ? "user" : given(q) ? "search" : given(path) ? "file" : "repo";
+    if (!KINDS.split("|").includes(k))
+      return out(`kind inválido: "${kind}" — use ${KINDS}. ex: {"owner":"vitejs","repo":"vite","kind":"issues"} ou {"user":"AsafeTork"}`, true);
+    // AUTH: account gh logada (5000 req/h) > env GITHUB_TOKEN/GH_TOKEN (5000 req/h) > anônimo 60 req/h.
+    // Token NUNCA entra em log/erro/resposta; no cache entra só a CLASSE de auth (authTag), sem token.
+    let headers = {};
+    let authTag = "anon";
+    let authLabel = "anônimo (60 req/h)";
+    if (account != null && String(account).trim() !== "") {
+      let auth = null;
+      try { auth = await ghTokenFor(String(account)); }
+      catch (e) {
+        return out(`n_github falhou p/ account:"${String(account).trim()}" — ${String(e && e.message || e)}. O n_github usa a MESMA credencial gh do n_codespace_list (confira as contas lá)`, true);
+      }
+      if (!auth) return out('account vazio pós-trim: passe o nome da conta gh (ex: account:"Financia-Brasil") ou omita o param', true);
+      headers = { authorization: `Bearer ${auth.token}` };
+      authTag = `acct:${auth.user.toLowerCase()}`;
+      authLabel = `conta gh "${auth.user}" (5000 req/h)`;
+    } else {
+      const ghToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+      if (ghToken) { headers = { authorization: `Bearer ${ghToken}` }; authTag = "env"; authLabel = "GITHUB_TOKEN/GH_TOKEN (5000 req/h)"; }
     }
+    // Validação local por kind (schema required:[]) — cada erro já volta com ex pronto p/ colar
     const n = Math.min(Math.max(Number(limit) || 5, 1), 30);
-    const base = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-    const url = k === "repo" ? base : k === "issues" ? `${base}/issues?state=open&per_page=${n}` : `${base}/${k}?per_page=${n}`;
-    const ghToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    const headers = ghToken ? { authorization: `Bearer ${ghToken}` } : {};
-    const TTL_GH_MS = 10 * 60 * 1000;
-    const mKey = `memo:gh:${k}:${owner}/${repo}:${n}`;
+    let url = "", ttl = 10 * 60 * 1000, tail = "";
+    if (k === "search") {
+      ttl = 3 * 60 * 1000;
+      const SC = String(scope || "repos").trim().toLowerCase();
+      const query = String(q || "").trim();
+      if (!["repos", "issues", "users"].includes(SC))
+        return out(`scope inválido: "${scope}" — use repos|issues|users (padrão repos). ex: {"q":"canivete in:name","scope":"repos"}`, true);
+      if (!query)
+        return out(`kind:"search" exige q (sintaxe GitHub Search) — ex: {"q":"canivete in:name","scope":"repos"} · {"q":"mcp stars:>100","scope":"repos"} · {"q":"repo:vitejs/vite is:issue","scope":"issues"}`, true);
+      // endpoint real: /search/{repositories|issues|users} (scope "repos" → "repositories")
+      url = `https://api.github.com/search/${SC === "repos" ? "repositories" : SC}?q=${encodeURIComponent(query)}&per_page=${n}`;
+      tail = `:${SC}:${query}`;
+    } else if (k === "user") {
+      const who = String(user || owner || "").trim();
+      if (!who || !nameRe.test(who))
+        return out(`kind:"user" exige user (owner serve de fallback) — ex: {"user":"AsafeTork"} ou {"owner":"AsafeTork","kind":"user"}`, true);
+      url = `https://api.github.com/users/${encodeURIComponent(who)}`;
+      tail = `:${who}`;
+    } else if (k === "file") {
+      if (!owner || !nameRe.test(String(owner)))
+        return out(`kind:"file" exige owner+repo+path — ex: {"owner":"AsafeTork","repo":"canivete","kind":"file","path":"package.json"}`, true);
+      if (!repo || !nameRe.test(String(repo)))
+        return out(`kind:"file" exige owner+repo+path — ex: {"owner":"AsafeTork","repo":"canivete","kind":"file","path":"package.json"}`, true);
+      const p = String(path || "").trim();
+      if (!p)
+        return out(`kind:"file" exige path — ex: {"owner":"AsafeTork","repo":"canivete","kind":"file","path":"package.json"} (path de DIRETÓRIO, ex "src/lib", lista os arquivos)`, true);
+      if (p.startsWith("/") || p.includes("\\") || p.includes(":") || /(^|\/)\.\.(\/|$)/.test(p))
+        return out(`path inválido: "${p}" — use caminho RELATIVO ao repo, sem ".."/barra inicial (ex: "package.json" ou "src/lib/ctx.mjs")`, true);
+      const base = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+      url = `${base}/contents/${p.split("/").map(encodeURIComponent).join("/")}`;
+      tail = `:${p}`;
+    } else {
+      // repo|releases|commits|issues|branches: exigem owner+repo (validação igual à antiga)
+      if (!owner || !nameRe.test(String(owner))) return out(`owner inválido/ausente: "${owner}" — use owner+repo (ex: {"owner":"vitejs","repo":"vite","kind":"${k}"})`, true);
+      if (!repo || !nameRe.test(String(repo))) return out(`repo inválido/ausente: "${repo}" — use owner+repo (ex: {"owner":"vitejs","repo":"vite","kind":"${k}"})`, true);
+      try { new URL(`https://api.github.com/repos/${owner}/${repo}`); } catch {
+        return out(`invalid repo URL para "${owner}/${repo}". Confira owner/repo.`, true);
+      }
+      const base = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+      url = k === "repo" ? base : k === "issues" ? `${base}/issues?state=open&per_page=${n}` : `${base}/${k}?per_page=${n}`;
+    }
+    // CACHE: authTag (classe anon|env|acct:<user>) no key — SEM o token: 403 rate-limit de anônimo
+    // NÃO deve envenenar a queda autenticada (e repo privado dá 200 na conta, 404 anônimo).
+    const mKey = `memo:gh:${authTag}:${k}:${owner}/${repo}:${n}${tail}`;
     const mHit = memoGet(mKey);
     if (mHit) return mHit;
-    const r = await cached(
-      `gh:${k}:${owner}/${repo}:${n}`,
-      TTL_GH_MS,
-      () => fetchRetry(() => httpJson(url, { headers }), 3),
-      (x) => x.status === 200
-    );
+    const r = await cached(`gh:${authTag}:${k}:${owner}/${repo}:${n}${tail}`, ttl, () => fetchRetry(() => httpJson(url, { headers }), 3), (x) => x.status === 200);
+    if (r.status === 401) {
+      const err = out(`GitHub HTTP 401 — token inválido/expirado${authTag.startsWith("acct:") ? ` da conta "${authTag.slice(5)}"` : authTag === "env" ? " em env GITHUB_TOKEN/GH_TOKEN" : ""} — cura: religar/logar a conta com n_codespace_login (link de 1 clique) e conferir n_codespace_list${authTag === "env" ? '; ou passe account:"<conta gh logada>"' : ""}`, true);
+      memoSet(mKey, err, memoTtl(ttl, err));
+      return err;
+    }
     if (r.status === 403) {
-      const err = out("GitHub rate limit exceeded (60 req/h sem token). Defina GITHUB_TOKEN/GH_TOKEN para mais.", true);
-      memoSet(mKey, err, memoTtl(TTL_GH_MS, err));
+      const err = out(authTag === "anon"
+        ? `GitHub rate limit anônimo (HTTP 403, 60 req/h) — cura: account:"<conta gh logada>" (ex: account:"Financia-Brasil") = 5000 req/h — conferir contas: n_codespace_list; não tem conta: n_codespace_login gera o link de 1 clique (esperar ~1min também resolve)`
+        : `GitHub HTTP 403 mesmo autenticado (${authLabel}) — limite secundário/detecção de abuso: espere ~1min, limite p/ limit menor e não repita em loop; se persistir, troque de conta (account:"<outra>")`, true);
+      memoSet(mKey, err, memoTtl(ttl, err));
+      return err;
+    }
+    if (r.status === 404) {
+      const d404 = {
+        user: `GitHub 404 — usuário "${tail.slice(1)}" não existe — ex p/ conferir formato: {"user":"AsafeTork"}`,
+        file: `GitHub 404 — path "${tail.slice(1)}" não existe em ${owner}/${repo} (branch default) — confira o path; listar DIRETÓRIO p/ achar o nome: {"kind":"file","path":"src"}`,
+        search: `GitHub 404 em search — scope "${(scope || "").toLowerCase()}" inexistente (use repos|issues|users)`,
+      };
+      const err = out(d404[k] || `GitHub 404 — "${owner}/${repo}" inexistente OU privado (anônimo vê repos privados como 404): confira owner/repo; se for privado, passe account:"<conta com acesso>" (contas: n_codespace_list)`, true);
+      memoSet(mKey, err, memoTtl(ttl, err));
+      return err;
+    }
+    if (r.status === 422) {
+      const err = out(`GitHub 422 — query inválida (p/ search: sintaxe do GitHub Search) — ex: {"q":"canivete in:name","scope":"repos"} · {"q":"mcp stars:>100","scope":"repos"} · {"q":"repo:vitejs/vite is:issue","scope":"issues"}`, true);
+      memoSet(mKey, err, memoTtl(ttl, err));
       return err;
     }
     if (r.status !== 200) {
-      const err = out(`GitHub API failed (HTTP ${r.status}): ${(r.text || "").slice(0, 200)}. Causa provável: repo inexistente ou rate-limit. Alternativa: confira owner/repo ou defina GITHUB_TOKEN.`, true);
-      memoSet(mKey, err, memoTtl(TTL_GH_MS, err));
+      const err = out(`GitHub API failed (HTTP ${r.status}): ${(r.text || "").slice(0, 200)}. Causa provável: ${r.status === 0 ? "rede/DNS offline" : "instabilidade da API"}. Alternativa: tente de novo em 1min${authTag === "anon" ? ' ou autentique (account:"<conta gh>" / env GITHUB_TOKEN) p/ limites maiores' : ""}.`, true);
+      memoSet(mKey, err, memoTtl(ttl, err));
       return err;
     }
     if (k === "repo") {
       const d = r.data;
-      const res = out(`${d.full_name} — ${d.description || "sem descrição"}\nstars: ${d.stargazers_count} | forks: ${d.forks_count} | open issues: ${d.open_issues_count}\nlanguage: ${d.language} | license: ${d.license?.spdx_id || "-"}\nupdated: ${d.updated_at}\nurl: ${d.html_url}`);
-      memoSet(mKey, res, memoTtl(TTL_GH_MS, res));
+      const res = out(`${d.full_name} — ${d.description || "sem descrição"}\nstars: ${d.stargazers_count} | forks: ${d.forks_count} | open issues: ${d.open_issues_count}\nlanguage: ${d.language} | license: ${d.license?.spdx_id || "-"}\nupdated: ${d.updated_at}\nurl: ${d.html_url}\njson:${JSON.stringify({ auth: authTag, stars: d.stargazers_count, forks: d.forks_count, open_issues: d.open_issues_count, language: d.language || null, license: d.license?.spdx_id || null, default_branch: d.default_branch || null, topics: Array.isArray(d.topics) ? d.topics : undefined, archived: !!d.archived, visibility: d.visibility || null, size_kb: d.size ?? null, pushed_at: d.pushed_at || null })}`);
+      memoSet(mKey, res, memoTtl(ttl, res));
       return res;
     }
+    if (k === "user") {
+      const u = r.data;
+      const res = out(`${u.login}${u.name ? ` (${u.name})` : ""} — ${u.bio || "sem bio"}\ntipo: ${u.type} | seguidores: ${u.followers} | seguindo: ${u.following} | repos: ${u.public_repos} | gists: ${u.public_gists}\nlocal: ${u.location || "-"} | desde: ${u.created_at}\nurl: ${u.html_url}\njson:${JSON.stringify({ auth: authTag, login: u.login, name: u.name || null, followers: u.followers, public_repos: u.public_repos, type: u.type || null, company: u.company || null, location: u.location || null, created_at: u.created_at || null })}`);
+      memoSet(mKey, res, memoTtl(ttl, res));
+      return res;
+    }
+    if (k === "file") {
+      const d = r.data;
+      if (Array.isArray(d)) { // path é DIRETÓRIO: contents API devolve a lista
+        const its = d.slice(0, n);
+        const res = out([
+          `${owner}/${repo}: ${tail.slice(1)}/ — diretório (branch default, ${d.length} itens${d.length > n ? `, mostrando ${n}` : ""})`,
+          ...its.map((it, i) => `${i + 1}. ${it.name}${it.type === "dir" ? "/" : ""} (${it.type === "dir" ? "diretório" : `${it.size ?? 0}B`})`),
+          `json:${JSON.stringify({ auth: authTag, type: "dir", path: tail.slice(1), count: d.length, entries: its.map((e) => ({ name: e.name, type: e.type, size: e.size ?? null })) })}`,
+        ].join("\n"));
+        memoSet(mKey, res, memoTtl(ttl, res));
+        return res;
+      }
+      if (d.encoding === "none" || (!d.content && (d.size ?? 0) > 0)) { // contents API só devolve blobs até 1MB (vazio size=0 desce pro decode)
+        const err = out(`${owner}/${repo}:${tail.slice(1)} — conteúdo não veio (arquivo >1MB: contents API corta). Alternativa: curl cru via n_bash — curl -s https://raw.githubusercontent.com/${owner}/${repo}/HEAD/${tail.slice(1)} (ou gh api git/blobs pelo sha)`, true);
+        memoSet(mKey, err, memoTtl(ttl, err));
+        return err;
+      }
+      const raw = Buffer.from(String(d.content).replace(/\n/g, ""), "base64").toString("utf8");
+      const cut = raw.length > 12000;
+      const res = out([
+        `${owner}/${repo} @ ${d.path} (arquivo ${d.size}B${cut ? `, mostrando os 12.000 primeiros de ${raw.length}` : ""})`,
+        cut ? raw.slice(0, 12000) : raw,
+        `json:${JSON.stringify({ auth: authTag, path: d.path, type: d.type || "file", size: d.size, sha: (d.sha || "").slice(0, 10), url: d.html_url || null, truncated: cut })}`,
+      ].join("\n"));
+      memoSet(mKey, res, memoTtl(ttl, res));
+      return res;
+    }
+    if (k === "search") {
+      const d = r.data;
+      const hits = Array.isArray(d.items) ? d.items.slice(0, n) : [];
+      if (!hits.length) {
+        const res = out(`nenhum resultado p/ "${(q || "").trim()}" (scope ${(scope || "repos")}, total ${d.total_count ?? 0}) — confira a query (sintaxe GitHub Search; veja ex no erro 422)\njson:${JSON.stringify({ auth: authTag, q: (q || "").trim(), scope, total_count: d.total_count ?? 0 })}`);
+        memoSet(mKey, res, memoTtl(ttl, res));
+        return res;
+      }
+      const line = { repos: (it) => `${it.full_name} — ${(it.description || "sem descrição").slice(0, 140)} (stars:${it.stargazers_count ?? "?"} · ${it.language || "?"})`, issues: (it) => `${String(it.title || "").slice(0, 110)} (${String(it.repository_url || "").split("/repos/")[1] || "?"} #${it.number || "?"} · ${it.state || "?"} · ${it.comments ?? 0} comentários)`, users: (it) => `${it.login} (${it.type || "?"} · repos:${it.public_repos ?? "?"})` };
+      const res = out([...hits.map((it, i) => `${i + 1}. ${line[String(scope || "repos").trim().toLowerCase()] ? line[String(scope || "repos").trim().toLowerCase()](it) : JSON.stringify(it).slice(0, 160)}`), `json:${JSON.stringify({ auth: authTag, q: (q || "").trim(), scope: String(scope || "repos").toLowerCase(), total_count: d.total_count ?? 0, showing: hits.length })}`].join("\n"));
+      memoSet(mKey, res, memoTtl(ttl, res));
+      return res;
+    }
+    // releases|commits|issues|branches (lista comum)
     const items = Array.isArray(r.data) ? r.data.slice(0, n) : [];
+    const emptyPt = { releases: "nenhuma release publicada", issues: "nenhuma issue aberta", commits: "nenhum commit", branches: "nenhuma branch" }[k];
     if (!items.length) {
-      const res = out(`no ${k} found`);
-      memoSet(mKey, res, memoTtl(TTL_GH_MS, res));
+      const res = out(`${emptyPt || `nenhum ${k}`} (vazio de verdade — not-found/privado daria 404)\njson:${JSON.stringify({ auth: authTag, count: 0 })}`);
+      memoSet(mKey, res, memoTtl(ttl, res));
       return res;
     }
     if (k === "issues") {
-      const res = out(items.map((it, i) => `${i + 1}. #${it.number} ${it.title} (${it.state || "open"} · ${it.comments ?? 0} comentários · ${it.created_at || "-"})`).join("\n"));
-      memoSet(mKey, res, memoTtl(TTL_GH_MS, res));
+      const res = out([...items.map((it, i) => `${i + 1}. #${it.number} ${it.title} (${it.state || "open"} · ${it.comments ?? 0} comentários · ${it.created_at || "-"})`), `json:${JSON.stringify({ auth: authTag, count: items.length })}`].join("\n"));
+      memoSet(mKey, res, memoTtl(ttl, res));
       return res;
     }
-    const res = out(items.map((it, i) => `${i + 1}. ${it.tag_name || it.name || (it.commit?.message || "").split("\n")[0]} (${it.published_at || it.created_at || it.commit?.author?.date || "-"})`).join("\n"));
-    memoSet(mKey, res, memoTtl(TTL_GH_MS, res));
+    if (k === "branches") {
+      const res = out([...items.map((it, i) => `${i + 1}. ${it.name} (${(it.commit?.sha || "").slice(0, 7) || "-"})`), `json:${JSON.stringify({ auth: authTag, count: items.length })}`].join("\n"));
+      memoSet(mKey, res, memoTtl(ttl, res));
+      return res;
+    }
+    const res = out([...items.map((it, i) => `${i + 1}. ${it.tag_name || it.name || (it.commit?.message || "").split("\n")[0]} (${it.published_at || it.created_at || it.commit?.author?.date || "-"})`), `json:${JSON.stringify({ auth: authTag, count: items.length })}`].join("\n"));
+    memoSet(mKey, res, memoTtl(ttl, res));
     return res;
   },
 });

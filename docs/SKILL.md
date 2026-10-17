@@ -34,7 +34,7 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `n_cnpj` | CNPJ→empresa ReceitaWS (24h, rate-limited). |
 | `n_ipinfo` | IP→geo ip-api.com (45 req/min, 10min). |
 | `n_weather` | Previsão Open-Meteo lat/lon 1–7d (30min). |
-| `n_github` | repo/releases/commits/issues (60 req/h, 10min). |
+| `n_github` | repo/releases/commits/issues/branches/user/**file** (`path`)/ **search** (`q`) — `account`=conta gh → 5000 req/h (10min/search 3min). |
 | `n_npm` | Pacote npm (versão/licença/deps/downloads mês; 1h). |
 
 ### Tarefas (2) — subagentes desativados

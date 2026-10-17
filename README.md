@@ -44,7 +44,7 @@ Toolkit MCP completo (46 tools `n_*`, **zero dependências**, Node 22+) que func
 | `n_cnpj` | Empresa por CNPJ ReceitaWS (cache 24h, rate-limited; 14 dígitos). |
 | `n_ipinfo` | Geolocalização de IP ip-api.com (45 req/min, cache 10min). |
 | `n_weather` | Previsão Open-Meteo lat/lon 1–7 dias (cache 30min, `alert:true` p/ chuva/calor). |
-| `n_github` | Repo/releases/commits/issues (60 req/h sem token, cache 10min). |
+| `n_github` | repo/releases/commits/issues/branches/user/file/search (`account`=conta gh → 5000 req/h; 60 anônimo; cache 10min). |
 | `n_npm` | Info de pacote npm (versão, licença, deps, downloads do último mês; cache 1h). |
 
 ### Tarefas (2)

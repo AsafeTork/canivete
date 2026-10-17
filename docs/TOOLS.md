@@ -31,7 +31,7 @@
 | `n_execute_targeted_tests` | `src/lib/devengine.mjs` | DevEngine: executa testes com detecção de runner (vitest/jest/mocha via devDependencies). |
 | `n_find_tools` | `src/server.mjs` | Busca local de tools por keyword (tool-search enxuto). |
 | `n_get_architecture_summary` | `src/lib/devengine.mjs` | DevEngine: topologia leve do projeto (package.json + scans de features/functions, sem ler arquivos inteiros). |
-| `n_github` | `src/lib/apis.mjs` | API do GitHub (60 req/h sem token, cache 10min, com retry). |
+| `n_github` | `src/lib/apis.mjs` | API do GitHub: repo/releases/commits/issues/branches/**user** / **file** / **search**; `account` (conta gh do keyring) = 5000 req/h (60 anônimo); cache 10min (search 3); última linha `json:{...}` parseável. |
 | `n_glob` | `src/lib/fs.mjs` | Acha arquivos por glob (** suportado, até 500). |
 | `n_grep` | `src/lib/fs.mjs` | Busca regex no conteúdo (path:line:trecho ≤300 chars, maxResults 100, include glob, ignoreCase). |
 | `n_inspect_ui_state` | `src/lib/devengine.mjs` | DevEngine: checagem HTTP da UI (status + conteúdo). |
