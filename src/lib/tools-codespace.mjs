@@ -186,7 +186,7 @@ reg("n_codespace_delete", {
     const t0 = Date.now();
     if (!name) return devOut({ status: "error", summary: "name obrigatório (n_codespace_list)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (String(confirm || "").trim() !== "apagar") return devOut({ status: "error", summary: `destrutivo bloqueado — passe confirm:"apagar" (estado não commitado VAI SER PERDIDO; faça push primeiro)`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    const r = await runGh(["gh", "codespace", "delete", "-c", String(name), "--force", "--yes"], { account, timeoutMs: 60000 });
+    const r = await runGh(["gh", "codespace", "delete", "-c", String(name), "--force"], { account, timeoutMs: 60000 });
     return r.killed || r.code !== 0
       ? devOut({ status: "error", summary: `${ghError(r)} — codespace não apagado`, data: { name }, ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } })
       : devOut({ summary: `codespace ${name} apagado — storage liberado`, data: { name }, telemetry: { execution_time_ms: Date.now() - t0 } });
