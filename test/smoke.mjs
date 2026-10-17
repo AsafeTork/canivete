@@ -53,7 +53,7 @@ const t = async (label, id, name, args, expect = /./, allowError = null) => {
     ok ? pass++ : fail++;
   } catch (e) { console.log(`FAIL ${label} :: ${e.message}`); fail++; }
 };
-await t("tools_info conta 47", 1, "n_tools_info", {}, /47 tools/);
+await t("tools_info conta 52", 1, "n_tools_info", {}, /52 tools/);
 await t("read self", 2, "n_read", { filePath: "package.json", limit: 5 });
 await t("bash echo", 3, "n_bash", { command: "echo smoke-ok" });
 await t("glob", 4, "n_glob", { pattern: "src/lib/*.mjs" });

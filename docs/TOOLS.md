@@ -2,7 +2,7 @@
 
 > GERADO AUTOMATICAMENTE por `node scripts/gen-catalog.mjs` — NÃO EDITE MANUALMENTE.
 > Fonte: parse estático de `reg("n_*", { description: ... })` em `src/lib/*.mjs` + `src/server.mjs` (sem importar o servidor — importar `src/server.mjs` registra tudo e mantém o processo vivo via watch/readline).
-> Total: 47 tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = 57). Gerado em 2026-10-15.
+> Total: 52 tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = 62). Gerado em 2026-10-17.
 
 | nome | arquivo | descrição (1ª frase) |
 |---|---|---|
@@ -18,6 +18,11 @@
 | `n_browser_snapshot` | `src/lib/tools-browser.mjs` | Lista elementos interativos da página (ref, tag, texto, selector) para usar em n_browser_act. |
 | `n_cep` | `src/lib/apis.mjs` | Busca CEP brasileiro (ViaCEP, cache 7 dias, com retry). |
 | `n_cnpj` | `src/lib/apis.mjs` | Consulta CNPJ (ReceitaWS, cache 7 dias, rate-limited, com retry). |
+| `n_codespace_create` | `src/lib/tools-codespace.mjs` | Cria codespace do ambiente de testes (default basicLinux32gb 2-core/8GB; idle-timeout mata ócio e economiza cota). |
+| `n_codespace_delete` | `src/lib/tools-codespace.mjs` | APAGA codespace (estado+arquivos não commitados somem — commit antes!). |
+| `n_codespace_exec` | `src/lib/tools-codespace.mjs` | Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. |
+| `n_codespace_list` | `src/lib/tools-codespace.mjs` | Lista contas gh logadas + codespaces do ambiente de testes universal (2-core/8GB grátis 60h/mês via cota GitHub). |
+| `n_codespace_stop` | `src/lib/tools-codespace.mjs` | Para codespace (congela; storage continua a contar, compute parado de grátis). |
 | `n_ctx_status` | `src/server.mjs` | A LLM manipula o próprio contexto: mostra gasto da sessão (calls, chars, ~tokens por tool) vs orçamento CANIVETE_CTX_BUDGET. |
 | `n_currency` | `src/lib/apis.mjs` | Taxa de câmbio/conversão (ECB/Frankfurter, diário, cache 1h). |
 | `n_edit` | `src/lib/fs.mjs` | Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). |
