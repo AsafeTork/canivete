@@ -67,7 +67,7 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `n_ubrowser_tabs` | Abas (IDs mudam; prefira `tab:"trecho"`). |
 | `n_ubrowser_read` | Aba logada (`distill` default; `raw` integral+links; `outline:true` só estrutura; `selector:"#app"` escopa a leitura). Texto curto em página grande → WARN no summary (tente `raw`/`snapshot`). |
 | `n_ubrowser_snapshot` | Clicáveis (`max` ≤120 + `offset`; `find` ±3 contexto; `layer:"modal\|menu\|popover\|tooltip"` foca a camada; `scan` antes p/ virtualizada). |
-| `n_ubrowser_act` | goto/click(`ref`/selector/`text=`)/fill(type anexa)/select/scroll/highlight/waittext(`wait`=waitMs)/evaluate(retry+nota)/cursor(trusted)/tooltip/catchup/aesthetic/new/scan/count/attr/html/flow/`console`(erros+rede; chegam sozinhos via push)/`expectUrl/Text/Gone`/`snap:true` (alto risco exige `confirm`; roubar foco NÃO existe; `close` só fecha aba `about:blank` do agente — aba do dono em http(s) exige `confirm`, e `mode:"close_by_prefix"` limpa todas as `about:blank`). |
+| `n_ubrowser_act` | goto/click(`ref`/selector/`text=`)/fill(type anexa)/select/scroll/highlight/waittext(`wait`=waitMs)/evaluate(retry+nota)/cursor(trusted)/tooltip/catchup/aesthetic/new/`activate` (eleva aba sem roubar foco; `focused:true` + `confirm` = foco de SO p/ device-flow)/scan/count/attr/html/flow/`console`(erros+rede; chegam sozinhos via push)/`expectUrl/Text/Gone`/`snap:true` (alto risco exige `confirm`; `close` só fecha aba `about:blank` do agente — aba do dono em http(s) exige `confirm`, e `mode:"close_by_prefix"` limpa todas as `about:blank`). |
 | `n_ubrowser_shot` | Print só aba **VISÍVEL** (fundo → `n_browser_screenshot`). |
 
 ### Meta (6) + WhatsApp (1)

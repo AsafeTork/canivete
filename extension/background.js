@@ -11,8 +11,9 @@ let UB_DEBUG = false;
 function logd(...args) { if (UB_DEBUG) console.log(...args); }
 
 async function load() {
-  const s = await chrome.storage.local.get(["token", "enabled", "url", "UB_DEBUG"]);
+  const s = await chrome.storage.local.get(["token", "enabled", "url", "UB_DEBUG", "profileLabel"]);
   settings = { token: s.token || "", enabled: s.enabled !== false, url: s.url || DEFAULT_URL };
+  settings.profileLabel = String(s.profileLabel || "").slice(0, 60); // rotas p/ perfil (ubResolveProfile na ponte)
   UB_DEBUG = s.UB_DEBUG === true;
 }
 chrome.storage.onChanged.addListener((ch, area) => {
@@ -21,6 +22,12 @@ chrome.storage.onChanged.addListener((ch, area) => {
   if (ch.enabled) settings.enabled = ch.enabled.newValue !== false;
   if (ch.url) settings.url = ch.url.newValue || DEFAULT_URL;
   if (ch.UB_DEBUG) UB_DEBUG = ch.UB_DEBUG.newValue === true;
+  if (ch.profileLabel !== undefined) {
+    settings.profileLabel = String(ch.profileLabel.newValue || "").slice(0, 60);
+    // label novo → /hello forçado (bypass da janela de 3s): a ponte roteia agora,
+    // sem depender de reinício do SW.
+    try { setTimeout(() => { hello(true).catch(() => {}); }, 300); } catch {}
+  }
 });
 // cursor-remoto: detach best-effort ao fechar aba (evita sessão zombie que bloquearia o próximo attach).
 try {
@@ -185,35 +192,80 @@ function waitLoad(tabId, maxMs) {
   });
 }
 
+// score de casamento de aba por trecho de título/URL (compartilhado pela resolução
+// genérica de a.tab e por tab.activate). http(s) primeiro; chrome://newtab/blank
+// por último (só se o needle pedir); match no título pesa mais que na URL; aba
+// ativa desempata (#40). Pura, sem I/O — null = não casa com o needle.
+function ubTabScore(needle, t) {
+  try {
+    const title = (t.title || "").toLowerCase();
+    const url = (t.url || "").toLowerCase();
+    if (!title.includes(needle) && !url.includes(needle)) return null;
+    const wantsChrome = needle.includes("chrome://") || needle.includes("newtab") || needle.includes("blank");
+    let s = 0;
+    if (/^https?:\/\//.test(url)) s += 10;
+    else if (/^chrome:\/\//.test(url)) s -= wantsChrome ? 0 : 12;
+    if (/^(about:blank|newtab)/.test(url) || /new ?tab/.test(title)) s -= wantsChrome ? 0 : 8;
+    if (title.includes(needle)) s += 5;
+    if (url.includes(needle)) s += 3;
+    if (t.active) s += 2;
+    return s;
+  } catch { return null; }
+}
+
 async function handle(cmd, a = {}) {
-  // resolução de aba por nome: vale p/ todos os comandos que aceitam tabId.
-  // score: http(s) primeiro; chrome://newtab/blank por último (só se o needle pedir);
-  // match no título pesa mais que na URL; aba ativa desempata (#40).
+  // tab.activate: ELEVA a aba (chrome.tabs.update active:true) DENTRO da janela dela —
+  // tudo por tabs/windows API: sem content, sem injeção, resposta instantânea.
+  // REGRA DO DONO (inviolável): roubar foco de janela é PROIBIDO por padrão —
+  // focused:true SÓ com confirm (texto ≥4 chars); default é só elevar a aba na janela.
+  if (cmd === "tab.activate") {
+    const all = (await chrome.tabs.query({})).filter((t) => Number.isInteger(t.id));
+    let t = null;
+    if (a.tabId != null && a.tabId !== "") {
+      t = all.find((x) => x.id === Number(a.tabId)) || null;
+    } else if (a.tab) {
+      const needle = String(a.tab).toLowerCase();
+      const scored = [];
+      for (const x of all) { const s = ubTabScore(needle, x); if (s !== null) scored.push({ t: x, s }); }
+      scored.sort((x, y) => y.s - x.s);
+      t = scored.length ? scored[0].t : null;
+    } else {
+      const [cur] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      t = cur || null;
+    }
+    if (!t) {
+      const list = all.slice(0, 12).map((x) => `${x.id}:"${(x.title || x.url || "").slice(0, 60)}`).join(" | ");
+      throw new Error(`nenhuma aba casa ${a.tab ? `"${String(a.tab).slice(0, 60)}"` : "(sem tab/tabId)"} (abas: ${list || "nenhuma"})`);
+    }
+    try {
+      await chrome.tabs.update(t.id, { active: true });
+    } catch (e) {
+      if (isNoTabErr(e)) throw new Error("aba fechou no meio da ação — reliste tabs");
+      throw new Error("ativar aba falhou: " + String(e?.message || e).slice(0, 120));
+    }
+    if (a.focused === true) {
+      if (!(a.confirm && String(a.confirm).trim().length >= 4))
+        throw new Error('focused:true rouba foco do dono — exige confirm="<frase>" (≥4 chars); default é só elevar a aba na janela');
+      try {
+        await chrome.windows.update(t.windowId, { focused: true });
+      } catch (e) { throw new Error("aba ativada, mas janela não recebeu foco (" + String(e?.message || e).slice(0, 100) + ")"); }
+    }
+    return { tabId: t.id, title: (t.title || "").slice(0, 100), url: t.url || "", focused: !!a.focused };
+  }
+  // resolução de aba por nome: vale p/ todos os comandos que aceitam tabId
+  // (tab.activate tem resolver próprio acima, com erro dedicado).
   if (a && a.tab && !a.tabId) {
     const needle = String(a.tab).toLowerCase();
     const all = await chrome.tabs.query({});
-    const wantsChrome = needle.includes("chrome://") || needle.includes("newtab") || needle.includes("blank");
     const scored = [];
-    for (const t of all) {
-      const title = (t.title || "").toLowerCase();
-      const url = (t.url || "").toLowerCase();
-      if (!title.includes(needle) && !url.includes(needle)) continue;
-      let s = 0;
-      if (/^https?:\/\//.test(url)) s += 10;
-      else if (/^chrome:\/\//.test(url)) s -= wantsChrome ? 0 : 12;
-      if (/^(about:blank|newtab)/.test(url) || /new ?tab/.test(title)) s -= wantsChrome ? 0 : 8;
-      if (title.includes(needle)) s += 5;
-      if (url.includes(needle)) s += 3;
-      if (t.active) s += 2;
-      scored.push({ t, s });
-    }
+    for (const t of all) { const s = ubTabScore(needle, t); if (s !== null) scored.push({ t, s }); }
     scored.sort((x, y) => y.s - x.s);
     const found = scored.length ? scored[0].t : null;
     if (!found) throw new Error(`aba "${a.tab}" não encontrada — veja n_ubrowser_tabs`);
     a.tabId = found.id;
   }
   if (cmd === "ping") return { pong: true, url: settings.url };
-  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url };
+  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, focusRule: "tab.activate: default só eleva a aba na janela; focused:true rouba foco do dono — exige confirm={<frase>} (≥4 chars)" };
   if (cmd === "tabs.list") {
     const [tabs, wins, incog] = await Promise.all([
       chrome.tabs.query({}),
@@ -1020,9 +1072,9 @@ async function result(id, ok, data, error) {
 // hello idempotente: onStartup+onInstalled+ início do loop disparam em rajada —
 // inflight compartilhado + janela de 3s evitam N hellos idênticos no arranque.
 let ubHelloAt = 0, ubHelloP = null;
-async function hello() {
+async function hello(force) {
   if (ubHelloP) return ubHelloP;
-  if (ubHelloAt && Date.now() - ubHelloAt < 3000) return null;
+  if (!force && ubHelloAt && Date.now() - ubHelloAt < 3000) return null;
   ubHelloP = (async () => {
     try {
       const tabs = await chrome.tabs.query({});
@@ -1030,7 +1082,7 @@ async function hello() {
       await fetch(settings.url + "/hello?token=" + encodeURIComponent(settings.token), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ info: { clientId: cid, tabs: tabs.length, tabUrls: tabs.map((t) => t.url).slice(0, 25), ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED } }),
+        body: JSON.stringify({ info: { clientId: cid, tabs: tabs.length, tabUrls: tabs.map((t) => t.url).slice(0, 25), ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED, profileLabel: settings.profileLabel || "" } }),
       });
       diag.helloOk = new Date().toLocaleTimeString();
     } catch (e) { diag.lastError = "hello: " + (e.message || e); }
@@ -1136,7 +1188,11 @@ async function loop() {
 
 // status p/ popup
 chrome.runtime.onMessage.addListener((msg, _s, reply) => {
-  if (msg.cmd === "status") reply({ enabled: settings.enabled, hasToken: !!settings.token, url: settings.url });
+  if (msg.cmd === "status") {
+    // clientId na resposta (popup mostra; async reply — canal fica aberto):
+    ubClientId().then((cid) => { try { reply({ enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, clientId: cid }); } catch {} }).catch(() => {});
+    return true;
+  }
   if (msg.cmd === "diag") reply({ ...diag, enabled: settings.enabled, hasToken: !!settings.token });
   // alerta proativo do mon-hook (erro de console/rede na página): empurra p/ bridge
   // /ubpush com debounce por aba (4s, máx 3 entradas) — o MCP exibe na hora, sem poll.
@@ -1169,18 +1225,22 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg.cmd === "pingBridge") {
     (async () => {
       try {
+        const cid = await ubClientId().catch(() => "");
         const r = await fetch(settings.url + "/health", { signal: AbortSignal.timeout(5000) });
         if (!r.ok) { reply({ ok: false, error: "ponte fora (" + r.status + ")" }); return; }
         // /health não tem auth — o token se valida com probe autenticado.
         // Sem isso o popup dizia "OK" p/ qualquer texto colado (falso verde).
-        if (!settings.token) { reply({ ok: true, http: r.status, body: (await r.text()).slice(0, 120), token: "sem token salvo — cole o token.txt" }); return; }
+        if (!settings.token) { reply({ ok: true, http: r.status, body: (await r.text()).slice(0, 120), token: "sem token salvo — cole o token.txt", clientId: cid }); return; }
         try {
           const pr = await fetch(settings.url + "/hello?token=" + encodeURIComponent(settings.token), {
             method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify({ info: { probe: true } }), signal: AbortSignal.timeout(5000),
           });
           if (pr.status === 401) { reply({ ok: false, error: "token INCORRETO — confira ~/.config/canivete/token.txt e cole de novo" }); return; }
-          reply({ ok: true, http: r.status, body: (await r.text()).slice(0, 120), token: "token OK" });
+          // hello de verdade (forçado, já com profileLabel atual) — salvar label no
+          // popup conecta a rota do perfil na ponte no mesmo clique.
+          try { await hello(true); } catch {}
+          reply({ ok: true, http: r.status, body: (await r.text()).slice(0, 120), token: "token OK", clientId: cid });
         } catch (e) { reply({ ok: false, error: "ponte OK mas probe do token falhou: " + String(e.message || e).slice(0, 120) }); }
       } catch (e) { reply({ ok: false, error: String(e.message || e).slice(0, 160) }); }
     })();
