@@ -34,8 +34,11 @@ const ubToken = () => {
   }
 };
 
+const ubExtensions = new Map(); // clientId -> { lastPoll, info }
+let ubLastPoll = 0;
+let ubExtInfo = null;
 const ubQueue = [], ubWaiters = [], ubPending = new Map();
-let ubSeq = 0, ubLastPoll = 0, ubExtInfo = null, ubHttp = false;
+let ubSeq = 0, ubHttp = false;
 // alertas proativos do mon-hook (/ubpush): erros de console/rede empurrados pela extensão.
 // Ring global (cap 30) + contador não-lidos; `console` marca lido; hint nas respostas.
 const ubAlerts = [];
@@ -56,10 +59,21 @@ function ubAlertsHint() {
 }
 
 function ubFlush() {
-  while (ubWaiters.length && ubQueue.length) {
-    const w = ubWaiters.shift();
-    clearTimeout(w.t);
-    try { w.res.writeHead(200, { "content-type": "application/json" }); w.res.end(JSON.stringify(ubQueue.shift())); } catch (e) { process.stderr.write(`[canivete] ubFlush falhou (${e?.message || e})\n`); }
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (let wi = 0; wi < ubWaiters.length; wi++) {
+      const w = ubWaiters[wi];
+      const qi = ubQueue.findIndex((q) => q.target === null || q.target === w.extId);
+      if (qi >= 0) {
+        ubWaiters.splice(wi, 1);
+        const q = ubQueue.splice(qi, 1)[0];
+        clearTimeout(w.t);
+        try { w.res.writeHead(200, { "content-type": "application/json" }); w.res.end(JSON.stringify(q)); } catch (e) { process.stderr.write(`[canivete] ubFlush falhou (${e?.message || e})\n`); }
+        progressed = true;
+        break;
+      }
+    }
   }
 }
 
@@ -74,11 +88,16 @@ function ubEnsure() {
       const good = ubToken();
       if (!good || token !== good) { process.stderr.write(`[native-mcp] ubrowser 401 ${u.pathname} token=${String(token || "").slice(0, 8)}...\n`); res.writeHead(401); res.end("bad token"); return; }
       if (req.method === "GET" && u.pathname === "/poll") {
+        const extId = u.searchParams.get("ext") || "anon";
+        const ext = ubExtensions.get(extId) || { lastPoll: 0, info: null };
+        ext.lastPoll = Date.now();
+        ubExtensions.set(extId, ext);
         ubLastPoll = Date.now();
-        if (ubQueue.length) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(ubQueue.shift())); return; }
+        const qi = ubQueue.findIndex((q) => q.target === null || q.target === extId);
+        if (qi >= 0) { const q = ubQueue.splice(qi, 1)[0]; res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(q)); return; }
         const t = setTimeout(() => { const i = ubWaiters.findIndex((w) => w.res === res); if (i >= 0) ubWaiters.splice(i, 1); try { res.writeHead(204); res.end(); } catch (e) { process.stderr.write(`[canivete] ub poll 204 falhou (${e?.message || e})\n`); } }, 25000);
-        ubWaiters.push({ res, t });
-        try { req.on("close", () => { const i = ubWaiters.findIndex((w) => w.res === res); if (i >= 0) { ubWaiters.splice(i, 1); clearTimeout(t); } }); } catch (e) { process.stderr.write(`[canivete] ub poll close-hook falhou (${e?.message || e})\n`); } // cliente caiu antes dos 25s: libera o waiter (era leak até o timeout)
+        ubWaiters.push({ res, t, extId });
+        try { req.on("close", () => { const i = ubWaiters.findIndex((w) => w.res === res); if (i >= 0) { ubWaiters.splice(i, 1); clearTimeout(t); } }); } catch (e) { process.stderr.write(`[canivete] ub poll close-hook falhou (${e?.message || e})\n`); }
         return;
       }
       if (req.method === "POST" && (u.pathname === "/hello" || u.pathname === "/result" || u.pathname === "/exec" || u.pathname === "/ubpush")) {
@@ -96,13 +115,16 @@ function ubEnsure() {
           return;
         }
         if (u.pathname === "/hello") {
-          // probe de token (popup "Testar conexão"): autentica mas não suja estado
-          // (não atualiza ubExtInfo/lastPoll — só diz se o token confere).
           let hi = null;
           try { hi = JSON.parse(body).info || null; } catch (e) { process.stderr.write(`[canivete] ub /hello json inválido (${e?.message || e})\n`); }
           if (hi && hi.probe) { res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"probe":true}'); return; }
-          ubExtInfo = hi;
+          const clientId = (hi && hi.clientId) || `anon-${Date.now().toString(36)}`;
+          const ext = ubExtensions.get(clientId) || { lastPoll: Date.now(), info: null };
+          ext.info = hi;
+          ext.lastPoll = Date.now();
+          ubExtensions.set(clientId, ext);
           ubLastPoll = Date.now();
+          ubExtInfo = hi;
         }
         else if (u.pathname === "/result") { let p = {}; try { p = JSON.parse(body); } catch (e) { process.stderr.write(`[canivete] ub /result json inválido (${e?.message || e})\n`); } const payBytes = Buffer.byteLength(body || "", "utf8"); if (payBytes > UB_WARNPAY) process.stderr.write(`[canivete] ub /result grande (${payBytes}B id=${p?.id || "?"})\n`); const q = ubPending.get(p.id); if (q) { ubPending.delete(p.id); clearTimeout(q.timer); if (payBytes > UB_MAXPAY) { const s = body || ""; const chunks = []; for (let i = 0; i < s.length; i += UB_CHUNK) chunks.push(s.slice(i, i + UB_CHUNK)); q.resolve({ id: p.id, ok: true, chunks, chunked: true, bytes: payBytes, note: "resposta fatiada em chunks; use max/compact/offset p/ refinar" }); } else q.resolve(p); } }
         else {
@@ -138,23 +160,51 @@ function ubEnsure() {
 ubToken(); // warm: lê/gera 1x no startup (fora do hot-path HTTP)
 try { ubEnsure(); } catch (e) { process.stderr.write(`[native-mcp] ubrowser adiado: ${e.message}\n`); }
 
-const ubConnected = () => Date.now() - ubLastPoll < 45000;
+const ubConnected = () => {
+  const now = Date.now();
+  if (ubExtensions.size > 0) {
+    for (const [, e] of ubExtensions) if (now - e.lastPoll < 45000) return true;
+    return false;
+  }
+  return ubLastPoll ? (now - ubLastPoll < 45000) : false;
+};
 const UB_OFF = "EXTENSÃO OFFLINE — dono: abra o Chrome (janela NORMAL, mesmo perfil, sem anônimo) com a extensão UBrowser ATIVA no popup, e peça de novo.";
 
-function ubSend(cmd, args = {}, timeoutMs = UB_TIMEOUT_DEFAULT) {
+function ubSend(cmd, args = {}, timeoutMs = UB_TIMEOUT_DEFAULT, target = null) {
   ubEnsure();
   return new Promise((resolve) => {
     if (!ubConnected()) { resolve({ __offline: true }); return; }
     const id = `u${Date.now().toString(36)}${(ubSeq++).toString(36)}`;
     const timer = setTimeout(() => { ubPending.delete(id); resolve({ __timeout: true }); }, timeoutMs);
     ubPending.set(id, { resolve, timer });
-    ubQueue.push({ id, cmd, args });
+    ubQueue.push({ id, cmd, args, target });
     if (ubQueue.length > 50) ubQueue.splice(0, ubQueue.length - 50);
     ubFlush();
   });
 }
 
+export function ubResolveProfile(profile) {
+  if (!profile) return null;
+  const p = String(profile).toLowerCase().replace(/[^a-z0-9]/g, "");
+  for (const [id, e] of ubExtensions) {
+    if (id.toLowerCase() === String(profile).toLowerCase()) return id;
+    const info = e.info || {};
+    const haystack = [id, info.ua || "", ...(Array.isArray(info.tabUrls) ? info.tabUrls : []), info.profileLabel || ""].join(" ").toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (p && haystack.includes(p)) return id;
+  }
+  return null;
+}
+
+export function ubListExtensions() {
+  const now = Date.now();
+  return [...ubExtensions.entries()].map(([id, e]) => ({ id, lastPollAgoMs: now - e.lastPoll, connected: now - e.lastPoll < 45000, info: e.info }));
+}
+
 import { riskOf as ubRisk } from "./risk.mjs";
 
 export { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubAlertsPush, ubAlertsPending, ubAlertsRead, ubAlertsHint };
-export function ubStats() { return { queued: ubQueue.length, ext: ubExtInfo, port: UB_PORT, lastPollAgoMs: ubLastPoll ? Date.now() - ubLastPoll : -1 }; }
+export function ubStats() {
+  const now = Date.now();
+  const extensions = [...ubExtensions.entries()].map(([id, e]) => ({ id, lastPollAgoMs: now - e.lastPoll, connected: now - e.lastPoll < 45000, info: e.info }));
+  return { queued: ubQueue.length, extensions, ext: ubExtInfo, port: UB_PORT, lastPollAgoMs: ubLastPoll ? now - ubLastPoll : -1 };
+}

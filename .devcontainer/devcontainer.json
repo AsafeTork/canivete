@@ -3,6 +3,9 @@
   //-api Cota grátis: 120 core-h/mês (2-core = 60h reais) + 15 GB storage. Machine default: basicLinux32gb (2-core/8GB).
   "name": "canivete",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1": {}
+  },
   "containerEnv": { "CANIVETE_CHROME_BIN": "/usr/bin/chromium" },
   "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends chromium && npm run check",
   "portsAttributes": {

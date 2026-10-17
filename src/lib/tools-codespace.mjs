@@ -1,8 +1,12 @@
 // canivete — tools de CODESPACE (gh CLI logado do dono): ambiente de testes universal grátis.
 // 120 core-h/mês grátis (2-core = 60h) + 15 GB storage; sem cartão. Sem repo = template blank oficial.
 // Multi-conta: account="user" usa o token DESSE usuário (gh auth token -u) sem trocar a conta ativa global.
-// Login de contas novas: n_codespace_login gera LINK de 1 clique (device flow com user_code na URL) na hora do pedido.
+// Login de contas novas: n_codespace_login dispara o device flow E tenta INSERIR o código automaticamente
+// via ubrowser (aba de fundo no Chrome logado: link com ?user_code= já pré-preenchido + clicar Continue/Authorize).
 import { reg, devOut, fallbackHint, exec, trimOut } from "./ctx.mjs";
+import { ubSend, ubConnected, ubListExtensions } from "./ubridge.mjs";
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const BLANK_REPO = "github/codespaces-blank"; // codespace SEM vínculo com projeto (template oficial)
 const DEFAULT_MACHINE = "basicLinux32gb"; // 2-core/8GB — melhor cota grátis (120 core-h = 60h reais)
@@ -157,7 +161,7 @@ reg("n_codespace_stop", {
   run: async ({ name, all, account } = {}) => {
     const t0 = Date.now();
     if (!name && !all) return devOut({ status: "error", summary: "passe name (do n_codespace_list) ou all:true", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    let names = ["..."];
+    let names = name ? [String(name)] : ["..."];
     if (all) {
       const lst = await runGh(["gh", "codespace", "list", "--json", "name,state"], { account, timeoutMs: 60000 });
       names = csParseList(lst.so).filter((c) => c.state === "Active").map((c) => c.name);
@@ -213,8 +217,8 @@ async function jobRunning(loginId, log) {
 }
 reg("n_codespace_login", {
   description: "Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. codespace): job background emite o device code e a tool devolve github.com/login/device?user_code=CODE — o dono SÓ CLICA (e entra com a conta desejada no browser); a conta entra no catálogo do gh sozinha (multi-conta via account:\"user\"). Confira depois com n_codespace_login_status (loginId vem Aqui). Uso: quando n_codespace_list mostrar conta inválida/sem scope, OU para acumular outro usuário.",
-  inputSchema: { type: "object", properties: { user: { type: "string", description: "conta que o dono VAI logar (ex:\"Financia-Brasil\") — opcional, só p/ o status conferir a conta certa" }, scopes: { type: "string", default: "repo,workflow,codespace,read:org,gist", description: "scopes pedidos no login" } }, required: [] },
-  run: async ({ user, scopes } = {}) => {
+  inputSchema: { type: "object", properties: { user: { type: "string", description: "conta que o dono VAI logar (ex:\"Financia-Brasil\") — opcional, só p/ o status conferir a conta certa" }, scopes: { type: "string", default: "repo,workflow,codespace,read:org,gist", description: "scopes pedidos no login" }, profile: { type: "string", description: "clientId de um perfil ubrowser conectado (n_ubrowser_status) p/ dirigir o auto-insert — default: heurística pelo nome do usuário" }, manual: { type: "boolean", description: "true = NÃO tenta auto-insert; só gera o código/link p/ o dono autorizar (use quando o GitHub bloquear o clique automático)" } }, required: [] },
+  run: async ({ user, scopes, profile, manual } = {}) => {
     const t0 = Date.now();
     const auth = await listAccounts();
     const scope = String(scopes || LOGIN_SCOPES()).replace(/[^a-z:,_-]/gi, "");
@@ -237,10 +241,113 @@ reg("n_codespace_login", {
     }
     LOGIN_JOBS.set(loginId, { user: user || null, log, prevActive, startedAt: Date.now() });
     const link = `https://github.com/login/device?user_code=${code}`;
+    // AUTO-INSERT: aba de fundo no Chrome logado do dono. Driver: /login/device → codeInputs? digita+authorize;
+    // senão card da conta (button/a/input[type=submit] "Continue as X") → form do código; senão "Use a different account" + usuário (senha fica com o dono).
+    const auto = { tried: false, steps: [], error: "" };
+    const snapOf = async (tabId, tgt) => {
+      const s = await ubSend("tab.snapshot", { tabId }, undefined, tgt).catch(() => null);
+      return ((s && s.ok && s.data && s.data.elements) || (s && s.elements) || []);
+    };
+    const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const tryCodeForm = async (tabId, els, tgt) => {
+      const codeInputs = els.filter((e) => e && e.tag === "input" && /user-code-\d/.test(String(e.selector || "")));
+      if (codeInputs.length < 8) return { ok: 0, found: false };
+      auto.steps.push("sessão-ok");
+      const chars = String(code).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+      let filled = 0;
+      for (const inp of codeInputs) {
+        const m = String(inp.selector).match(/user-code-(\d)/) || [];
+        const k = Number(m[1]);
+        if (!Number.isFinite(k)) continue;
+        const ch = k < 4 ? chars[k] : chars[k - 1];
+        if (!ch) continue;
+        const fr = await ubSend("tab.fill", { tabId, selector: inp.selector, text: ch }, undefined, tgt);
+        if (fr && fr.ok) filled++; else auto.steps.push(`fill${k}:${(fr && fr.error) || "fail"}`);
+      }
+      auto.steps.push(`fill:${filled}/8`);
+      await sleepMs(1200);
+      const cc = await ubSend("tab.click", { tabId, selector: 'input[name="commit"]' }, undefined, tgt);
+      auto.steps.push(`continue:${cc && cc.ok ? "ok" : (cc && cc.error) || "fail"}`);
+      await sleepMs(4500);
+      let c2 = await ubSend("tab.click", { tabId, text: "Authorize" }, undefined, tgt);
+      if (!c2 || !c2.ok) c2 = await ubSend("tab.click", { tabId, selector: 'button[name="authorize"]' }, undefined, tgt);
+      auto.steps.push(`authorize:${c2 && c2.ok ? "ok" : "skip"}`);
+      return { ok: (cc && cc.ok ? 1 : 0) + (c2 && c2.ok ? 1 : 0), found: true };
+    };
+    try {
+      if (ubConnected() && !manual) {
+        auto.tried = true;
+        const pickExt = () => {
+          const exts = ubListExtensions().filter((e) => e.connected);
+          if (!exts.length) return null;
+          if (profile) {
+            const p = String(profile).toLowerCase().replace(/[^a-z0-9]/g, "");
+            const exact = exts.find((e) => e.id.toLowerCase() === String(profile).toLowerCase());
+            if (exact) return exact.id;
+            const fuzzy = exts.find((e) => {
+              const hay = [e.id, ...((e.info && Array.isArray(e.info.tabUrls)) ? e.info.tabUrls : []), (e.info && e.info.ua) || ""].join(" ").toLowerCase().replace(/[^a-z0-9]/g, "");
+              return p && hay.includes(p);
+            });
+            if (fuzzy) return fuzzy.id;
+          }
+          if (exts.length === 1) return exts[0].id;
+          const key = String(user || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          const hit = exts.find((e) => {
+            const hay = [e.id, ...((e.info && Array.isArray(e.info.tabUrls)) ? e.info.tabUrls : []), (e.info && e.info.ua) || ""].join(" ").toLowerCase().replace(/[^a-z0-9]/g, "");
+            return key && hay.includes(key.slice(0, 6));
+          });
+          if (hit) return hit.id;
+          return exts.sort((a, b) => a.lastPollAgoMs - b.lastPollAgoMs)[0].id;
+        };
+        const target = pickExt();
+        auto.steps.push(target ? `perfil:${target.slice(0, 8)}` : "perfil:auto");
+        const nr = await ubSend("tab.new", { url: "https://github.com/login/device" }, undefined, target);
+        const tabId = Number(nr?.data?.id ?? nr?.id ?? nr?.data?.tabId ?? 0) || 0;
+        if (!tabId) throw new Error("tab.new não devolveu id");
+        auto.steps.push(`tab:${tabId}`);
+        await sleepMs(6000);
+        let okSteps = 0;
+        let els = await snapOf(tabId, target);
+        const r1 = await tryCodeForm(tabId, els, target);
+        okSteps += r1.ok;
+        if (!r1.found) {
+          const cands = els.filter((e) => e && ((e.tag === "button" || e.tag === "a") || (e.tag === "input" && e.type === "submit")) && (e.name || e.text));
+          const card = user && cands.find((e) => !/useadifferent/.test(norm(e.name) + norm(e.text)) && (norm(e.name).includes(norm(user)) || norm(e.text).includes(norm(user))));
+          if (card) {
+            const cc = await ubSend("tab.click", { tabId, selector: card.selector || `text=${(card.text || card.name || "").trim().slice(0, 60)}` }, undefined, target);
+            auto.steps.push(`card(${user}):${cc && cc.ok ? "ok" : "fail"}`);
+            if (cc && cc.ok) {
+              await sleepMs(5000);
+              els = await snapOf(tabId, target);
+              const r2 = await tryCodeForm(tabId, els, target);
+              okSteps += r2.ok;
+            }
+          } else {
+            auto.steps.push("card:não-achou");
+            const diff = cands.find((e) => /useadifferent/.test(norm(e.name) + norm(e.text)));
+            if (diff) {
+              const dc = await ubSend("tab.click", { tabId, selector: diff.selector || "text=Use a different account" }, undefined, target);
+              auto.steps.push(`different-account:${dc && dc.ok ? "ok" : "fail"}`);
+              await sleepMs(5000);
+              const fu = await ubSend("tab.fill", { tabId, selector: "input[name='login']", text: user || "" }, undefined, target);
+              auto.steps.push(`usuário-preenchido:${fu && fu.ok ? "ok" : "fail"}`);
+              auto.error = "form aberto com o usuário — digite só a senha e Sign in; depois rode n_codespace_login de novo (código novo, ~15 min de vida)";
+            }
+          }
+        }
+        if (okSteps >= 2) auto.steps.push("autorizado ✅");
+        else if (okSteps === 0 && !auto.error) auto.error = "não consegui inserir sozinho — preencha pelo link manual (senha/captcha podem pedir você)";
+      }
+    } catch (e) {
+      auto.error = String(e && e.message ? e.message : e);
+    }
+    const autoNote = auto.tried
+      ? `auto: ${auto.steps.join(" → ")}${auto.error ? ` | erro: ${auto.error}` : ""}`
+      : manual ? "modo manual (auto desligado)" : "auto indisponível (extensão offline)";
     return devOut({
-      status: "warn",
-      summary: `1 CLIQUE p/ logar${user ? ` ${user}` : " (com a conta certa no browser)"}: ${link} — (job ${loginId} guardado; ${accSummary(auth)})`,
-      data: { loginId, link, code, log, user: user || null, scopes: scope, prevActive },
+      status: auto.tried && auto.error ? "warn" : auto.tried ? "success" : "warn",
+      summary: code,
+      data: { loginId, link, code, log, user: user || null, scopes: scope, prevActive, autoNote, auto: { tried: auto.tried, steps: auto.steps, error: auto.error || undefined } },
       telemetry: { execution_time_ms: Date.now() - t0 },
       next: [{ tool: "n_codespace_login_status", reason: "Confirmar a conta autorizada" }],
     });

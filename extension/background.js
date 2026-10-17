@@ -33,6 +33,20 @@ const UB_EXPECTED = "14"; // versão do content.js — mismatch = AUTO-REINJETA 
 // Versão do próprio worker (manifest): reportada no /hello + tab.diag → n_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
+// Identidade persistente deste perfil/instância da extensão — permite à ponte
+// rotear comandos ao perfil certo quando vários perfis estão ativos.
+let UB_CLIENT_ID = null;
+async function ubClientId() {
+  if (UB_CLIENT_ID) return UB_CLIENT_ID;
+  try {
+    const s = await chrome.storage.local.get("ubClientId");
+    if (s && s.ubClientId) { UB_CLIENT_ID = s.ubClientId; return UB_CLIENT_ID; }
+    const id = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : (Math.random().toString(36).slice(2) + Date.now().toString(36));
+    await chrome.storage.local.set({ ubClientId: id });
+    UB_CLIENT_ID = id;
+    return id;
+  } catch (e) { return "anon-" + Date.now().toString(36); }
+}
 const injectedTabs = new Set(); // fallback manual 1x por aba/sessão (registro cobre o resto)
 const ubPushLast = new Map(); // debounce do /ubpush por tabId (4s)
 // ubpush trailing-edge (v14): 1ª borda envia na hora (leading); rajada dentro da
@@ -958,8 +972,9 @@ async function pollOnce() {
   const t = setTimeout(() => ctl.abort(), 30000);
   try {
     let r;
+    const cid = await ubClientId();
     try {
-      r = await fetch(settings.url + "/poll?token=" + encodeURIComponent(settings.token), { signal: ctl.signal });
+      r = await fetch(settings.url + "/poll?token=" + encodeURIComponent(settings.token) + "&ext=" + encodeURIComponent(cid), { signal: ctl.signal });
     } catch (e) {
       if (e.name === "AbortError") throw e;
       throw new Error("bridge offline (" + settings.url + "/poll inacessível) — suba o bridge e aguarde reconnect");
@@ -987,10 +1002,11 @@ async function result(id, ok, data, error) {
 async function hello() {
   try {
     const tabs = await chrome.tabs.query({});
+    const cid = await ubClientId();
     await fetch(settings.url + "/hello?token=" + encodeURIComponent(settings.token), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ info: { tabs: tabs.length, ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED } }),
+      body: JSON.stringify({ info: { clientId: cid, tabs: tabs.length, tabUrls: tabs.map((t) => t.url).slice(0, 25), ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED } }),
     });
     diag.helloOk = new Date().toLocaleTimeString();
   } catch (e) { diag.lastError = "hello: " + (e.message || e); }
