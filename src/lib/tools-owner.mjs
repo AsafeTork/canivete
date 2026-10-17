@@ -1,20 +1,37 @@
 // canivete — tools do navegador LOGADO do dono (ubrowser_*)
 import { reg, devOut, trimOut } from "./ctx.mjs";
-import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsHint, ubResolveProfile, ubListExtensions } from "./ubridge.mjs";
+import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsHint, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
 import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks } from "../core/snapshot.mjs";
 // recovery sem mudar protocolo: só texto de erro acionável (janela NORMAL, popup, token) + fallback headless
 const UB_REC = "Recovery dono: 1) Chrome janela NORMAL mesmo perfil (sem anonimo) 2) popup extensao UBrowser ATIVO 3) token ~/.config/canivete/token.txt igual na extensao 4) rode n_ubrowser_status p/ confirmar";
 const UB_FB = "Sem login? fallback headless: n_browser_navigate / n_browser_screenshot";
 const UB_OFF_FULL = `${UB_OFF} | ${UB_REC} | ${UB_FB}`;
-const UB_TIMEOUT = "timeout 60s — extensao nao respondeu: tente de novo ou cheque n_ubrowser_status";
+// timeout de transporte ÚNICO (const UB_TIMEOUT_MS do ubridge): mensagem mostra o valor REAL
+// (env CANIVETE_UB_TIMEOUT, piso 1s teto 300s) — antes dizia "60s" fixo mesmo com env mudado.
+const ubTimeoutMsg = () => `timeout ${Math.round(UB_TIMEOUT_MS / 1000)}s — extensao nao respondeu: tente de novo ou cheque n_ubrowser_status`;
+
+// Roteamento por perfil: SE o caller pediu `profile` e ele não casa com nenhuma extensão,
+// NÃO roteia em silêncio p/ "qualquer" (comando no perfil ERRADO é pior que erro) —
+// devolve erro acionável listando os conectados (clientId/label/idade do último poll).
+// Sem profile = comportamento de sempre (broadcast p/ o mais recente).
+function ubTarget(profile) {
+  if (!profile) return { ok: true, id: null };
+  const id = ubResolveProfile(profile);
+  if (id) return { ok: true, id };
+  const exts = ubListExtensions();
+  if (!exts.length) return { ok: false, summary: `profile "${String(profile).slice(0, 60)}" não conectado — NENHUMA extensão conectada | ${UB_OFF_FULL}` };
+  const list = exts.map((e) => `${e.id}${e.profileLabel ? ` (${e.profileLabel})` : ""} — último poll há ${Math.round(Math.max(0, e.lastPollAgoMs) / 1000)}s${e.connected ? "" : " (DESCONECTADO)"}`).join("; ");
+  return { ok: false, summary: `profile "${String(profile).slice(0, 60)}" não corresponde a NENHUMA extensão — conectados: ${list} | use clientId exato (n_ubrowser_status → extensions[].id), trecho de URL/label, ou omita profile p/ o mais recente | ${UB_FB}` };
+}
 
 reg("n_ubrowser_status", {
   description: "Status da ponte com o Chrome LOGADO do dono (extensão local). SEMPRE o passo 1: offline → janela NORMAL (anônima é invisível), mesmo perfil, popup ATIVO, token igual. Fluxo: status→tabs→read|snapshot→act→shot. IDs de aba mudam — nas tools prefira tab:\"trecho do título/URL\".",
   inputSchema: { type: "object", properties: {}, required: [] },
   run: async () => {
+    const t0 = Date.now();
     ubEnsure();
     const c = ubConnected();
-    return devOut({ status: c ? "success" : "error", summary: c ? "UBrowser pronto (extensão conectada)" : "EXTENSÃO OFFLINE — dono: abra o Chrome (janela NORMAL, mesmo perfil, popup ATIVO)", data: { connected: c, ...ubStats() }, telemetry: { execution_time_ms: 0 } });
+    return devOut({ status: c ? "success" : "error", summary: c ? "UBrowser pronto (extensão conectada)" : "EXTENSÃO OFFLINE — dono: abra o Chrome (janela NORMAL, mesmo perfil, popup ATIVO)", data: { connected: c, ...ubStats() }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 
@@ -23,8 +40,10 @@ reg("n_ubrowser_tabs", {
   inputSchema: { type: "object", properties: { filter: { type: "string", description: "opcional: substring em título+url (case-insensitive)" }, max: { type: "number", default: 50, description: "máx abas (default 50, teto 200)" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — omitir = mais recente" } }, required: [] },
   run: async ({ filter, max, profile } = {}) => {
     const t0 = Date.now();
-    const r = await ubSend("tabs.list", { ...(filter ? { filter } : {}), ...(max ? { max } : {}) }, undefined, ubResolveProfile(profile));
-    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const tgt = ubTarget(profile);
+    if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const r = await ubSend("tabs.list", { ...(filter ? { filter } : {}), ...(max ? { max } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const tabs = r.data.tabs || r.data || [];
     const wins = r.data.windows || [];
@@ -40,8 +59,10 @@ reg("n_ubrowser_read", {
   inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" }, selector: { type: "string", description: "CSS p/ escopar a leitura a um container (ex: \"#app\", \"table.turmas\") — erro \"seletor não encontrado\" se não achar" } }, required: [] },
   run: async ({ tabId, tab, mode, maxChars, maxLinks, outline, selector, profile }) => {
     const t0 = Date.now();
-    const r = await ubSend("tab.read", { tabId, tab, mode: mode || "distill", maxChars, maxLinks, ...(outline ? { outline: true } : {}), ...(selector ? { selector } : {}) }, undefined, ubResolveProfile(profile));
-    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const tgt = ubTarget(profile);
+    if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const r = await ubSend("tab.read", { tabId, tab, mode: mode || "distill", maxChars, maxLinks, ...(outline ? { outline: true } : {}), ...(selector ? { selector } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const body = r.data.markdown || r.data.text || "";
     const allLinks = r.data.links || [];
@@ -191,8 +212,10 @@ reg("n_ubrowser_snapshot", {
     const t0 = Date.now();
     const cappedMax = Math.min(Number(max) || 50, 120);
     const needle = String(find || "").trim().toLowerCase();
-    const r = await ubSend("tab.snapshot", { tabId, tab, max: cappedMax, offset, ...(needle ? { match: needle } : {}) }, undefined, ubResolveProfile(profile));
-    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const tgt = ubTarget(profile);
+    if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const r = await ubSend("tab.snapshot", { tabId, tab, max: cappedMax, offset, ...(needle ? { match: needle } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const elements = Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.items) ? r.data.items : []);
     const overlay = (!Array.isArray(r.data) && r.data && typeof r.data.overlay === "object" && r.data.overlay) ? r.data.overlay : null;
@@ -293,6 +316,10 @@ reg("n_ubrowser_act", {
   run: async (a) => {
     const t0 = Date.now();
     if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|close | exemplo: {action:"goto", tab:"trecho", url:"https://..."}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    // roteamento multi-perfil: profile pedido SEM match = erro acionável (lista conectados),
+    // nunca despacha em silêncio p/ outro perfil. Um só resolve vale p/ ida e retry.
+    const tgt = ubTarget(a.profile);
+    if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { action: a.action, profile: String(a.profile ?? "") }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // #48: ref do snapshot resolve p/ selector (cache por aba); selector explícito vence.
     if (a.ref !== undefined && a.ref !== null && String(a.ref) !== "" && !a.selector) {
       const res = ubSnapCacheResolve(ubSnapCacheKey({ tabId: a.tabId, tab: a.tab }), a.ref);
@@ -311,15 +338,15 @@ reg("n_ubrowser_act", {
     // console zera os alertas push ANTES da ida-volta: vale mesmo se a extensão falhar
     // (o hint já cumpriu o papel de levar o agente até aqui).
     if (a.action === "console") ubAlertsRead();
-    let r = await ubSend(map[a.action], { ...a }, undefined, ubResolveProfile(a.profile));
+    let r = await ubSend(map[a.action], { ...a }, UB_TIMEOUT_MS, tgt.id);
     // #43a: evaluate null intermitente (race com JS da página) — 1 retry após 800ms antes de declarar null.
     // v14: vale a verdade mais nova — adota r2 seja ok ou erro (só pendings mantêm o antigo).
     if (a.action === "evaluate" && r && r.ok && (r.data?.value ?? null) === null && !r.data?.error) {
       await new Promise((res) => setTimeout(res, 800));
-      const r2 = await ubSend(map[a.action], { ...a }, undefined, ubResolveProfile(a.profile));
+      const r2 = await ubSend(map[a.action], { ...a }, UB_TIMEOUT_MS, tgt.id);
       r = ubEvalPickRetry(r, r2);
     }
-    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     const d = r.data || {};
     if (a.action === "reload-extension") {
@@ -466,7 +493,7 @@ reg("n_ubrowser_act", {
     let snapNote = "", snapTop = null;
     if (navNewDoc && a.snap && afterUrl) {
       try {
-        const sr = await ubSend("tab.snapshot", { tabId: a.tabId, tab: a.tab, max: 40 });
+        const sr = await ubSend("tab.snapshot", { tabId: a.tabId, tab: a.tab, max: 40 }, UB_TIMEOUT_MS, tgt.id); // mesmo perfil da ação (multi-perfil)
         const sels = Array.isArray(sr?.data) ? sr.data : (Array.isArray(sr?.data?.items) ? sr.data.items : []);
         if (sr?.ok && sels.length) {
           const ranked = ubSnapRank(sels).slice(0, 10);
@@ -485,8 +512,10 @@ reg("n_ubrowser_shot", {
   run: async ({ tabId, tab, scale, profile }) => {
     const t0 = Date.now();
     const dsf = Number(scale) === 0.5 ? 0.5 : 1;
-    const r = await ubSend("tab.shot", { tabId, tab, scale: dsf }, undefined, ubResolveProfile(profile));
-    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${UB_TIMEOUT} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const tgt = ubTarget(profile);
+    if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const r = await ubSend("tab.shot", { tabId, tab, scale: dsf }, UB_TIMEOUT_MS, tgt.id);
+    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (r.data?.background) return devOut({ status: "error", summary: "Chrome só imprime aba VISÍVEL — traga p/ frente ou use n_browser_screenshot headless", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     // v14 frescor: hash do shot por aba — imagem idêntica à anterior vira aviso, não verde falso.

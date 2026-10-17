@@ -13,6 +13,13 @@ const DEFAULT_MACHINE = "basicLinux32gb"; // 2-core/8GB — melhor cota grátis 
 const SCOPE_HINT = "gh auth refresh -h github.com -s codespace"; // scope 'codespace' faltando no token
 // Guard de resposta do host (#50): sync nunca volta acima de ~170s.
 const EXEC_TMO = Math.min(Math.max(Number(process.env.CANIVETE_CS_EXEC_TMO) || 120000, 5000), 165000);
+// timeout POR CHAMADA (n_codespace_exec timeoutSec, opcional): clampado DENTRO do guard do host (5s..165s hard cap).
+export const execTmo = (sec) => Math.min(Math.max((Number(sec) || 0) * 1000 || EXEC_TMO, 5000), 165000);
+
+// states reais da API (gh codespace list): Available | Starting | ShuttingDown | Shutdown | Archived | ... — rótulo pt-BR no summary.
+const STATE_PT = { Available: "ativa", Starting: "iniciando", ShuttingDown: "parando", Shutdown: "parada", Archived: "arquivada", Deleted: "apagada", Removing: "removendo", Unavailable: "indisponível" };
+export function csStateLabel(state) { const k = String(state || "").trim(); return STATE_PT[k] || k || "?"; }
+const RUNNING_STATES = new Set(["Available", "Starting"]); // "Active" NÃO existe na API — parado/arquivado nunca entra no stop all:true
 
 // ---- helpers puros (exportados p/ teste sem gh) ----
 export function csParseAuth(text) {
@@ -40,6 +47,7 @@ export function csParseList(jsonText) {
     repository: c.repository || "",
     branch: c.branch || "",
     machine: c.machineName || (c.machine && (c.machine.displayName || c.machine.name)) || "",
+    gitStatus: c.gitStatus || null,
   })).filter((c) => c.name);
 }
 
@@ -47,32 +55,78 @@ export function csScopeIssue(text) {
   return /codespace["\s]*(scope|operation)|needs? the ["']?codespace|Requires? the ["']?codespace/i.test(String(text || ""));
 }
 
+// SKUs válidos p/ validar machine ANTES de tocar a cota (2-core = 60h/mês free; maiores comem 2x/4x).
+const MACHINE_KNOWN = {
+  basicLinux32gb: "2-core/8GB — 60h/mês",
+  standardLinux32gb: "4-core/16GB — 30h/mês",
+  premiumLinux32gb: "4-core/8GB — 30h/mês",
+  largeLinux32gb: "8-core/32GB — 15h/mês",
+};
+export function csNormRepo(input) {
+  return String(input || "").trim().replace(/^https?:\/\/(www\.)?github\.com\//i, "").replace(/\.git$/i, "");
+}
+export const csIdleMin = (m) => Math.min(Math.max(Number(m) || 30, 5), 240); // 5min..4h — mata ócio (economiza cota)
 export function csCreateArgs({ repo, branch, machine, idleMin, devcontainerPath }) {
   const args = ["gh", "codespace", "create", "--repo", repo || BLANK_REPO, "--machine", machine || DEFAULT_MACHINE, "--default-permissions"];
   if (branch) args.push("--branch", branch);
   if (devcontainerPath) args.push("--devcontainer-path", devcontainerPath);
-  const idle = Math.min(Math.max(Number(idleMin) || 30, 5), 240); // 5min..4h — mata ócio (economiza cota)
-  args.push("--idle-timeout", `${idle}m`);
+  args.push("--idle-timeout", `${csIdleMin(idleMin)}m`);
   return args;
 }
 
 // ---- exec gh com conta opcional (não expõe token nunca) ----
 // CANIVETE_GH_CONFIG_DIR: perfil gh compartilhado (multi-conta do serviço, ex /etc/canivete/gh)
+// account é case-insensitive: resolve p/ o nome canônico (gh auth token --user é case-sensitive).
 const GH_CFG = () => (process.env.CANIVETE_GH_CONFIG_DIR ? { GH_CONFIG_DIR: process.env.CANIVETE_GH_CONFIG_DIR } : {});
+export const accLine = (a) => `${a.user}${a.active ? " [ativa]" : a.valid ? " (válida)" : " (token inválido)"}`;
+function accFail(want, accounts, kind) {
+  const why = kind === "unknown" ? "não está logada no gh" : kind === "invalid" ? "token inválido/expirado" : "token não obtido";
+  const e = new Error(`conta gh "${want}": ${why} — contas: ${accounts.map(accLine).join(", ") || "(nenhuma)"} | logar/religar: n_codespace_login (link de 1 clique)`);
+  e.accounts = accounts;
+  return e;
+}
+async function ghTok(user) {
+  const t = await exec("gh", ["auth", "token", "--user", user], { env: { ...GH_CFG() }, timeout: 15000 });
+  const tok = (t.so || "").trim().split(/\r?\n/)[0];
+  return t.code === 0 && tok.startsWith("gh") ? tok : null;
+}
 async function runGh(args, { account, timeoutMs, cwd } = {}) {
   const env = { ...GH_CFG() };
-  if (account) {
-    const t = await exec("gh", ["auth", "token", "--user", String(account)], { env: { ...GH_CFG() }, timeout: 15000 });
-    const tok = (t.so || "").trim().split(/\r?\n/)[0];
-    if (t.code !== 0 || !tok || !tok.startsWith("gh")) {
+  const want = account ? String(account).trim() : "";
+  if (want) {
+    let tok = await ghTok(want); // fast path: nome exato
+    if (!tok) {
       const { accounts } = await listAccounts();
-      throw new Error(`conta gh "${account}" não está logada/ativa (token não obtido) — contas válidas: ${accounts.filter((a) => a.valid).map((a) => a.user).join(", ") || "(nenhuma)"} | acumule: n_codespace_login gera link de 1 clique`);
+      const hit = accounts.find((a) => a.user.toLowerCase() === want.toLowerCase());
+      if (!hit) throw accFail(want, accounts, "unknown");
+      if (!hit.valid) throw accFail(want, accounts, "invalid");
+      tok = await ghTok(hit.user); // resolve pelo nome canônico
+      if (!tok) throw accFail(want, accounts, "notokens");
     }
     env.GH_TOKEN = tok;
   }
   return exec(args[0], args.slice(1), { timeout: timeoutMs || EXEC_TMO, cwd, env });
 }
-const ghError = (r) => `${/the codespace|Must have|scope|403|402/i.test(r.se) && !r.se.includes("is invalid") ? `gh: ${(r.se.split("\n")[0] || "").slice(0, 300)}` : (r.killed ? "timeout" : `exit ${r.code ?? "?"}`)}`;
+// motivo (pt-BR, 1 linha) do erro do gh — mapeia cota/rate/scope/404/machine/repo; nunca ecoa tokens.
+function ghReason(r) {
+  const txt = `${(r.se || "").slice(0, 400)} ${(r.so || "").slice(0, 300)}`;
+  if (r.killed) return "timeout";
+  if (r.error) return `gh indisponível: ${r.error}`;
+  if (/HTTP 401|Bad credentials/i.test(txt)) return "HTTP 401 — token inválido/expirado";
+  if (/HTTP 402|out of monthly|payment required/i.test(txt)) return "HTTP 402 — cota free/budget desta conta esgotada";
+  if (/HTTP 429|rate limit/i.test(txt)) return "HTTP 429 — rate limit do GitHub, espere ~1 min";
+  if (/HTTP 403|not authorized|must have|has not been granted|forbidden/i.test(txt)) return "HTTP 403 — sem permissão/scope no token";
+  if (/HTTP 404|not found|failed to get codespace|error fetching codespace/i.test(txt)) return "HTTP 404 — não achou (name errado, conta errada ou coisa apagada)";
+  if (/invalid machine|machine type/i.test(txt)) return "machine inválida";
+  if (/repository not found|cannot find repository/i.test(txt)) return "repo inacessível p/ esta conta";
+  if (csScopeIssue(txt)) return "token sem scope codespace";
+  return `exit ${r.code ?? "?"}`;
+}
+const ghError = (r) => {
+  const line = (r.se || "").split(/\r?\n/)[0].trim();
+  const reason = ghReason(r);
+  return /HTTP|scope|machine|repo inac/.test(reason) && line ? `${reason} | ${line.slice(0, 200)}` : line ? `${reason}: ${line.slice(0, 200)}` : reason;
+};
 
 export async function listAccounts() {
   const r = await runGh(["gh", "auth", "status"], { timeoutMs: 15000 });
@@ -83,6 +137,18 @@ function scopeWrap(r) {
     ? { ...fallbackHint("login sem codespace: rode n_codespace_login (gera o LINK de 1 clique na resposta e guarda o job; confira com n_codespace_login_status)") }
     : {};
 }
+// runGh/listAccounts podem throw (conta errada, gh fora): guard converte em resposta de ERRO do protocolo
+// (devOut pt-BR c/ contas em data) — nunca mais "tool error:" cru na raia.
+const guard = (fn) => async (p = {}) => {
+  const t0 = Date.now();
+  try { return await fn(p); } catch (e) {
+    return devOut({ status: "error", summary: `falhou: ${String((e && e.message) || e).slice(0, 300)}`, data: e && e.accounts ? { accounts: e.accounts } : {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+  }
+};
+// token ruim (401/scope) tem UM cura: logar de novo — next espalhado nos ramos de erro das tools.
+const errNext = (r) => /HTTP 401|Bad credentials/i.test(`${r.se || ""}${r.so || ""}`) || csScopeIssue(r.se || r.so)
+  ? [{ tool: "n_codespace_login", reason: "Token inválido/expirado ou sem scope — link de 1 clique" }]
+  : undefined;
 
 // ---- login de contas novas: link de 1 clique gerado NA RESPOSTA da tool ----
 // job setsid sobrevive entre chamadas (filho do serviço, grupo próprio); log em /tmp com o loginId no nome.
@@ -94,103 +160,169 @@ function accSummary(auth) {
 
 // ---- 1) LIST: contas + codespaces (passo 1 sempre) ----
 reg("n_codespace_list", {
-  description: "Lista contas gh logadas + codespaces do ambiente de testes universal (2-core/8GB grátis 60h/mês via cota GitHub). SEMPRE o passo 1: pega o name p/ exec/stop, mostra quem é a conta ATIVA (ou passe account:\"user\" nas demais tools p/ usar outra conta que tenha cota). Erro de scope → rode gh auth refresh -h github.com -s codespace (one-time code no browser).",
-  inputSchema: { type: "object", properties: { account: { type: "string", description: "listar codespaces DESTA conta gh (default: conta ativa)" } }, required: [] },
-  run: async ({ account } = {}) => {
+  description: "Lista contas gh logadas + codespaces do ambiente de testes universal (2-core/8GB grátis 60h/mês via cota GitHub). SEMPRE o passo 1: pega o name p/ exec/stop/delete, mostra a conta ATIVA e o ESTADO de cada cs (parada ≠ gasta cota). account é case-insensitive. Erro de scope → rode gh auth refresh -h github.com -s codespace (one-time code no browser).",
+  inputSchema: { type: "object", properties: { account: { type: "string", description: "listar codespaces DESTA conta gh (case-insensitive; default: conta ativa)" } }, required: [] },
+  run: guard(async ({ account } = {}) => {
     const t0 = Date.now();
+    const acct = account ? String(account).trim() : "";
     const auth = await listAccounts();
-    const r = await runGh(["gh", "codespace", "list", "--json", "name,displayName,state,repository,machineName"], { account, timeoutMs: 60000 });
+    let r = await runGh(["gh", "codespace", "list", "--json", "name,displayName,state,repository,machineName,gitStatus"], { account: acct || undefined, timeoutMs: 60000 });
+    // gh antigo ("Unknown JSON field"): refaz sem gitStatus em vez de matar o list inteiro (portabilidade).
+    if (!r.killed && r.code !== 0 && /unknown json field/i.test(`${r.se || ""}${r.so || ""}`))
+      r = await runGh(["gh", "codespace", "list", "--json", "name,displayName,state,repository,machineName"], { account: acct || undefined, timeoutMs: 60000 });
     if (r.killed || r.code !== 0)
-      return devOut({ status: "error", summary: `${ghError(r)} — contas gh: ${auth.accounts.map((a) => `${a.user}${a.active ? " [ativa]" : a.valid ? "" : " (token inválido)"}`).join(", ") || "(nenhuma — gh auth login)"}`, data: { accounts: auth.accounts }, ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ status: "error", summary: `list falhou: ${ghError(r)} — contas: ${auth.accounts.map(accLine).join(", ") || "(nenhuma)"}`, data: { accounts: auth.accounts }, next: errNext(r), ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } });
     const cs = csParseList(r.so);
-    const note = account && account !== auth.active ? ` (conta "${account}")` : "";
+    const counts = {};
+    for (const c of cs) { const k = csStateLabel(c.state); counts[k] = (counts[k] || 0) + 1; }
+    const stateTxt = cs.length ? Object.entries(counts).map(([k, v]) => `${v}×${k}`).join(", ") : "nenhum";
+    const note = acct && acct.toLowerCase() !== (auth.active || "").toLowerCase() ? ` (conta "${acct}")` : "";
     const bad = auth.accounts.filter((a) => !a.valid);
+    const badNote = bad.length ? ` | sem token: ${bad.map((b) => b.user).join(", ")}` : "";
     return devOut({
-      summary: `${cs.length} código(s) de espaço${note} | conta ativa: ${auth.active || "?"} | contas: ${auth.accounts.map((a) => a.user).join(", ")}`,
+      summary: `${cs.length} codespace(s) — ${stateTxt}${note} | ativa: ${auth.active || "?"} | contas: ${auth.accounts.map((a) => a.user).join(", ")}${badNote} — cota: parado não consome os 60h/mês`,
       data: { activeAccount: auth.active, accounts: auth.accounts, codespaces: cs, defaultRepo_sem_projetos: BLANK_REPO, default_machine: DEFAULT_MACHINE },
       telemetry: { execution_time_ms: Date.now() - t0 },
       next: bad.length
         ? [{ tool: "n_codespace_login", reason: `Acumular/religar ${bad.length} conta(s) sem token válido (${bad.map((b) => b.user).join(", ")}) — link de 1 clique` }]
         : cs.length ? [{ tool: "n_codespace_exec", reason: "Rodar comando no codespace" }] : [{ tool: "n_codespace_create", reason: "Criar ambiente (sem repo = blank)" }],
     });
-  },
+  }),
 });
 
 // ---- 2) CREATE: dispara server-side, não trava sync (postCreate de devcontainer pode levar minutos) ----
+// Valida repo/machine/conta ANTES de tocar a cota; gh que falha RÁPIDO (code!=0, sem kill) é erro REAL (não "disparada").
 reg("n_codespace_create", {
-  description: "Cria codespace do ambiente de testes (default basicLinux32gb 2-core/8GB; idle-timeout mata ócio e economiza cota). repo omitido = github/codespaces-blank (codespace VAZIO, sem vínculo — teste universal). Volta rápido: a criação continua no servidor — confirme com n_codespace_list em ~2-3min (postCreate com install pode demorar). devcontainerPath: p/ repo com .devcontainer/devcontainer.json próprio.",
-  inputSchema: { type: "object", properties: { repo: { type: "string", description: "owner/repo (omitir = blank sem projeto)" }, branch: { type: "string" }, machine: { type: "string", default: DEFAULT_MACHINE, description: "basicLinux32gb (default, melhor cota) | premiumLinux32gb (4-core) — cada um consome 2x/4x core-h" }, idleMin: { type: "number", default: 30, description: "min de ócio antes do auto-stop (5-240; default 30)" }, devcontainerPath: { type: "string" }, account: { type: "string", description: "conta gh que paga a cota (default: ativa)" } }, required: [] },
-  run: async (a = {}) => {
+  description: "Cria codespace do ambiente de testes (default basicLinux32gb 2-core/8GB; idle-timeout mata ócio e economiza cota). repo omitido = github/codespaces-blank (VAZIO, sem vínculo — teste universal); aceita owner/repo ou URL do github. Falha ANTES de gastar cota se repo/machine/account forem inválidos. Volta rápido: a criação continua no servidor — confirme com n_codespace_list em ~2-3min (postCreate com install pode demorar).",
+  inputSchema: { type: "object", properties: { repo: { type: "string", description: "owner/repo ou URL github (omitir = blank sem projeto)" }, branch: { type: "string" }, machine: { type: "string", default: DEFAULT_MACHINE, description: "basicLinux32gb (default, 2-core/60h-mês) | standardLinux32gb | premiumLinux32gb | largeLinux32gb — maiores comem a cota mais rápido" }, idleMin: { type: "number", default: 30, description: "min de ócio antes do auto-stop (5-240; default 30)" }, devcontainerPath: { type: "string" }, account: { type: "string", description: "conta gh que paga a cota (default: ativa; case-insensitive)" } }, required: [] },
+  run: guard(async (a = {}) => {
     const t0 = Date.now();
-    const args = csCreateArgs(a);
+    const repo = csNormRepo(a.repo);
+    const machine = String(a.machine || DEFAULT_MACHINE).trim();
+    const idle = csIdleMin(a.idleMin);
+    if (repo && !/^[\w.\-]+\/[\w.\-]+$/.test(repo))
+      return devOut({ status: "error", summary: `repo inválido: "${a.repo}" — use owner/repo (ex: AsafeTork/canivete) ou omita p/ blank ${BLANK_REPO}`, data: { repo: a.repo }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    // machine fora do catálogo local: passa adiante (gh valida server-side; falha rápida não gasta cota) — só avisa no data.
+    const machineWarn = machine && !MACHINE_KNOWN[machine]
+      ? `machine "${machine}" fora do catálogo local (${Object.keys(MACHINE_KNOWN).join(", ")}) — gh valida no server-side`
+      : undefined;
+    const args = csCreateArgs({ ...a, repo, machine });
     // 25s chega p/ API aceitar a criação (server-side continua); mata o gh (que só ESPERA) => nunca trava sync
     const r = await runGh(args, { account: a.account, timeoutMs: 25000 });
-    const started = !r.killed;
     if (r.killed || r.code === 0)
-      return devOut({ summary: `criação ${started ? "disparada" : "aceita"}: ${a.repo || BLANK_REPO}${a.branch ? ` @${a.branch}` : ""} — machine ${a.machine || DEFAULT_MACHINE}, idle ${Math.min(Math.max(Number(a.idleMin) || 30, 5), 240)}m, conta ${a.account || "(ativa)"} — confirme com n_codespace_list em ~2-3 min`, data: { repo: a.repo || BLANK_REPO }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_codespace_list", reason: "Pegar o name do codespace criado" }] });
-    return devOut({ status: "error", summary: `${ghError(r)} — ${/out of monthly free usage|HTTP 402/i.test(r.se || "") ? "cota/budget desta conta esgotado para codespace → acumule outra conta: n_codespace_login gera link de 1 clique, depois account:\"<user>\"" : "tente account de outra conta (n_codespace_list lista as contas)"}`, data: {}, ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } });
-  },
+      return devOut({ summary: `criação ${r.code === 0 ? "aceita" : "disparada"}: ${repo}${a.branch ? ` @${a.branch}` : ""} — machine ${machine} (${MACHINE_KNOWN[machine] || "custo de cota a conferir"}), idle ${idle}m, conta ${a.account || "(ativa)"} — confirme com n_codespace_list em ~2-3 min`, data: { repo, machine, idleMin: idle, ...(machineWarn ? { machineWarn } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_codespace_list", reason: "Pegar o name do codespace criado" }] });
+    const quota = /HTTP 402|out of monthly|payment required/i.test(`${r.se || ""}${r.so || ""}`);
+    return devOut({ status: "error", summary: `criação falhou: ${ghError(r)}${quota ? " — acumule outra conta (n_codespace_login gera link de 1 clique) e depois account:\"<user>\"" : ""}`, data: { repo, machine }, next: errNext(r), ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } });
+  }),
 });
 
 // ---- 3) EXEC: comando no codespace (o teste em si) ----
 reg("n_codespace_exec", {
-  description: "Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. Passe name do n_codespace_list (trecho do displayName aceita? NÃO — precisa name exato da list). Teto sync 165s (host corta resposta acima) — tarefa longa: rode com nohup dentro (ex: bash -lc \"nohup npm test > out.log 2>&1 &\") e depois leia out.log em outra exec. Use p/ teste universal; código do repo via git sync.",
-  inputSchema: { type: "object", properties: { name: { type: "string", description: "name exato do codespace (n_codespace_list)" }, cmd: { type: "string", description: "comando bash; ex: \"npm run check && node test/smoke.mjs | tail -3\"" }, account: { type: "string", description: "conta gh dona do codespace (default: ativa)" } }, required: ["name", "cmd"] },
-  run: async ({ name, cmd, account } = {}) => {
+  description: "Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. name EXATO do n_codespace_list (trecho do displayName aceita? NÃO — precisa name exato). Teto sync 165s (host corta resposta) — timeoutSec (5-165, default 120) p/ comandos curtos; tarefa longa: rode com nohup dentro (ex: bash -lc \"nohup npm test > out.log 2>&1 &\") e depois leia out.log em outra exec. stdout/stderr até 12k/3k (nota no summary se cortado).",
+  inputSchema: { type: "object", properties: { name: { type: "string", description: "name exato do codespace (n_codespace_list)" }, cmd: { type: "string", description: "comando bash; ex: \"npm run check && node test/smoke.mjs | tail -3\"" }, timeoutSec: { type: "number", description: "timeout DESTA exec em segundos (5-165; default 120 — clampado dentro do guard de resposta do host)" }, account: { type: "string", description: "conta gh dona do codespace (default: ativa; case-insensitive)" } }, required: ["name", "cmd"] },
+  run: guard(async ({ name, cmd, account, timeoutSec } = {}) => {
     const t0 = Date.now();
     if (!name || !cmd) return devOut({ status: "error", summary: "name e cmd são obrigatórios (name vem do n_codespace_list)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    const r = await runGh(["gh", "codespace", "ssh", "-c", String(name), "--", "bash", "-lc", String(cmd)], { account, timeoutMs: EXEC_TMO });
+    const tmo = execTmo(timeoutSec);
+    const r = await runGh(["gh", "codespace", "ssh", "-c", String(name), "--", "bash", "-lc", String(cmd)], { account, timeoutMs: tmo });
     const so = (r.so || "").trim(), se = (r.se || "").trim();
-    if (r.killed) so && (se = se || "");
-    const err = !!(r.killed || r.code !== 0);
+    const secs = Math.round((Date.now() - t0) / 1000);
+    const cut = { stdout: so.length > 12000, stderr: se.length > 3000 };
+    const cutNote = `${cut.stdout ? ` | stdout cortado p/ 12k (${so.length} chars em data.stdout)` : ""}${cut.stderr ? ` | stderr cortado p/ 3k (${se.length} chars em data.stderr)` : ""}`;
+    const outData = { exit: r.killed ? "timeout" : r.code, timeoutMs: tmo, stdout: trimOut(so, 12000), stderr: trimOut(se, 3000), truncated: cut };
+    if (r.killed)
+      return devOut({
+        status: so ? "warn" : "error",
+        summary: `timeout ${Math.round(tmo / 1000)}s sem fechar (${secs}s, conta ${account || "ativa"}${so ? `, stdout parcial: ${so.length} chars em data.stdout` : ", sem saída"})${cutNote} — tarefa longa: nohup + leia o log em exec nova; feche com n_codespace_stop`,
+        data: outData,
+        telemetry: { execution_time_ms: Date.now() - t0 },
+        next: so ? [{ tool: "n_codespace_exec", reason: "Ler o resto do log (tail -200 out.log ou o log do seu nohup)" }, { tool: "n_codespace_stop", reason: "Fechar o cs acordado (economiza os 60h/mês)" }] : [{ tool: "n_codespace_stop", reason: "Fechar o cs acordado (economiza os 60h/mês)" }],
+        ...fallbackHint('tarefa longa: rode subprocesso com nohup dentro do codespace (bash -lc "nohup <cmd> > out.log 2>&1 &") e leia out.log numa exec nova (sync max 165s)'),
+      });
+    if (r.code !== 0) {
+      const errLine = se.split(/\r?\n/)[0].trim();
+      const loginCure = csScopeIssue(`${se} ${so}`) || /HTTP 401|Bad credentials/i.test(se);
+      const notFound = /HTTP 404|failed to get codespace|error fetching codespace/i.test(se);
+      return devOut({
+        status: "error",
+        summary: `exit=${r.code} (${secs}s, conta ${account || "ativa"}) — ${errLine ? errLine.slice(0, 220) : ghError(r)} (stderr completo em data.stderr)${cutNote}`,
+        data: outData,
+        telemetry: { execution_time_ms: Date.now() - t0 },
+        next: loginCure
+          ? [{ tool: "n_codespace_login", reason: "Token inválido/expirado ou sem scope codespace — link de 1 clique" }]
+          : notFound
+          ? [{ tool: "n_codespace_list", reason: "404: name errado ou conta errada — conferir names/estados" }]
+          : [{ tool: "n_codespace_stop", reason: "Fechar o cs acordado (economiza os 60h/mês)" }],
+      });
+    }
     return devOut({
-      status: err ? (r.killed && so ? "warn" : "error") : "success",
-      summary: `exit=${r.killed ? "timeout" : r.code} (conta ${account || "ativa"}, ${Math.round((Date.now() - t0) / 1000)}s)${err ? "" : " ok"}`,
-      data: { exit: r.killed ? "timeout" : r.code, stdout: trimOut(so, 12000), stderr: trimOut(se, 3000) },
+      summary: `exit=0 — ok (${secs}s, conta ${account || "ativa"})${cutNote}`,
+      data: outData,
       telemetry: { execution_time_ms: Date.now() - t0 },
       next: [{ tool: "n_codespace_stop", reason: "Economizar cota: 60h/mês no free" }],
-      ...(err ? fallbackHint(r.killed ? "tarefa longa: rode com nohup dentro + leia out.log em outra exec (sync max 165s)" : "confira name em n_codespace_list; erro do comando está em stderr") : {}),
     });
-  },
+  }),
 });
 
 // ---- 4) STOP ----
 reg("n_codespace_stop", {
-  description: "Para codespace (congela; storage continua a contar, compute parado de grátis). Economiza os 60h/mês grátis. Passe name do n_codespace_list. all=true para TODOS os codespaces da conta (ghosts incluídos).",
-  inputSchema: { type: "object", properties: { name: { type: "string" }, all: { type: "boolean", description: "para todos os codespaces da conta" }, account: { type: "string" } }, required: [] },
-  run: async ({ name, all, account } = {}) => {
+  description: "Para codespace (congela; storage continua a contar, compute parado de grátis). Economiza os 60h/mês grátis. Passe name do n_codespace_list. all=true para TODOS os codespaces RODANDO da conta (states reais: Available/Starting). cs já parado conta como ok (\"já estava parado\").",
+  inputSchema: { type: "object", properties: { name: { type: "string" }, all: { type: "boolean", description: "para todos os codespaces RODANDO da conta" }, account: { type: "string", description: "case-insensitive" } }, required: [] },
+  run: guard(async ({ name, all, account } = {}) => {
     const t0 = Date.now();
     if (!name && !all) return devOut({ status: "error", summary: "passe name (do n_codespace_list) ou all:true", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    let names = name ? [String(name)] : ["..."];
+    let names;
     if (all) {
       const lst = await runGh(["gh", "codespace", "list", "--json", "name,state"], { account, timeoutMs: 60000 });
-      names = csParseList(lst.so).filter((c) => c.state === "Active").map((c) => c.name);
-      if (!names.length) return devOut({ summary: "nada rodando", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    }
+      names = csParseList(lst.so).filter((c) => RUNNING_STATES.has(c.state)).map((c) => c.name);
+      if (!names.length) return devOut({ summary: "nada rodando nesta conta — cota preservada", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    } else names = [String(name)];
     const results = [];
     for (const n of names) {
-      const r = await runGh(["gh", "codespace", "stop", "-c", n], { account, timeoutMs: 60000 });
-      results.push({ name: n, ok: r.code === 0 && !r.killed, error: r.code === 0 && !r.killed ? undefined : ghError(r) });
+      const r = await runGh(["gh", "codespace", "stop", "-c", n], { account, timeoutMs: 30000 }); // 30s/item: all:true com vários cs não estoura o guard de sync do host
+      const already = !r.killed && /is not running/i.test(`${r.so || ""}${r.se || ""}`);
+      const ok = already || (r.code === 0 && !r.killed);
+      results.push({ name: n, ok, note: already ? "já estava parado" : undefined, error: ok ? undefined : ghError(r) });
     }
-    const ok = results.filter((x) => x.ok).length;
-    return devOut({ summary: `${ok}/${results.length} codespace(s) parado(s) — compute parado não consome os 60h/mês`, data: { results }, ...scopeWrap(rz(results)), telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_codespace_delete", reason: "Liberar os 15GB/mês de storage (se não precisar mais)" }] });
-  },
+    const nOk = results.filter((x) => x.ok).length;
+    const fail = results.filter((x) => !x.ok);
+    const failTxt = fail.slice(0, 3).map((f) => `${f.name}: ${String(f.error).slice(0, 130)}`).join(" | ");
+    return devOut({
+      status: !fail.length ? "success" : nOk ? "warn" : "error",
+      summary: `${nOk}/${results.length} codespace(s) parado(s)${failTxt ? ` — falha: ${failTxt}` : ""} — compute parado não consome os 60h/mês`,
+      data: { results },
+      ...scopeWrap(rz(results)),
+      telemetry: { execution_time_ms: Date.now() - t0 },
+      next: errNext(rz(results)) || (nOk === results.length
+        ? [{ tool: "n_codespace_delete", reason: "Liberar os 15GB/mês de storage (se não precisar mais)" }]
+        : [{ tool: "n_codespace_list", reason: "Conferir name/conta do que falhou (pode já estar parado ou conta errada)" }]),
+    });
+  }),
 });
 const rz = (results) => ({ se: results.filter((x) => x.error).map((x) => x.error).join("; ") });
 
 // ---- 5) DELETE (destrutivo: confirm exigido) ----
 reg("n_codespace_delete", {
-  description: "APAGA codespace (estado+arquivos não commitados somem — commit antes!). exige confirm com a frase \"apagar\" (proteção do dono). Libera os 15GB/mês de storage (código se salva: push do repo antes).",
-  inputSchema: { type: "object", properties: { name: { type: "string" }, confirm: { type: "string", description: "exatamente: apagar" }, account: { type: "string" } }, required: ["name", "confirm"] },
-  run: async ({ name, confirm, account } = {}) => {
+  description: "APAGA codespace (estado+arquivos não commitados somem — commit antes!). exige confirm com a frase \"apagar\" (proteção do dono). Libera os 15GB/mês de storage (código se salva: push do repo antes). name errado → devolve os names que EXISTEM na conta c/ sugestão de n_codespace_list.",
+  inputSchema: { type: "object", properties: { name: { type: "string" }, confirm: { type: "string", description: "exatamente: apagar" }, account: { type: "string", description: "case-insensitive" } }, required: ["name", "confirm"] },
+  run: guard(async ({ name, confirm, account } = {}) => {
     const t0 = Date.now();
     if (!name) return devOut({ status: "error", summary: "name obrigatório (n_codespace_list)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (String(confirm || "").trim() !== "apagar") return devOut({ status: "error", summary: `destrutivo bloqueado — passe confirm:"apagar" (estado não commitado VAI SER PERDIDO; faça push primeiro)`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    const r = await runGh(["gh", "codespace", "delete", "-c", String(name), "--force"], { account, timeoutMs: 60000 });
-    return r.killed || r.code !== 0
-      ? devOut({ status: "error", summary: `${ghError(r)} — codespace não apagado`, data: { name }, ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } })
-      : devOut({ summary: `codespace ${name} apagado — storage liberado`, data: { name }, telemetry: { execution_time_ms: Date.now() - t0 } });
-  },
+    const nm = String(name).trim();
+    const r = await runGh(["gh", "codespace", "delete", "-c", nm, "--force"], { account, timeoutMs: 60000 });
+    if (!(r.killed || r.code !== 0))
+      return devOut({ summary: `codespace ${nm} apagado — storage liberado`, data: { name: nm }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (/HTTP 404|failed to get codespace|error fetching codespace/i.test(`${r.se || ""}${r.so || ""}`)) {
+      let existing = [];
+      try {
+        const lst = await runGh(["gh", "codespace", "list", "--json", "name,state"], { account, timeoutMs: 45000 });
+        existing = csParseList(lst.so).slice(0, 5).map((c) => c.name);
+      } catch {}
+      return devOut({ status: "error", summary: `404: "${nm}" não existe nesta conta${account ? ` ("${account}")` : ""} — pode já ter sido apagado; existentes: ${existing.join(", ") || "(nenhum)"} — pegue o name/certa conta em n_codespace_list`, data: { name: nm, existing }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_codespace_list", reason: "Names/contas antes de apagar" }] });
+    }
+    return devOut({ status: "error", summary: `delete falhou: ${ghError(r)} — codespace não apagado`, data: { name: nm }, next: errNext(r), ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } });
+  }),
 });
 
 // ---- 6) LOGIN: gera LINK de 1 clique na resposta (device flow com user_code na URL) ----
@@ -216,21 +348,31 @@ async function jobRunning(loginId, log) {
   return (await csJobPid(loginId, log)) > 0;
 }
 reg("n_codespace_login", {
-  description: "Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. codespace): job background emite o device code e a tool devolve github.com/login/device?user_code=CODE — o dono SÓ CLICA (e entra com a conta desejada no browser); a conta entra no catálogo do gh sozinha (multi-conta via account:\"user\"). Confira depois com n_codespace_login_status (loginId vem Aqui). Uso: quando n_codespace_list mostrar conta inválida/sem scope, OU para acumular outro usuário.",
-  inputSchema: { type: "object", properties: { user: { type: "string", description: "conta que o dono VAI logar (ex:\"Financia-Brasil\") — opcional, só p/ o status conferir a conta certa" }, scopes: { type: "string", default: "repo,workflow,codespace,read:org,gist", description: "scopes pedidos no login" }, profile: { type: "string", description: "clientId de um perfil ubrowser conectado (n_ubrowser_status) p/ dirigir o auto-insert — default: heurística pelo nome do usuário" }, manual: { type: "boolean", description: "true = NÃO tenta auto-insert; só gera o código/link p/ o dono autorizar (use quando o GitHub bloquear o clique automático)" } }, required: [] },
-  run: async ({ user, scopes, profile, manual } = {}) => {
+  description: "Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. codespace): job background emite o device code e a tool devolve github.com/login/device?user_code=CODE — o dono SÓ CLICA (e entra com a conta desejada no browser); a conta entra no catálogo do gh sozinha (multi-conta via account:\"user\"). Confira depois com n_codespace_login_status (loginId vem Aqui). Conta informada que JÁ é válida → resposta curta sem gerar job (renovar: manual:true). Só gerar link de novo se uma chamada estiver pendente (mesma conta) → devolve o loginId do job vivo. Uso: quando n_codespace_list mostrar conta inválida/sem scope, OU para acumular outro usuário.",
+  inputSchema: { type: "object", properties: { user: { type: "string", description: "conta que o dono VAI logar (ex:\"Financia-Brasil\") — opcional, só p/ o status conferir a conta certa" }, scopes: { type: "string", default: "repo,workflow,codespace,read:org,gist", description: "scopes pedidos no login" }, profile: { type: "string", description: "clientId de um perfil ubrowser conectado (n_ubrowser_status) p/ dirigir o auto-insert — default: heurística pelo nome do usuário" }, manual: { type: "boolean", description: "true = NÃO tenta auto-insert; só gera o código/link p/ o dono autorizar (use quando o GitHub bloquear o clique automático; também serve p/ RENOVAR token de conta já válida)" } }, required: [] },
+  run: guard(async ({ user, scopes, profile, manual } = {}) => {
     const t0 = Date.now();
     const auth = await listAccounts();
+    const want = user ? String(user).trim() : "";
+    if (want) {
+      const hit = auth.accounts.find((x) => x.user.toLowerCase() === want.toLowerCase());
+      const pend = [...LOGIN_JOBS.entries()].find(([, j]) => j.user && j.user.toLowerCase() === want.toLowerCase());
+      const alive = pend ? await jobRunning(pend[0], pend[1].log).catch(() => false) : false;
+      if (alive)
+        return devOut({ status: "warn", summary: `já existe job pendente p/ ${pend[1].user}: ${pend[0]} — NÃO dispare outro; confira com n_codespace_login_status loginId:"${pend[0]}" (cancel:true remove)`, data: { accounts: auth.accounts, loginId: pend[0], user: pend[1].user }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_codespace_login_status", reason: "Verificar autorização do job pendente" }] });
+      if (hit && hit.valid && !manual)
+        return devOut({ status: "success", summary: `conta ${hit.user} JÁ logada/válida no gh — use account:"${hit.user}" nas tools | RENOVAR token/scopes: manual:true`, data: { accounts: auth.accounts, user: hit.user, alreadyValid: true }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_codespace_list", reason: "Codespaces/cota desta conta" }] });
+    }
     const scope = String(scopes || LOGIN_SCOPES()).replace(/[^a-z:,_-]/gi, "");
     const loginId = `cs${Date.now().toString(36)}`;
     const log = `/tmp/canivete-gh-login-${loginId}.log`;
     const prevActive = auth.active; // login -w troca a ativa p/ a conta nova; restauramos no status
     // wrapper setsid: pipeline em background + meta com o PID do gh (backing: órfão sobrevive UIColor restart)
     await exec("setsid", ["bash", "-c", `( printf "\\n" | GH_CONFIG_DIR=\${CANIVETE_GH_CONFIG_DIR:-/etc/canivete/gh} gh auth login -h github.com -p https -s ${scope} -w ) > ${log} 2>&1 & echo "ghpid=$!" > ${log}.meta`], { timeout: 20000 }).catch(() => {});
-    // espera o device code aparecer no log (até ~8s)
+    // espera o device code aparecer no log (até ~10s — gh às vezes demora p/ flushar)
     let code = null;
     const { readFile } = await import("node:fs/promises");
-    for (let i = 0; i < 16 && !code; i++) {
+    for (let i = 0; i < 20 && !code; i++) {
       try { code = csLoginCode(await readFile(log, "utf8")); } catch {}
       if (!code) await new Promise((r2) => setTimeout(r2, 500));
     }
@@ -351,14 +493,14 @@ reg("n_codespace_login", {
       telemetry: { execution_time_ms: Date.now() - t0 },
       next: [{ tool: "n_codespace_login_status", reason: "Confirmar a conta autorizada" }],
     });
-  },
+  }),
 });
 
 // ---- 7) LOGIN STATUS: autorizou? acumulou? ----
 reg("n_codespace_login_status", {
   description: "Confere o job do n_codespace_login: a conta esperada virou válida? Também limpa job concluído (e restaura a conta ativa anterior quando o login trocou). Se der \"code expirado\", rode n_codespace_login de novo. cancel=true mata o job pendente sem logar.",
   inputSchema: { type: "object", properties: { loginId: { type: "string", description: "id devolvido por n_codespace_login" }, cancel: { type: "boolean" } }, required: [] },
-  run: async ({ loginId, cancel } = {}) => {
+  run: guard(async ({ loginId, cancel } = {}) => {
     const t0 = Date.now();
     const auth = await listAccounts();
     if (cancel && loginId) {
@@ -397,5 +539,5 @@ reg("n_codespace_login_status", {
     }
     const mins = Math.round((Date.now() - j.startedAt) / 60000);
     return devOut({ status: "warn", summary: `aguardando o CLIQUE (${mins}min) — ${accSummary(auth)}${j.user ? ` | esperando: ${j.user}` : ""} — code/device flow expira em ~15min; cancel:true aborta`, data: { loginId, accounts: auth.accounts, user: j.user }, telemetry: { execution_time_ms: Date.now() - t0 } });
-  },
+  }),
 });

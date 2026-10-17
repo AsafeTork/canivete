@@ -9,7 +9,9 @@ const UB_PORT = Number(process.env.CANIVETE_BRIDGE_PORT || process.env.UBROWSER_
 const UB_TOKEN_FILE = process.env.CANIVETE_TOKEN_FILE || join(homedir(), ".config/canivete/token.txt");
 const UB_MAXPAY = Number(process.env.CANIVETE_UB_MAXPAY) || 500 * 1024;
 const UB_CHUNK = Number(process.env.CANIVETE_UB_CHUNK) || 400 * 1024;
-const UB_TIMEOUT_DEFAULT = Number(process.env.CANIVETE_UB_TIMEOUT) || 60000;
+// Timeout de transporte ÚNICO do ubrowser: default 60s, piso 1s, teto 300s (env respeitado).
+// tools-owner usa p/ mensagem fiel ("timeout Xs"); ubSend clampa qualquer caller por aqui.
+export const UB_TIMEOUT_MS = Math.min(Math.max(Number(process.env.CANIVETE_UB_TIMEOUT) || 60000, 1000), 300000);
 const UB_WARNPAY = 100 * 1024;
 // cache em memória: era readFileSync a cada request (hot-path HTTP) — agora lê 1x
 let ubTokenCache = (process.env.CANIVETE_TOKEN || "").trim() || null;
@@ -39,6 +41,21 @@ let ubLastPoll = 0;
 let ubExtInfo = null;
 const ubQueue = [], ubWaiters = [], ubPending = new Map();
 let ubSeq = 0, ubHttp = false;
+// TTL da fila: cada msg carrega exp (= ida do caller, ms). Expirada = caller já desistiu —
+// executar atrasado faria efeito fantasma (clique tardio na aba errada) e a resposta
+// voltaria p/ ninguém. Prune em push/poll/flush; contador p/ diagnóstico (ubStats).
+let ubExpired = 0;
+function ubPrune() {
+  const now = Date.now();
+  for (let i = ubQueue.length - 1; i >= 0; i--) {
+    const q = ubQueue[i];
+    if (q.exp && q.exp <= now) { ubQueue.splice(i, 1); ubExpired++; }
+  }
+}
+function ubNextIdx(extId) {
+  const now = Date.now();
+  return ubQueue.findIndex((q) => (!q.exp || q.exp > now) && (q.target === null || q.target === extId));
+}
 // alertas proativos do mon-hook (/ubpush): erros de console/rede empurrados pela extensão.
 // Ring global (cap 30) + contador não-lidos; `console` marca lido; hint nas respostas.
 const ubAlerts = [];
@@ -59,12 +76,13 @@ function ubAlertsHint() {
 }
 
 function ubFlush() {
+  ubPrune();
   let progressed = true;
   while (progressed) {
     progressed = false;
     for (let wi = 0; wi < ubWaiters.length; wi++) {
       const w = ubWaiters[wi];
-      const qi = ubQueue.findIndex((q) => q.target === null || q.target === w.extId);
+      const qi = ubNextIdx(w.extId);
       if (qi >= 0) {
         ubWaiters.splice(wi, 1);
         const q = ubQueue.splice(qi, 1)[0];
@@ -83,7 +101,7 @@ function ubEnsure() {
   const ubHttpSrv = createServer(async (req, res) => {
     try {
       const u = new URL(req.url || "/", "http://127.0.0.1");
-      if (u.pathname === "/health") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, queue: ubQueue.length })); return; }
+      if (u.pathname === "/health") { const now = Date.now(); let nconn = 0; for (const [, e] of ubExtensions) if (now - e.lastPoll < 45000) nconn++; res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, queue: ubQueue.length, connected: nconn })); return; }
       const token = u.searchParams.get("token") || req.headers["x-token"];
       const good = ubToken();
       if (!good || token !== good) { process.stderr.write(`[native-mcp] ubrowser 401 ${u.pathname} token=${String(token || "").slice(0, 8)}...\n`); res.writeHead(401); res.end("bad token"); return; }
@@ -93,7 +111,8 @@ function ubEnsure() {
         ext.lastPoll = Date.now();
         ubExtensions.set(extId, ext);
         ubLastPoll = Date.now();
-        const qi = ubQueue.findIndex((q) => q.target === null || q.target === extId);
+        ubPrune(); // sem isto, msg expirada entregue a um poll tardio = efeito fantasma no Chrome
+        const qi = ubNextIdx(extId);
         if (qi >= 0) { const q = ubQueue.splice(qi, 1)[0]; res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(q)); return; }
         const t = setTimeout(() => { const i = ubWaiters.findIndex((w) => w.res === res); if (i >= 0) ubWaiters.splice(i, 1); try { res.writeHead(204); res.end(); } catch (e) { process.stderr.write(`[canivete] ub poll 204 falhou (${e?.message || e})\n`); } }, 25000);
         ubWaiters.push({ res, t, extId });
@@ -123,6 +142,11 @@ function ubEnsure() {
           ext.info = hi;
           ext.lastPoll = Date.now();
           ubExtensions.set(clientId, ext);
+          if (ubExtensions.size > 50) { // cap: clientId trocado/anon por boot não cresce forever
+            let oldest = null;
+            for (const [oid, oe] of ubExtensions) if (!oldest || oe.lastPoll < ubExtensions.get(oldest).lastPoll) oldest = oid;
+            if (oldest && oldest !== clientId) ubExtensions.delete(oldest);
+          }
           ubLastPoll = Date.now();
           ubExtInfo = hi;
         }
@@ -143,7 +167,7 @@ function ubEnsure() {
           if (p.cmd === "status") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, data: { connected: ubConnected(), lastPollAgoMs: ubLastPoll ? Date.now() - ubLastPoll : -1, queued: ubQueue.length, ext: ubExtInfo } })); return; }
           if (!bridged && p.cmd !== "wait") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "cmd: status|diag|tabs|read|snapshot|scan|shot|goto|back|forward|reload|click|fill|press|scroll|wait|evaluate|cursor|select|highlight|waittext|type|new|close|flow (close só aba about:blank do agente; roubar foco: PROIBIDO pelo dono)" })); return; }
           if (p.cmd === "wait") { await new Promise((r) => setTimeout(r, Math.min(Number(a.waitMs ?? a.ms) || 2000, 15000))); res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"data":{"waited":true}}'); return; }
-          const r2 = await ubSend(bridged, { ...a }, Math.min(Number(p.timeoutMs) || UB_TIMEOUT_DEFAULT, 120000));
+          const r2 = await ubSend(bridged, { ...a }, Math.min(Number(p.timeoutMs) || UB_TIMEOUT_MS, 120000));
           if (r2.__offline || r2.__timeout) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: r2.__offline ? "EXTENSAO_OFFLINE" : "TIMEOUT_EXTENSAO" })); return; }
           res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: !!r2.ok, data: r2.data, error: r2.error, ...(r2.chunks ? { chunks: r2.chunks, chunked: true, bytes: r2.bytes, note: r2.note } : {}) }));
           return;
@@ -170,14 +194,16 @@ const ubConnected = () => {
 };
 const UB_OFF = "EXTENSÃO OFFLINE — dono: abra o Chrome (janela NORMAL, mesmo perfil, sem anônimo) com a extensão UBrowser ATIVA no popup, e peça de novo.";
 
-function ubSend(cmd, args = {}, timeoutMs = UB_TIMEOUT_DEFAULT, target = null) {
+function ubSend(cmd, args = {}, timeoutMs = UB_TIMEOUT_MS, target = null) {
   ubEnsure();
   return new Promise((resolve) => {
     if (!ubConnected()) { resolve({ __offline: true }); return; }
+    const to = Math.min(Math.max(Number(timeoutMs) || UB_TIMEOUT_MS, 1000), 300000);
     const id = `u${Date.now().toString(36)}${(ubSeq++).toString(36)}`;
-    const timer = setTimeout(() => { ubPending.delete(id); resolve({ __timeout: true }); }, timeoutMs);
+    const timer = setTimeout(() => { ubPending.delete(id); resolve({ __timeout: true }); }, to);
     ubPending.set(id, { resolve, timer });
-    ubQueue.push({ id, cmd, args, target });
+    ubQueue.push({ id, cmd, args, target, exp: Date.now() + to });
+    ubPrune();
     if (ubQueue.length > 50) ubQueue.splice(0, ubQueue.length - 50);
     ubFlush();
   });
@@ -196,15 +222,36 @@ export function ubResolveProfile(profile) {
 }
 
 export function ubListExtensions() {
+  ubPrune(); // leitura auto-saneadora: stats/erros nunca contam msg expirada como pendente
   const now = Date.now();
-  return [...ubExtensions.entries()].map(([id, e]) => ({ id, lastPollAgoMs: now - e.lastPoll, connected: now - e.lastPoll < 45000, info: e.info }));
+  return [...ubExtensions.entries()].map(([id, e]) => {
+    let queued = 0;
+    for (const q of ubQueue) if (q.target === null || q.target === id) queued++;
+    const info = e.info;
+    return {
+      id,
+      lastPollAgoMs: now - e.lastPoll,
+      connected: now - e.lastPoll < 45000,
+      ...(info && info.profileLabel ? { profileLabel: String(info.profileLabel).slice(0, 60) } : {}),
+      queued, // msgs na fila dirigidas a este cliente (ou broadcast) — 0 na fila vazia
+      info,
+    };
+  });
 }
 
 import { riskOf as ubRisk } from "./risk.mjs";
 
 export { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubAlertsPush, ubAlertsPending, ubAlertsRead, ubAlertsHint };
 export function ubStats() {
-  const now = Date.now();
-  const extensions = [...ubExtensions.entries()].map(([id, e]) => ({ id, lastPollAgoMs: now - e.lastPoll, connected: now - e.lastPoll < 45000, info: e.info }));
-  return { queued: ubQueue.length, extensions, ext: ubExtInfo, port: UB_PORT, lastPollAgoMs: ubLastPoll ? now - ubLastPoll : -1 };
+  // reutiliza ubListExtensions (fonte única): id/idade/connected/profileLabel/queued/info por cliente
+  const extensions = ubListExtensions();
+  return {
+    queued: ubQueue.length, // fila pendente agora
+    pending: ubPending.size, // idas-voltas aguardando /result (timeout/resposta pendente)
+    expiredDropped: ubExpired, // acumulado: msgs descartadas por TTL (caller desistiu antes do poll)
+    extensions,
+    ext: ubExtInfo,
+    port: UB_PORT,
+    lastPollAgoMs: ubLastPoll ? Date.now() - ubLastPoll : -1,
+  };
 }

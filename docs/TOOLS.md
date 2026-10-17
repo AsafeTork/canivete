@@ -20,11 +20,11 @@
 | `n_cnpj` | `src/lib/apis.mjs` | Consulta CNPJ (ReceitaWS, cache 7 dias, rate-limited, com retry). |
 | `n_codespace_create` | `src/lib/tools-codespace.mjs` | Cria codespace do ambiente de testes (default basicLinux32gb 2-core/8GB; idle-timeout mata ócio e economiza cota). |
 | `n_codespace_delete` | `src/lib/tools-codespace.mjs` | APAGA codespace (estado+arquivos não commitados somem — commit antes!). |
-| `n_codespace_exec` | `src/lib/tools-codespace.mjs` | Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. |
+| `n_codespace_exec` | `src/lib/tools-codespace.mjs` | Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. Tarefa longa: `nohup` dentro + ler o log; `timeoutSec` 5–165 por chamada. |
 | `n_codespace_list` | `src/lib/tools-codespace.mjs` | Lista contas gh logadas + codespaces do ambiente de testes universal (2-core/8GB grátis 60h/mês via cota GitHub). |
 | `n_codespace_login` | `src/lib/tools-codespace.mjs` | Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. |
 | `n_codespace_login_status` | `src/lib/tools-codespace.mjs` | Confere o job do n_codespace_login: a conta esperada virou válida? |
-| `n_codespace_stop` | `src/lib/tools-codespace.mjs` | Para codespace (congela; storage continua a contar, compute parado de grátis). |
+| `n_codespace_stop` | `src/lib/tools-codespace.mjs` | Para codespace (congela; storage continua a contar, compute parado de grátis). `all:true` = os RODANDO (states reais: Available/Starting); cs já parado conta como ok. |
 | `n_ctx_status` | `src/server.mjs` | A LLM manipula o próprio contexto: mostra gasto da sessão (calls, chars, ~tokens por tool) vs orçamento CANIVETE_CTX_BUDGET. |
 | `n_currency` | `src/lib/apis.mjs` | Taxa de câmbio/conversão (ECB/Frankfurter, diário, cache 1h). |
 | `n_edit` | `src/lib/fs.mjs` | Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). |

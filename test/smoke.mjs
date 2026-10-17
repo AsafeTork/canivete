@@ -77,6 +77,10 @@ await t("find snapshot acha headless", 15, "n_find_tools", { query: "snapshot" }
 await t("find snapshot acha dono", 16, "n_find_tools", { query: "snapshot" }, /n_ubrowser_snapshot/);
 await t("snapshot compact registrado (tools-owner, sem CDP)", 17, "n_bash", { command: "node -e \"import('node:fs').then(fs=>console.log(fs.readFileSync('src/lib/tools-owner.mjs','utf8').includes('compact')?'has-compact':'no-compact'))\"" }, /has-compact/);
 await t("docs receita onde-clicar (snapshot+compact+role)", 18, "n_bash", { command: "node -e \"import('node:fs').then(fs=>{const s=fs.readFileSync('docs/SKILL.md','utf8');console.log(/snapshot/.test(s)&&/compact/.test(s)&&/role/.test(s)?'receita-ok':'receita-falta')})\"" }, /receita-ok/);
+// puros do codespace (sem gh, sem rede): parse/clamp críticos — não pode nem abrir mão nem cair em NaN sutil.
+await t("cs puros (normRepo/state/execTmo/idle/parseList)", 40, "n_bash", { command: "node -e \"import('./src/lib/tools-codespace.mjs').then(m=>{const ok=m.csNormRepo('https://github.com/a/b.git')==='a/b'&&m.csStateLabel('Available')==='ativa'&&m.csStateLabel('Shutdown')==='parada'&&m.execTmo(180)===165000&&m.execTmo(3)===5000&&m.execTmo()===120000&&m.csIdleMin(0)===30&&m.csIdleMin(999)===240;const l=m.csParseList(JSON.stringify([{name:'x',state:'Available',gitStatus:{ahead:1}}]));const bad=Array.isArray(m.csParseList('nope'))&&Array.isArray(m.csParseList(''));console.log(ok&&l.length===1&&!!l[0].gitStatus&&bad?'cs-ok':'cs-fail')})\"" }, /cs-ok/);
+// clamp do timeout único do ubridge (env > teto → 300s): garante mensagens coerentes com o valor real.
+await t("UB timeout clamp (env alto -> 300s)", 41, "n_bash", { command: "export CANIVETE_UB_TIMEOUT=999999; node -e \"import('./src/lib/ubridge.mjs').then(m=>console.log(m.UB_TIMEOUT_MS===300000?'ub-clamp-ok':'ub-clamp-fail'))\"" }, /ub-clamp-ok/);
 // mailbox send/peek/recv roundtrip (leve, filesystem local, sem spawn opencode, sem rede). Filter isola sem limpar caixa alheia.
 // Só quando a família task está ativa (CANIVETE_TASK_ENABLE=1) — senão as tools nem registram.
 const mbTag = `smoke-mb-${Date.now()}`;

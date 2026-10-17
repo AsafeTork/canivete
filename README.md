@@ -127,7 +127,7 @@ Regra: **nunca sleep em loop** — 1 espera longa com teto + erro acionável no 
 |---|---|---|
 | `n_webfetch` retorna shell vazio / "SPA" | Site 100% JS, login-wall ou preço dinâmico (`n_webfetch` é **SEM JS**) | Use `n_browser_navigate({url})` (renderiza JS) ou `n_ubrowser_*` (sessão logada). |
 | `no results — 429 received` / `GitHub rate limit` / `ReceitaWS failed (429)` | Rate-limit do backend (GitHub 60 req/h sem token; search com retry 2×2s p/ 429) | Aguarde ~60s e tente de novo; search: `fresh:false` (lê cache 10min) em vez de `fresh:true`; GitHub: defina `GITHUB_TOKEN`/`GH_TOKEN`. |
-| `EXTENSAO_OFFLINE` / `TIMEOUT_EXTENSAO` / `timeout 60s aguardando extensão` | Chrome fechado, janela anônima, popup pausado ou token divergente | `n_ubrowser_status` diagnostica: Chrome aberto, **janela normal** (anônima é invisível), popup **ATIVO**, token igual a `~/.config/canivete/token.txt`; SW dormente acorda em ~1min (popup → Testar conexão). |
+| `EXTENSAO_OFFLINE` / `TIMEOUT_EXTENSAO` / `timeout 60s aguardando extensão` | Chrome fechado, janela anônima, popup pausado ou token divergente | `n_ubrowser_status` diagnostica: Chrome aberto, **janela normal** (anônima é invisível), popup **ATIVO**, token igual a `~/.config/canivete/token.txt`; SW dormente acorda em ~1min (popup → Testar conexão). Timeout único configurável: `CANIVETE_UB_TIMEOUT` (1s–300s). |
 | `SSRF bloqueado: host privado/intranet` | `n_browser_*` bloqueia intranet por padrão | Use URL pública ou `CANIVETE_BROWSER_ALLOW_PRIVATE=1` p/ permitir intranet. |
 | `chrome://…` / Web Store sem ação | Chrome bloqueia content script nessas páginas | Limite do Chrome — automatize só páginas web normais. |
 | Aba sumiu / `NOTFOUND` / snapshot vazio | IDs de aba mudam a cada restart/navegação; lista virtualizada só tem visíveis no DOM | Reliste `n_ubrowser_tabs`; prefira `tab:"trecho título/URL"` a `tabId`; `scan {pages:4}` antes de `snapshot`; `find:"texto"` p/ localizar sem despejar; `shadow:` no selector p/ web components; F5 + `ping` se versão velha. |
@@ -219,6 +219,9 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 | `CANIVETE_HOST_GUARD_MS` | `170000` | teto de resposta (antes do timeout do host) |
 | `CANIVETE_TOKEN` / `CANIVETE_TOKEN_FILE` | `~/.config/canivete/token.txt` (autogerado) | auth da extensão |
 | `CANIVETE_BRIDGE_PORT` | `19422` | ponte da extensão |
+| `CANIVETE_UB_TIMEOUT` | `60000` | timeout único da ponte ubrowser (clamp 1s–300s; mensagens mostram o valor real) |
+| `CANIVETE_CS_EXEC_TMO` | `120000` | timeout default do `n_codespace_exec` (clamp 5s–165s; por chamada: `timeoutSec`) |
+| `CANIVETE_GH_CONFIG_DIR` | — | perfil gh multi-conta do serviço (ex.: `/etc/canivete/gh`) |
 | `CANIVETE_CDP_PORT` | `19322` | Chrome headless (CDP) |
 | `CANIVETE_CHROME_BIN` | auto-detect | binário do Chrome |
 | `CANIVETE_CHROME_PROFILE` | `/tmp/canivete-chrome-profile` | perfil headless |

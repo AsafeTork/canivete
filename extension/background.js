@@ -36,16 +36,27 @@ const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catc
 // Identidade persistente deste perfil/instância da extensão — permite à ponte
 // rotear comandos ao perfil certo quando vários perfis estão ativos.
 let UB_CLIENT_ID = null;
+let UB_CLIENT_P = null; // chamada em curso: 2+ chamadas concorrentes (hello+poll) compartilham UM id
 async function ubClientId() {
   if (UB_CLIENT_ID) return UB_CLIENT_ID;
-  try {
-    const s = await chrome.storage.local.get("ubClientId");
-    if (s && s.ubClientId) { UB_CLIENT_ID = s.ubClientId; return UB_CLIENT_ID; }
-    const id = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : (Math.random().toString(36).slice(2) + Date.now().toString(36));
-    await chrome.storage.local.set({ ubClientId: id });
-    UB_CLIENT_ID = id;
-    return id;
-  } catch (e) { return "anon-" + Date.now().toString(36); }
+  if (!UB_CLIENT_P) {
+    UB_CLIENT_P = (async () => {
+      let id = null;
+      try {
+        const s = await chrome.storage.local.get("ubClientId");
+        if (s && s.ubClientId) id = s.ubClientId; // persistente: sobrevive ao SW
+      } catch {}
+      if (!id) { // storage indisponível: id estável NO BOOT (antes: id novo a cada call = lixo no bridge)
+        id = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : (Math.random().toString(36).slice(2) + Date.now().toString(36));
+        try { await chrome.storage.local.set({ ubClientId: id }); } catch {}
+      }
+      return id;
+    })();
+    try { UB_CLIENT_ID = await UB_CLIENT_P; } catch { UB_CLIENT_ID = "anon-" + Date.now().toString(36); }
+  } else {
+    UB_CLIENT_ID = await UB_CLIENT_P;
+  }
+  return UB_CLIENT_ID;
 }
 const injectedTabs = new Set(); // fallback manual 1x por aba/sessão (registro cobre o resto)
 const ubPushLast = new Map(); // debounce do /ubpush por tabId (4s)
@@ -992,25 +1003,41 @@ async function pollOnce() {
 }
 
 async function result(id, ok, data, error) {
-  await fetch(settings.url + "/result?token=" + encodeURIComponent(settings.token), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id, ok, data, error: error ? String(error).slice(0, 500) : undefined }),
-  }).catch(() => {});
+  const body = JSON.stringify({ id, ok, data, error: error ? String(error).slice(0, 500) : undefined });
+  for (let i = 0; i < 2; i++) { // 1 retry: resposta perdida = __timeout no caller (com efeito pronto). /result é idempotente por id.
+    try {
+      await fetch(settings.url + "/result?token=" + encodeURIComponent(settings.token), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      return;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 800));
+  }
 }
 
+// hello idempotente: onStartup+onInstalled+ início do loop disparam em rajada —
+// inflight compartilhado + janela de 3s evitam N hellos idênticos no arranque.
+let ubHelloAt = 0, ubHelloP = null;
 async function hello() {
-  try {
-    const tabs = await chrome.tabs.query({});
-    const cid = await ubClientId();
-    await fetch(settings.url + "/hello?token=" + encodeURIComponent(settings.token), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ info: { clientId: cid, tabs: tabs.length, tabUrls: tabs.map((t) => t.url).slice(0, 25), ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED } }),
-    });
-    diag.helloOk = new Date().toLocaleTimeString();
-  } catch (e) { diag.lastError = "hello: " + (e.message || e); }
-  saveDiag();
+  if (ubHelloP) return ubHelloP;
+  if (ubHelloAt && Date.now() - ubHelloAt < 3000) return null;
+  ubHelloP = (async () => {
+    try {
+      const tabs = await chrome.tabs.query({});
+      const cid = await ubClientId();
+      await fetch(settings.url + "/hello?token=" + encodeURIComponent(settings.token), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ info: { clientId: cid, tabs: tabs.length, tabUrls: tabs.map((t) => t.url).slice(0, 25), ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED } }),
+      });
+      diag.helloOk = new Date().toLocaleTimeString();
+    } catch (e) { diag.lastError = "hello: " + (e.message || e); }
+    finally { ubHelloAt = Date.now(); }
+    saveDiag();
+  })();
+  try { await ubHelloP; } finally { ubHelloP = null; }
 }
 
 // diagnóstico visível no popup
