@@ -44,7 +44,7 @@ export function csScopeIssue(text) {
 }
 
 export function csCreateArgs({ repo, branch, machine, idleMin, devcontainerPath }) {
-  const args = ["gh", "codespace", "create", "--repo", repo || BLANK_REPO, "--machine", machine || DEFAULT_MACHINE];
+  const args = ["gh", "codespace", "create", "--repo", repo || BLANK_REPO, "--machine", machine || DEFAULT_MACHINE, "--default-permissions"];
   if (branch) args.push("--branch", branch);
   if (devcontainerPath) args.push("--devcontainer-path", devcontainerPath);
   const idle = Math.min(Math.max(Number(idleMin) || 30, 5), 240); // 5min..4h — mata ócio (economiza cota)
@@ -124,7 +124,7 @@ reg("n_codespace_create", {
     const started = !r.killed;
     if (r.killed || r.code === 0)
       return devOut({ summary: `criação ${started ? "disparada" : "aceita"}: ${a.repo || BLANK_REPO}${a.branch ? ` @${a.branch}` : ""} — machine ${a.machine || DEFAULT_MACHINE}, idle ${Math.min(Math.max(Number(a.idleMin) || 30, 5), 240)}m, conta ${a.account || "(ativa)"} — confirme com n_codespace_list em ~2-3 min`, data: { repo: a.repo || BLANK_REPO }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_codespace_list", reason: "Pegar o name do codespace criado" }] });
-    return devOut({ status: "error", summary: `${ghError(r)} — cota esgotada? conta sem codespace habilitado? tente account de outra conta (n_codespace_list lista as contas)`, data: {}, ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } });
+    return devOut({ status: "error", summary: `${ghError(r)} — ${/out of monthly free usage|HTTP 402/i.test(r.se || "") ? "cota/budget desta conta esgotado para codespace → acumule outra conta: n_codespace_login gera link de 1 clique, depois account:\"<user>\"" : "tente account de outra conta (n_codespace_list lista as contas)"}`, data: {}, ...scopeWrap(r), telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 
@@ -197,9 +197,19 @@ export function csLoginCode(text) {
   return m ? `${m[1]}-${m[2]}` : null;
 }
 const LOGIN_JOBS = new Map(); // loginId -> { user, log, prevActive, startedAt }
+async function csJobPid(loginId, log) {
+  // meta: "ghpid=N" gravado pelo wrapper; exec: N vivo E cmdline é gh auth login
+  try {
+    const { readFile, readlink } = await import("node:fs/promises");
+    const meta = await readFile(`${log}.meta`, "utf8");
+    const pid = Number(/ghpid=(\d+)/.exec(meta)?.[1]) || 0;
+    if (!pid) return 0;
+    const r = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
+    return r.includes("auth") && r.includes("login") ? pid : 0;
+  } catch { return 0; }
+}
 async function jobRunning(loginId, log) {
-  const r = await exec("pgrep", ["-f", `canivete-gh-login-${loginId}.log`], { timeout: 8000 });
-  return (r.so || "").trim().length > 0;
+  return (await csJobPid(loginId, log)) > 0;
 }
 reg("n_codespace_login", {
   description: "Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. codespace): job background emite o device code e a tool devolve github.com/login/device?user_code=CODE — o dono SÓ CLICA (e entra com a conta desejada no browser); a conta entra no catálogo do gh sozinha (multi-conta via account:\"user\"). Confira depois com n_codespace_login_status (loginId vem Aqui). Uso: quando n_codespace_list mostrar conta inválida/sem scope, OU para acumular outro usuário.",
@@ -211,8 +221,8 @@ reg("n_codespace_login", {
     const loginId = `cs${Date.now().toString(36)}`;
     const log = `/tmp/canivete-gh-login-${loginId}.log`;
     const prevActive = auth.active; // login -w troca a ativa p/ a conta nova; restauramos no status
-    // jobs setsid: dispara e MORRE rápido (a tool não fica presa ao gh de 15min)
-    await exec("setsid", ["bash", "-c", `printf "\\n" | GH_CONFIG_DIR=\${CANIVETE_GH_CONFIG_DIR:-/etc/canivete/gh} gh auth login -h github.com -p https -s ${scope} -w > ${log} 2>&1`], { timeout: 20000 }).catch(() => {});
+    // wrapper setsid: pipeline em background + meta com o PID do gh (backing: órfão sobrevive UIColor restart)
+    await exec("setsid", ["bash", "-c", `( printf "\\n" | GH_CONFIG_DIR=\${CANIVETE_GH_CONFIG_DIR:-/etc/canivete/gh} gh auth login -h github.com -p https -s ${scope} -w ) > ${log} 2>&1 & echo "ghpid=$!" > ${log}.meta`], { timeout: 20000 }).catch(() => {});
     // espera o device code aparecer no log (até ~8s)
     let code = null;
     const { readFile } = await import("node:fs/promises");
@@ -247,7 +257,10 @@ reg("n_codespace_login_status", {
     if (cancel && loginId) {
       const j = LOGIN_JOBS.get(loginId);
       if (j) {
-        await exec("pkill", ["-f", `canivete-gh-login-${loginId}.log`], { timeout: 8000 });
+        const pid = await csJobPid(loginId, j.log);
+        if (pid) await exec("kill", [String(pid)], { timeout: 8000 }).catch(() => {});
+        await exec("pkill", ["-f", `canivete-gh-login-${loginId}`], { timeout: 8000 }).catch(() => {});
+        await exec("rm", ["-f", j.log, `${j.log}.meta`], { timeout: 8000 }).catch(() => {});
         LOGIN_JOBS.delete(loginId);
       }
       return devOut({ summary: `job ${loginId} cancelado — ${accSummary(auth)}`, data: { accounts: auth.accounts }, telemetry: { execution_time_ms: Date.now() - t0 } });
