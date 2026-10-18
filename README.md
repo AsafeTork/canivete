@@ -24,7 +24,7 @@ Toolkit MCP completo (46 tools `n_*`, **zero dependências**, Node 22+) que func
 | `n_write` | Cria/sobrescreve arquivo (cria pastas, `append` opcional); p/ troca pontual prefira `n_edit`. |
 | `n_edit` | Troca texto exato `oldString→newString` (falha segura: 0 matches ou ambíguo falha). |
 | `n_apply_patch` | Aplica unified diff via `git apply` no repo root (`check`/`stat`/`reverse`). |
-| `n_bash` | Shell `bash -lc` no repo root (exit+stdout/stderr truncados; `timeout` até 600s). |
+| `n_bash` | Shell `bash -lc` no repo root (exit+stdout/stderr truncados; `timeout` até 600s). `sleep` PROIBIDO — não espere, monitore (polling de status/log). |
 | `n_glob` | Acha arquivos por glob (`**`, até 500); descobrir arquivos antes de `n_read`. |
 | `n_grep` | Busca regex `path:line:trecho` (até 100); localizar símbolo antes de `n_analyze_change_impact`. |
 
@@ -134,6 +134,7 @@ Regra: **nunca sleep em loop** — 1 espera longa com teto + erro acionável no 
 | `evaluate` devolve `undefined` / CSP | Falta `return ...` no JS ou CSP bloqueou | Retorne valor (`return ...`); CSP bloqueado não tem workaround via extensão. |
 | `Chrome só imprime aba VISÍVEL` | Print de aba em fundo | Traga p/ frente ou use `n_browser_screenshot` headless. |
 | `n_bash` timeout / `exit=timeout` | Comando passou do `timeout` | Aumente `timeout` até 600000 ou rode em background (`n_manage_background_process` + `read_logs`). |
+| `sleep PROIBIDO` em `n_bash`/exec | Regra do dono: sem espera cega | Dispare a ação e monitore com polling curto de status/log; tarefas longas → `nohup cmd > log 2>&1 &` + `tail`; buscar a palavra "sleep" no código → `n_grep` |
 | `patch check failed` / `oldString not found` | Diff com paths errados ou trecho inexato | `stat:true` p/ ver arquivos; paths relativos ao repo; `n_read` + copiar trecho exato (espaços/quebras). |
 | `body > N bytes` (modo remoto) | POST acima de `CANIVETE_MAX_BODY` (default 2MB) | Reduza o payload ou eleve `CANIVETE_MAX_BODY`. |
 | Erro/falta/gargalo em qualquer tool | Comportamento inesperado ou capacidade ausente | Use `n_report({kind, where, expected, got})` em vez de improvisar. |

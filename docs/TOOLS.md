@@ -9,7 +9,7 @@
 | `n_analyze_change_impact` | `src/lib/devengine.mjs` | DevEngine: impacto de editar símbolo — callers + tests_affected. |
 | `n_apply_patch` | `src/lib/fs.mjs` | Aplica unified diff via `git apply` NO REPO ROOT (multi-arquivo, reverse opcional). |
 | `n_apply_semantic_patch` | `src/lib/devengine.mjs` | DevEngine: edição AST-validada (node --check, skip JSX). |
-| `n_bash` | `src/lib/fs.mjs` | Executa shell (bash -lc) no repo root: git, npm, node, curl. |
+| `n_bash` | `src/lib/fs.mjs` | Executa shell (bash -lc) no repo root: git, npm, node, curl. `sleep` PROIBIDO (regra global: não espere, monitore). |
 | `n_browser_act` | `src/lib/tools-browser.mjs` | Interage via CDP: goto/back/forward/reload/click/fill/press/scroll/wait/wait_selector/evaluate. |
 | `n_browser_contrast` | `src/lib/tools-browser.mjs` | Contraste REAL medido em PIXEL (nao no DOM): captura o clip do elemento, decodifica o PNG em JS puro e compara a mediana do anel da borda com a do miolo -> razao WCAG 2.1. |
 | `n_browser_navigate` | `src/lib/tools-browser.mjs` | Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. |
@@ -20,7 +20,7 @@
 | `n_cnpj` | `src/lib/apis.mjs` | Consulta CNPJ (ReceitaWS, cache 7 dias, rate-limited, com retry). |
 | `n_codespace_create` | `src/lib/tools-codespace.mjs` | Cria codespace do ambiente de testes (default basicLinux32gb 2-core/8GB; idle-timeout mata ócio e economiza cota). |
 | `n_codespace_delete` | `src/lib/tools-codespace.mjs` | APAGA codespace (estado+arquivos não commitados somem — commit antes!). |
-| `n_codespace_exec` | `src/lib/tools-codespace.mjs` | Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. Tarefa longa: `nohup` dentro + ler o log; `timeoutSec` 5–165 por chamada. |
+| `n_codespace_exec` | `src/lib/tools-codespace.mjs` | Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. Tarefa longa: `nohup` dentro + ler o log; `timeoutSec` 5–165 por chamada. `sleep` PROIBIDO (regra global: não espere, monitore — bloq local pré-gh). |
 | `n_codespace_list` | `src/lib/tools-codespace.mjs` | Lista contas gh logadas + codespaces do ambiente de testes universal (2-core/8GB grátis 60h/mês via cota GitHub). |
 | `n_codespace_login` | `src/lib/tools-codespace.mjs` | Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. |
 | `n_codespace_login_status` | `src/lib/tools-codespace.mjs` | Confere o job do n_codespace_login: a conta esperada virou válida? |

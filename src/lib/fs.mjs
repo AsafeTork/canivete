@@ -12,7 +12,7 @@ import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { userInfo } from "node:os";
-import { reg, out, trimOut, fpath, exec, walkFiles, humanSize, escapeRe, CWD, SKIP_DIRS, atomicWriteFile } from "./ctx.mjs";
+import { reg, out, trimOut, fpath, exec, walkFiles, humanSize, escapeRe, CWD, SKIP_DIRS, atomicWriteFile, SLEEP_RE } from "./ctx.mjs";
 import { extractFileSymbols as extractSymbols } from "../core/symbols.mjs";
 
 function globToRegex(pattern) {
@@ -473,7 +473,7 @@ reg("n_apply_patch", {
 
 // ---- n_bash ----
 reg("n_bash", {
-  description: "Executa shell (bash -lc) no repo root: git, npm, node, curl. Roda como o usuário do servidor (veja `as:` no output; file tools rodam como o mesmo usuário — confira `as:` em n_write). Retorna exit+stdout (cap 20k, até 100k via maxOutput)+stderr. Colapsa repetições consecutivas ([xN]) e barras de progresso (tail/stderr integrais; sem repetição sai idêntico). Quando usar: comandos/validação/git; p/ ler arquivos prefira n_read/n_grep. Timeout 120s (até 600s); tarefa longa use n_manage_background_process. Suporta env/retries/workdir.",
+  description: "Executa shell (bash -lc) no repo root: git, npm, node, curl. Roda como o usuário do servidor (veja `as:` no output; file tools rodam como o mesmo usuário — confira `as:` em n_write). Retorna exit+stdout (cap 20k, até 100k via maxOutput)+stderr. Colapsa repetições consecutivas ([xN]) e barras de progresso (tail/stderr integrais; sem repetição sai idêntico). Quando usar: comandos/validação/git; p/ ler arquivos prefira n_read/n_grep. Timeout 120s (até 600s); tarefa longa use n_manage_background_process. Suporta env/retries/workdir. sleep PROIBIDO (regra global: não espere, monitore — polling de status/log).",
   inputSchema: {
     type: "object",
     properties: {
@@ -490,6 +490,8 @@ reg("n_bash", {
   run: async ({ command, cwd, workdir, env, retries, timeout, maxOutput }) => {
     if (typeof command !== "string" || !command.trim())
       return out(fail("n_bash", "command is required (string, non-empty)", "passe um comando shell válido; ex: {command:\"git status --porcelain\"}"), true);
+    if (SLEEP_RE.test(command)) // sleep proibido (regra do dono, global): erro LOCAL instantâneo, antes do bash
+      return out(fail("n_bash", "sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE", "dispare a ação e confirme com polling curto (tarefa longa: n_manage_background_process {action:\"start\"} + read_logs, ou nohup cmd > log 2>&1 & e tail do log; para BUSCAR a palavra sleep no código use n_grep)"), true);
     const dirArg = workdir ?? cwd;
     let base;
     try {

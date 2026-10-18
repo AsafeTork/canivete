@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
-import { reg, out, devOut, trimOut, estTokens, fpath, exec, walkFiles, escapeRe, WALK_CAP, isSkippable, CWD, HOME, SKIP_DIRS, atomicWriteFile } from "./ctx.mjs";
+import { reg, out, devOut, trimOut, estTokens, fpath, exec, walkFiles, escapeRe, WALK_CAP, isSkippable, CWD, HOME, SKIP_DIRS, atomicWriteFile, SLEEP_RE } from "./ctx.mjs";
 import { indexSymbols as extractSymbols } from "../core/symbols.mjs";
 import { escapeShellArg as shq } from "../core/shell.mjs";
 import { tasks, taskId, persistTask, resolveTask } from "./tasks.mjs";
@@ -714,6 +714,8 @@ reg("n_manage_background_process", {
   run: async ({ action, command, process_id, env, cwd, tail }) => {
     const t0 = Date.now();
     const startOne = (cmd, extraEnv, cwdArg) => {
+      if (SLEEP_RE.test(String(cmd || ""))) // sleep proibido (regra do dono, global): erro local antes do spawn
+        return { error: `sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE: dispare a ação e confirme com polling (read_logs/status; p/ eventos use n_task_wait, nunca espera cega)` };
       const id = `bg${Date.now().toString(36)}`;
       let base = CWD;
       if (cwdArg) {
@@ -759,6 +761,8 @@ reg("n_manage_background_process", {
     }
     if (action === "restart") {
       const cmd = entry.command;
+      if (SLEEP_RE.test(String(cmd))) // sleep proibido (regra do dono, global): nega ANTES do bgKill — não mata o processo à toa
+        return devOut({ status: "error", summary: `sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE: dispare a ação e confirme com polling curto (read_logs/status)`, data: { process_id: id }, telemetry: { execution_time_ms: Date.now() - t0 } });
       let base = entry.cwd || CWD;
       if (cwd) {
         try { base = fpath(cwd); } catch (e) { return devOut({ status: "error", summary: `cwd inválido: ${e.message}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } }); }

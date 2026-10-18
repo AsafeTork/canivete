@@ -81,6 +81,15 @@ await t("docs receita onde-clicar (snapshot+compact+role)", 18, "n_bash", { comm
 await t("cs puros (normRepo/state/execTmo/idle/parseList)", 40, "n_bash", { command: "node -e \"import('./src/lib/tools-codespace.mjs').then(m=>{const ok=m.csNormRepo('https://github.com/a/b.git')==='a/b'&&m.csStateLabel('Available')==='ativa'&&m.csStateLabel('Shutdown')==='parada'&&m.execTmo(180)===165000&&m.execTmo(3)===5000&&m.execTmo()===120000&&m.csIdleMin(0)===30&&m.csIdleMin(999)===240;const l=m.csParseList(JSON.stringify([{name:'x',state:'Available',gitStatus:{ahead:1}}]));const bad=Array.isArray(m.csParseList('nope'))&&Array.isArray(m.csParseList(''));console.log(ok&&l.length===1&&!!l[0].gitStatus&&bad?'cs-ok':'cs-fail')})\"" }, /cs-ok/);
 // clamp do timeout único do ubridge (env > teto → 300s): garante mensagens coerentes com o valor real.
 await t("UB timeout clamp (env alto -> 300s)", 41, "n_bash", { command: "export CANIVETE_UB_TIMEOUT=999999; node -e \"import('./src/lib/ubridge.mjs').then(m=>console.log(m.UB_TIMEOUT_MS===300000?'ub-clamp-ok':'ub-clamp-fail'))\"" }, /ub-clamp-ok/);
+// SLEEP GUARD (regra do dono, global): bloq com aviso instrutivo em TODOS os caminhos de comando
+// — bash direto, pipeline, codespace (bloqueio é pré-gh: NEM acorda o cs) e devengine start.
+await t("sleep proibido n_bash (aviso monitore)", 42, "n_bash", { command: "sleep 5" }, /./, /NÃO ESPERA, MONITORE/);
+await t("sleep proibido em pipeline bash", 43, "n_bash", { command: "echo x && sleep 2" }, /./, /NÃO ESPERA, MONITORE/);
+await t("sleep proibido n_codespace_exec (bloq local pré-gh)", 44, "n_codespace_exec", { name: "smoke-no-cs", cmd: "sleep 3" }, /./, /NÃO ESPERA, MONITORE/);
+await t("sleep proibido devengine start", 45, "n_manage_background_process", { action: "start", command: "sleep 10" }, /./, /NÃO ESPERA, MONITORE/);
+// rede do funil: sentinel code=-2 do ctx.exec nunca vira throw (contrato intocado) — prova via subprocesso vitro
+// (string composta dinamicamente: a camada de ENTRADA do n_bash bloquearia a palavra crua — camadas funcionam)
+await t("sleep rede ctx.exec sentinel code=-2", 46, "n_bash", { command: "node -e \"import('./src/lib/ctx.mjs').then(m=>{const c=['sl','eep'].join('')+' 1',sd=['sl','eep-denied'].join('');m.exec('bash',['-lc',c]).then(r=>console.log(r.code===-2&&r.error===sd?'net-ok':'net-fail'))})\"" }, /net-ok/);
 // mailbox send/peek/recv roundtrip (leve, filesystem local, sem spawn opencode, sem rede). Filter isola sem limpar caixa alheia.
 // Só quando a família task está ativa (CANIVETE_TASK_ENABLE=1) — senão as tools nem registram.
 const mbTag = `smoke-mb-${Date.now()}`;

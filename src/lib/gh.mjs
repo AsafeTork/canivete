@@ -80,6 +80,7 @@ export async function runGh(args, { account, timeoutMs, cwd } = {}) {
 export function ghReason(r) {
   const txt = `${(r.se || "").slice(0, 400)} ${(r.so || "").slice(0, 300)}`;
   if (r.killed) return "timeout";
+  if (r.error === "sleep-denied") return "sleep PROIBIDO (regra do dono, global) — não espere, monitore";
   if (r.error) return `gh indisponível: ${r.error}`;
   if (/HTTP 401|Bad credentials/i.test(txt)) return "HTTP 401 — token inválido/expirado";
   if (/HTTP 402|out of monthly|payment required/i.test(txt)) return "HTTP 402 — cota free/budget desta conta esgotada";

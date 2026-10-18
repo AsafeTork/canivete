@@ -64,6 +64,13 @@ const SKIP_DIRS = new Set([".git", "node_modules", "dist", "coverage", ".next", 
 const MAX_OUT = 30000;
 const UA = "Mozilla/5.0 (X11; Linux x86_64) FinanciaNative/1.0";
 
+// REGRA DO DONO (global): sleep é PROIBIDO — NÃO ESPERA, MONITORE. Nenhum caminho de comando
+// pode esperar cego (bash local, gh/codespace remoto, background): dispare a ação e confirme
+// com polling curto de status/log. Fonte única: SLEEP_RE + SLEEP_BLOCK (exportados; guard nas
+// entradas dos tools + rede no funil exec()).
+export const SLEEP_RE = /\bsleep\b/i;
+export const SLEEP_BLOCK = "sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE: dispare a ação e confirme com polling curto de status/log (ex: n_manage_background_process read_logs, tail do log via exec curta; tarefa longa: nohup cmd > log 2>&1 & e leia o log em chamada nova). Para BUSCAR a palavra \"sleep\" em código, use n_grep (não bash).";
+
 const TOOLS = new Map();
 
 const CTX = { calls: 0, chars: 0, byTool: new Map(), t0: Date.now() };
@@ -196,6 +203,12 @@ function humanSize(n) {
 }
 
 async function exec(cmd, args, { timeout = 120000, cwd = CWD, env = {} } = {}) {
+  // rede global do guard sleep (regra do dono): cobre TODO caminho que passa pelo funil —
+  // inclusive cmd remoto do codespace (chega como args do gh) e call sites futuros. RESOLVE
+  // (não lança) com sentinel code=-2 p/ nunca quebrar o contrato do callers.
+  const atext = String(cmd) + " " + (args || []).map(String).join(" ");
+  if (SLEEP_RE.test(atext))
+    return { code: -2, so: "", se: SLEEP_BLOCK, killed: false, error: "sleep-denied" };
   return new Promise((resolveP) => {
     const child = spawn(cmd, args, {
       cwd,

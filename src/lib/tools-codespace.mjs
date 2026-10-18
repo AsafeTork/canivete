@@ -3,7 +3,7 @@
 // Multi-conta: account="user" usa o token DESSE usuário (gh auth token -u) sem trocar a conta ativa global.
 // Login de contas novas: n_codespace_login dispara o device flow E tenta INSERIR o código automaticamente
 // via ubrowser (aba de fundo no Chrome logado: link com ?user_code= já pré-preenchido + clicar Continue/Authorize).
-import { reg, devOut, fallbackHint, exec, trimOut } from "./ctx.mjs";
+import { reg, devOut, fallbackHint, exec, trimOut, SLEEP_RE } from "./ctx.mjs";
 import { ubSend, ubConnected, ubListExtensions } from "./ubridge.mjs";
 // infra gh (conta/token/runGh/parse) vive em gh.mjs — single source of truth compartilhada c/ n_github (apis.mjs):
 import { csScopeIssue, accLine, listAccounts, runGh, ghError } from "./gh.mjs";
@@ -146,11 +146,13 @@ reg("n_codespace_create", {
 
 // ---- 3) EXEC: comando no codespace (o teste em si) ----
 reg("n_codespace_exec", {
-  description: "Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. name EXATO do n_codespace_list (trecho do displayName aceita? NÃO — precisa name exato). Teto sync 165s (host corta resposta) — timeoutSec (5-165, default 120) p/ comandos curtos; tarefa longa: rode com nohup dentro (ex: bash -lc \"nohup npm test > out.log 2>&1 &\") e depois leia out.log em outra exec. stdout/stderr até 12k/3k (nota no summary se cortado).",
+  description: "Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. name EXATO do n_codespace_list (trecho do displayName aceita? NÃO — precisa name exato). Teto sync 165s (host corta resposta) — timeoutSec (5-165, default 120) p/ comandos curtos; tarefa longa: rode com nohup dentro (ex: bash -lc \"nohup npm test > out.log 2>&1 &\") e depois leia out.log em outra exec. stdout/stderr até 12k/3k (nota no summary se cortado). sleep PROIBIDO (regra global: não espere, monitore com tail do log).",
   inputSchema: { type: "object", properties: { name: { type: "string", description: "name exato do codespace (n_codespace_list)" }, cmd: { type: "string", description: "comando bash; ex: \"npm run check && node test/smoke.mjs | tail -3\"" }, timeoutSec: { type: "number", description: "timeout DESTA exec em segundos (5-165; default 120 — clampado dentro do guard de resposta do host)" }, account: { type: "string", description: "conta gh dona do codespace (default: ativa; case-insensitive)" } }, required: ["name", "cmd"] },
   run: guard(async ({ name, cmd, account, timeoutSec } = {}) => {
     const t0 = Date.now();
     if (!name || !cmd) return devOut({ status: "error", summary: "name e cmd são obrigatórios (name vem do n_codespace_list)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (SLEEP_RE.test(String(cmd))) // sleep proibido (regra do dono, global): bloqueio LOCAL pré-gh — não acorda o codespace
+      return devOut({ status: "error", summary: `sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE: dispare a ação (tarefa longa: nohup cmd > out.log 2>&1 &) e confirme com tail do out.log numa exec curta (nada acordou no codespace)`, data: { cmd }, telemetry: { execution_time_ms: Date.now() - t0 } });
     const tmo = execTmo(timeoutSec);
     const r = await runGh(["gh", "codespace", "ssh", "-c", String(name), "--", "bash", "-lc", String(cmd)], { account, timeoutMs: tmo });
     const so = (r.so || "").trim(), se = (r.se || "").trim();

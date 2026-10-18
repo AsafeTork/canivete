@@ -19,7 +19,7 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `n_write` | Criar/sobrescrever (novo ou rewrite total); pontual → `n_edit`. |
 | `n_edit` | Troca exata `oldString→newString` (0 matches/ambíguo falha). |
 | `n_apply_patch` | Unified diff via `git apply` no repo root (`check`/`stat`/`reverse`). |
-| `n_bash` | Shell no repo root (`timeout` até 600s; acima → background). |
+| `n_bash` | Shell no repo root (`timeout` até 600s; acima → background; `sleep` proibido — monitore). |
 | `n_glob` | Achar arquivos por glob (até 500); antes de `n_read`. |
 | `n_grep` | Regex `path:line:trecho`; localizar símbolo antes de `n_analyze_change_impact`. |
 

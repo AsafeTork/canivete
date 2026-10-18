@@ -68,7 +68,7 @@ const CASES = [
   ["n_get_architecture_summary", { depth: 1 }], ["n_investigate_issue", { symptom: "bench soma" }],
   ["n_analyze_change_impact", { symbol_id: "soma" }],   ["n_apply_semantic_patch", { file_path: `${SANDBOX}/s.js`, edits: [{ oldString: "a+b", new_code: "a + b" }] }],
   ["n_execute_targeted_tests", { scope: "diff_only" }],
-  ["n_manage_background_process", { action: "start", command: "sleep 30" }],
+  ["n_manage_background_process", { action: "start", command: "node -e \"setInterval(()=>{},60000)\"" }], // sleep proibido (regra global): espera longa sem sleep — mede custo de spawn igual
   ["n_inspect_ui_state", {}], ["n_orchestrate_task", { action: "init", plan: { title: "bench" } }],
   ["n_browser_navigate", { url: "https://example.com", waitMs: 4000 }], ["n_browser_snapshot", {}],
   ["n_browser_act", { action: "evaluate", js: "document.title" }], ["n_browser_screenshot", { width: 800, height: 600 }],
