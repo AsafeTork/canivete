@@ -61,7 +61,7 @@
 | `n_todo` | `src/lib/tasks.mjs` | Read the in-memory task list. |
 | `n_todowrite` | `src/lib/tasks.mjs` | Substitui (replace, padrão) ou mescla (append por content igual) a lista in-memory. |
 | `n_tools_info` | `src/server.mjs` | Catálogo agrupado do canivete: filesystem+exec, web/APIs sem chave, orquestração, DevEngine, browsers e meta. |
-| `n_ubrowser_act` | `src/lib/tools-owner.mjs` | AUTOMAÇÃO no Chrome LOGADO do dono (só quando ele pedir; NUNCA destrutivo sem pedido; alto risco exige confirm; FECHAR ABAS DO DONO PROIBIDO). |
+| `n_ubrowser_act` | `src/lib/tools-owner.mjs` | AUTOMAÇÃO no Chrome LOGADO do dono (só quando ele pedir; NUNCA destrutivo sem pedido; alto risco exige confirm; FECHAR ABAS DO DONO PROIBIDO). Limitação na página (CSP, clique/fill sintético ignorado, shadow DOM/iframe) → `cdp` (Runtime.evaluate imune a CSP, Input trusted). |
 | `n_ubrowser_read` | `src/lib/tools-owner.mjs` | Lê aba do dono COM login (texto+links). |
 | `n_ubrowser_shot` | `src/lib/tools-owner.mjs` | Print da aba VISÍVEL do dono (imagem + arquivo). |
 | `n_ubrowser_snapshot` | `src/lib/tools-owner.mjs` | Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). |
