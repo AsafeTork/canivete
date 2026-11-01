@@ -116,6 +116,41 @@ if (httpIdx >= 0) {
   await new Promise(() => {});
 }
 
+// Modo PROXY (multi-CLI): daemon canivete (serve.mjs) já ativo na :CANIVETE_MCP_HTTP_PORT (19423)
+// → este stdio NÃO re-bind ponte/painel/headless (era a briga entre CLIs: opencode remoto ok,
+// codex stdio quebrava em EADDRINUSE — ou vice-versa quando só um rodava). Cada linha JSON-RPC
+// vira POST /mcp no daemon e a resposta volta pro CLI: mesmas tools, UMA pilha de serviços.
+const MCP_HTTP_PORT = Number(process.env.CANIVETE_MCP_HTTP_PORT) || 19423;
+let proxyMode = false;
+if (httpIdx < 0) {
+  try {
+    const _c = new AbortController();
+    const _t = setTimeout(() => _c.abort(), 1200);
+    const _h = await fetch(`http://127.0.0.1:${MCP_HTTP_PORT}/health`, { signal: _c.signal });
+    clearTimeout(_t);
+    const _j = await _h.json().catch(() => null);
+    proxyMode = !!(_j && _j.ok === true);
+    if (proxyMode) process.stderr.write(`[canivete] daemon já ativo na :${MCP_HTTP_PORT} (${_j.tools} tools) — stdio em modo proxy (multi-CLI: nenhuma porta re-bindada)\n`);
+  } catch {}
+}
+async function proxyMcp(msg) {
+  const { getToken } = await import("./remote.mjs");
+  const isArray = Array.isArray(msg);
+  const ids = (isArray ? msg : [msg]).map((m) => (m && typeof m === "object" && "id" in m ? m.id : undefined));
+  const temId = ids.some((i) => i !== undefined);
+  try {
+    const r = await fetch(`http://127.0.0.1:${MCP_HTTP_PORT}/mcp`, { method: "POST", headers: { "content-type": "application/json", "x-token": getToken() }, body: JSON.stringify(msg) });
+    const j = await r.json().catch(() => null);
+    if (!temId) return; // notification: daemon não devolve resposta
+    const vazio = !j || (Array.isArray(j) ? j.length === 0 : Object.keys(j).length === 0);
+    if (!r.ok || vazio) return sendToHost({ jsonrpc: "2.0", id: ids.find((i) => i !== undefined), error: { code: -32603, message: `daemon MCP (:${MCP_HTTP_PORT}) HTTP ${r.status}${vazio ? " sem corpo" : ""} — confira o token (~/.config/canivete/token.txt) e a saúde do serviço canivete` } });
+    if (isArray && Array.isArray(j)) { for (const item of j) sendToHost(item); return; }
+    sendToHost(Array.isArray(j) ? j[0] : j);
+  } catch (e) {
+    if (temId) sendToHost({ jsonrpc: "2.0", id: ids.find((i) => i !== undefined), error: { code: -32603, message: `daemon MCP (:${MCP_HTTP_PORT}) inacessível (${String(e?.cause?.code || e?.message || e).slice(0, 80)}) — serviço canivete caiu? 'systemctl --user restart canivete' (ou pare o daemon p/ este stdio assumir as portas)` } });
+  }
+}
+
 // Annotations de risco p/ tools/list — ver core/rpc.mjs:annotationsFor (fonte única).
 // Heurística por nome (determinística, sem I/O): read/list/glob/grep/search/fetch/status/tabs/snapshot → readOnly;
 // write/edit/patch/bash/delete/send/act/fill/type → destructive; resto → idempotent.
@@ -217,6 +252,7 @@ rl.on("line", async (raw) => {
   } catch {
     return;
   }
+  if (proxyMode) return proxyMcp(msg);
   // Dispatch compartilhado (ver core/rpc.mjs) — mesma semântica do modo remoto.
   const resp = await dispatchStdio(msg, TOOLS, sendToHost);
   if (resp) sendToHost(resp);

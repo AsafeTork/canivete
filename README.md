@@ -141,6 +141,7 @@ Regra: **nunca sleep em loop** — 1 espera longa com teto + erro acionável no 
 | `chrome://…` / Web Store sem ação | Chrome bloqueia content script nessas páginas | Limite do Chrome — automatize só páginas web normais. |
 | Aba sumiu / `NOTFOUND` / snapshot vazio | IDs de aba mudam a cada restart/navegação; lista virtualizada só tem visíveis no DOM | Reliste `n_ubrowser_tabs`; prefira `tab:"trecho título/URL"` a `tabId`; `scan {pages:4}` antes de `snapshot`; `find:"texto"` p/ localizar sem despejar; `shadow:` no selector p/ web components; F5 + `ping` se versão velha. |
 | `evaluate` syntax error / `undefined` | Formas aceitas: **expressão** (`document.title`) OU **corpo** (`return document.title`) — sem `return` vem `undefined` | Nos dois mundos (isolado primeiro, MAIN de fallback). CSP bloqueando? suba pra `n_ubrowser_act {action:"cdp", method:"Runtime.evaluate"}` (imune a CSP); `read`/`snapshot` dão o dado sem JS. |
+| canivete funciona em UMA CLI e não na outra | 2ª instância brigando pelas portas do daemon (EADDRINUSE 19422/19423) ou cópia defasada do repo | Resolvido: stdio detecta o daemon (:19423) e vira **proxy** (mesma pilha p/ todas as CLIs — o stderr diz "modo proxy"); aponte cada CLI pro MESMO repo (symlink, ex. `ln -sfn /caminho/canivete ~/.codex/mcp/canivete`); porta via `CANIVETE_MCP_HTTP_PORT`. |
 | `Chrome só imprime aba VISÍVEL` | Print de aba em fundo | Traga p/ frente ou use `n_browser_screenshot` headless. |
 | `n_bash` timeout / `exit=timeout` | Comando passou do `timeout` | Aumente `timeout` até 600000 ou rode em background (`n_manage_background_process` + `read_logs`). |
 | `sleep PROIBIDO` em `n_bash`/exec | Regra do dono: sem espera cega | Dispare a ação e monitore com polling curto de status/log; tarefas longas → `nohup cmd > log 2>&1 &` + `tail`; buscar a palavra "sleep" no código → `n_grep` |
@@ -195,6 +196,29 @@ node src/server.mjs --http 19423   # Streamable HTTP em 127.0.0.1:19423/mcp
 
 O host reconecta por chamada: trocar **código** do canivete nunca exige restart do opencode
 (só reinicie o processo do canivete). Trocar **config** exige 1 restart (opencode lê config só no boot).
+
+## Multi-CLI (opencode + codex + claude na mesma máquina)
+
+Uma única pilha de serviços: o daemon (`serve.mjs`) é dono das portas (MCP HTTP 19423 · ponte
+ubrowser 19422 · headless CDP 19322). CLI remota fala com o daemon direto; CLI **stdio detecta o
+daemon no boot e vira proxy** (cada linha JSON-RPC vira POST `/mcp`, resposta volta pro CLI) —
+zero disputa de porta. O bug "funciona numa CLI e não na outra" era exatamente isso: a 2ª
+instância re-bindava 19422/19423 já ocupados (EADDRINUSE). Se o daemon NÃO estiver no ar, o stdio
+assume as portas ele mesmo (comportamento solo de sempre). Porta configurável via
+`CANIVETE_MCP_HTTP_PORT` (default 19423).
+
+**codex** (`~/.codex/config.toml`) — aponte pro REPO via symlink (fonte única: cópia defasada era
+a outra metade do problema):
+
+```toml
+[mcp_servers.canivete]
+command = "node"
+args = ["/home/voce/.codex/mcp/canivete/src/server.mjs"]
+```
+
+```bash
+ln -sfn /caminho/canivete ~/.codex/mcp/canivete   # o caminho do args resolve pro repo
+```
 
 ## Persistência (sobrevive ao reboot)
 

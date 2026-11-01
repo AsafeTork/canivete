@@ -173,6 +173,7 @@ Armadilhas que custam caro (nomeadas — se pegou, pare e troque):
 | Erro novo no console/rede | Chega sozinho: push na hora + 📬 nas respostas — leia com `act {action:"console", filter:"errors"}`. |
 | `shot` fundo sem print | Automático agora: `n_ubrowser_shot` fotografa aba em fundo via CDP (attach permanente, banner "depurando" fica; `act {action:"cdp", off:true}` desliga). |
 | Dialog "Permitir a depuração remota" | Consentimento do Chrome 156 é **POR CONEXÃO e não tem como desligar** (issue 825 do chrome-devtools-mcp: "não há solução simples"; a política `RemoteDebuggingAllowed` NÃO o suprime e a flag `--remote-debugging-port` é recusada no perfil default — "requires a non-default data directory"). **Modo em efeito (escolha do dono): toggle OFF** — zero dialogs pra sempre; CDP da extensão cobre http(s)/file. Se um dia precisar de chrome:// via 9222, o dono arma o toggle naquele dia e permite 1× por sessão (a conexão do serviço é persistente). |
+| 2 CLIs juntas (ex. opencode remoto + codex stdio) | Daemon único (`serve.mjs`, :19423) é dono de TODAS as portas — o stdio das outras CLIs detecta o daemon no boot e vira **proxy** (POST /mcp), sem EADDRINUSE e sem cópia defasada | stderr do stdio diz "modo proxy"; porta via `CANIVETE_MCP_HTTP_PORT`; cada CLI aponta pro MESMO repo (symlink). |
 | `n_bash` timeout | `timeout` até 600000 ou background + `read_logs`. |
 | Qualquer erro/falta/gargalo | `n_report` em vez de improvisar. |
 
