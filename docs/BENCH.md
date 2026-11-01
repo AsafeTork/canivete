@@ -49,7 +49,7 @@
 | n_ubrowser_snapshot | 251 | {   "status": "success",   "summary": "50 elemento(s)",   "data": {     "elements": [      |
 | n_ubrowser_act | 18 | isError: {   "status": "error",   "summary": "BLOQUEADO (alto risco: pagamento/senha/exclu |
 | n_ubrowser_shot | 343 | Screenshot (2) Conjunto Gabinete Moveis Joia 80cm Cuba Espelheira | Mercado Livre — https: |
-| n_report | 6 | isError: kind inválido: zzz (use bug|missing|bottleneck) |
+| n_report | 6 | isError: kind inválido: zzz (use bug|ajuste|aprimoramento|sugestao — aliases legados: missing, bottleneck) |
 | n_task | 57 | task tmtvssu9r2 spawned in background (quick | opencode/big-pickle) [ephemeral auto-exclui |
 | n_task_wait | 58665 | task bench |
 

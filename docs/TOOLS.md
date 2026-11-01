@@ -2,14 +2,14 @@
 
 > GERADO AUTOMATICAMENTE por `node scripts/gen-catalog.mjs` — NÃO EDITE MANUALMENTE.
 > Fonte: parse estático de `reg("n_*", { description: ... })` em `src/lib/*.mjs` + `src/server.mjs` (sem importar o servidor — importar `src/server.mjs` registra tudo e mantém o processo vivo via watch/readline).
-> Total: 54 tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = 64). Gerado em 2026-10-17.
+> Total: 56 tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = 66). Gerado em 2026-10-29.
 
 | nome | arquivo | descrição (1ª frase) |
 |---|---|---|
 | `n_analyze_change_impact` | `src/lib/devengine.mjs` | DevEngine: impacto de editar símbolo — callers + tests_affected. |
 | `n_apply_patch` | `src/lib/fs.mjs` | Aplica unified diff via `git apply` NO REPO ROOT (multi-arquivo, reverse opcional). |
 | `n_apply_semantic_patch` | `src/lib/devengine.mjs` | DevEngine: edição AST-validada (node --check, skip JSX). |
-| `n_bash` | `src/lib/fs.mjs` | Executa shell (bash -lc) no repo root: git, npm, node, curl. `sleep` PROIBIDO (regra global: não espere, monitore). |
+| `n_bash` | `src/lib/fs.mjs` | Executa shell (bash -lc) no repo root: git, npm, node, curl. |
 | `n_browser_act` | `src/lib/tools-browser.mjs` | Interage via CDP: goto/back/forward/reload/click/fill/press/scroll/wait/wait_selector/evaluate. |
 | `n_browser_contrast` | `src/lib/tools-browser.mjs` | Contraste REAL medido em PIXEL (nao no DOM): captura o clip do elemento, decodifica o PNG em JS puro e compara a mediana do anel da borda com a do miolo -> razao WCAG 2.1. |
 | `n_browser_navigate` | `src/lib/tools-browser.mjs` | Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. |
@@ -20,18 +20,20 @@
 | `n_cnpj` | `src/lib/apis.mjs` | Consulta CNPJ (ReceitaWS, cache 7 dias, rate-limited, com retry). |
 | `n_codespace_create` | `src/lib/tools-codespace.mjs` | Cria codespace do ambiente de testes (default basicLinux32gb 2-core/8GB; idle-timeout mata ócio e economiza cota). |
 | `n_codespace_delete` | `src/lib/tools-codespace.mjs` | APAGA codespace (estado+arquivos não commitados somem — commit antes!). |
-| `n_codespace_exec` | `src/lib/tools-codespace.mjs` | Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. Tarefa longa: `nohup` dentro + ler o log; `timeoutSec` 5–165 por chamada. `sleep` PROIBIDO (regra global: não espere, monitore — bloq local pré-gh). |
+| `n_codespace_exec` | `src/lib/tools-codespace.mjs` | Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. |
 | `n_codespace_list` | `src/lib/tools-codespace.mjs` | Lista contas gh logadas + codespaces do ambiente de testes universal (2-core/8GB grátis 60h/mês via cota GitHub). |
 | `n_codespace_login` | `src/lib/tools-codespace.mjs` | Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. |
 | `n_codespace_login_status` | `src/lib/tools-codespace.mjs` | Confere o job do n_codespace_login: a conta esperada virou válida? |
-| `n_codespace_stop` | `src/lib/tools-codespace.mjs` | Para codespace (congela; storage continua a contar, compute parado de grátis). `all:true` = os RODANDO (states reais: Available/Starting); cs já parado conta como ok. |
+| `n_codespace_stop` | `src/lib/tools-codespace.mjs` | Para codespace (congela; storage continua a contar, compute parado de grátis). |
 | `n_ctx_status` | `src/server.mjs` | A LLM manipula o próprio contexto: mostra gasto da sessão (calls, chars, ~tokens por tool) vs orçamento CANIVETE_CTX_BUDGET. |
 | `n_currency` | `src/lib/apis.mjs` | Taxa de câmbio/conversão (ECB/Frankfurter, diário, cache 1h). |
 | `n_edit` | `src/lib/fs.mjs` | Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). |
+| `n_elemreports_list` | `src/lib/elemreports.mjs` | Reports persistentes de ELEMENTO de um site (marcações que o dono fez na página viva via extensão, com anotação do que está errado). |
+| `n_elemreports_resolve` | `src/lib/elemreports.mjs` | Move UM report de elemento no ciclo de vida com PROVA: "em_resolução" (trabalho iniciado) ou "resolvido" (default; exige proof = antes/depois) — resolvido some do highlight na página (a extensão re-synca sozinha) e vira histórico, nunca apaga. |
 | `n_execute_targeted_tests` | `src/lib/devengine.mjs` | DevEngine: executa testes com detecção de runner (vitest/jest/mocha via devDependencies). |
 | `n_find_tools` | `src/server.mjs` | Busca local de tools por keyword (tool-search enxuto). |
 | `n_get_architecture_summary` | `src/lib/devengine.mjs` | DevEngine: topologia leve do projeto (package.json + scans de features/functions, sem ler arquivos inteiros). |
-| `n_github` | `src/lib/apis.mjs` | API do GitHub: repo/releases/commits/issues/branches/**user** / **file** / **search**; `account` (conta gh do keyring) = 5000 req/h (60 anônimo); cache 10min (search 3); última linha `json:{...}` parseável. |
+| `n_github` | `src/lib/apis.mjs` | API do GitHub (REST, somente leitura). |
 | `n_glob` | `src/lib/fs.mjs` | Acha arquivos por glob (** suportado, até 500). |
 | `n_grep` | `src/lib/fs.mjs` | Busca regex no conteúdo (path:line:trecho ≤300 chars, maxResults 100, include glob, ignoreCase). |
 | `n_inspect_ui_state` | `src/lib/devengine.mjs` | DevEngine: checagem HTTP da UI (status + conteúdo). |
@@ -45,7 +47,7 @@
 | `n_plan` | `src/lib/tasks.mjs` | Plan mode cannot be toggled from an MCP server; use /plan in the TUI. |
 | `n_question` | `src/lib/tasks.mjs` | Registra pergunta p/ o usuário. |
 | `n_read` | `src/lib/fs.mjs` | Lê arquivo texto com números de linha (offset/limit, raw, maxChars até 100k) ou lista diretório simples. |
-| `n_report` | `src/lib/feedback.mjs` | Reporta erro/falta/gargalo p/ refinar a ferramenta (inbox global). |
+| `n_report` | `src/lib/feedback.mjs` | Reporta refinação p/ a ferramenta (inbox global). |
 | `n_skill` | `src/lib/tasks.mjs` | Carrega SKILL.md por nome. |
 | `n_task` | `src/lib/tasks.mjs` | Subagente isolado. |
 | `n_task_delete` | `src/lib/tasks.mjs` | Exclui task(s)+mailbox p/ organizar. |
@@ -59,12 +61,12 @@
 | `n_todo` | `src/lib/tasks.mjs` | Read the in-memory task list. |
 | `n_todowrite` | `src/lib/tasks.mjs` | Substitui (replace, padrão) ou mescla (append por content igual) a lista in-memory. |
 | `n_tools_info` | `src/server.mjs` | Catálogo agrupado do canivete: filesystem+exec, web/APIs sem chave, orquestração, DevEngine, browsers e meta. |
-| `n_ubrowser_act` | `src/lib/tools-owner.mjs` | AUTOMAÇÃO no Chrome LOGADO do dono (só quando ele pedir; NUNCA destrutivo sem pedido; alto risco exige confirm; FECHAR ABAS e ROUBAR FOCO PROIBIDOS). |
+| `n_ubrowser_act` | `src/lib/tools-owner.mjs` | AUTOMAÇÃO no Chrome LOGADO do dono (só quando ele pedir; NUNCA destrutivo sem pedido; alto risco exige confirm; FECHAR ABAS DO DONO PROIBIDO). |
 | `n_ubrowser_read` | `src/lib/tools-owner.mjs` | Lê aba do dono COM login (texto+links). |
 | `n_ubrowser_shot` | `src/lib/tools-owner.mjs` | Print da aba VISÍVEL do dono (imagem + arquivo). |
 | `n_ubrowser_snapshot` | `src/lib/tools-owner.mjs` | Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). |
 | `n_ubrowser_status` | `src/lib/tools-owner.mjs` | Status da ponte com o Chrome LOGADO do dono (extensão local). |
-| `n_ubrowser_tabs` | `src/lib/tools-owner.mjs` | Abas do Chrome do dono (id, janela, anônima?, título, url). |
+| `n_ubrowser_tabs` | `src/lib/tools-owner.mjs` | Abas do Chrome do dono (id, janela, ativa?, anônima?, título, url; cada aba traz profile/label — sempre). |
 | `n_weather` | `src/lib/apis.mjs` | Previsão do tempo (Open-Meteo, cache 30min, lat/lon, 1-7 dias, com retry). |
 | `n_webfetch` | `src/lib/web.mjs` | Baixa URL SEM JS e extrai texto principal + og:price/JSON-LD (tenta <article>/<main>). |
 | `n_websearch` | `src/lib/web.mjs` | Busca web multi-backend (News, DDG, Wikipedia, HN, GitHub; cache 10min, dedupe por URL). |

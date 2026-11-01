@@ -1,6 +1,6 @@
 # canivete — MCP universal em um arquivo de ideia, vários arquivos de verdade
 
-Toolkit MCP completo (46 tools `n_*`, **zero dependências**, Node 22+) que funciona em **qualquer CLI com suporte a MCP** (opencode, Claude Code, etc.) e em **qualquer projeto**:
+Toolkit MCP completo (56 tools `n_*`, **zero dependências**, Node 22+) que funciona em **qualquer CLI com suporte a MCP** (opencode, Claude Code, etc.) e em **qualquer projeto**:
 
 - **Filesystem + execução (8):** ler/listar/criar/editar/patch/shell/glob/grep — com truncamento explícito e edição segura.
 - **Web sem chave (2+7):** fetch enxuto (`<article>/<main>`) + search em 7 backends públicos + câmbio/CEP/CNPJ/IP/clima/GitHub/npm (com cache TTL).
@@ -11,7 +11,7 @@ Toolkit MCP completo (46 tools `n_*`, **zero dependências**, Node 22+) que func
 - **Meta (6):** catálogo, pergunta ao humano, skills, plan, report, contexto.
 - **WhatsApp (1):** gateway Baileys + fallback no Chrome logado.
 
-## Tools (46) — tabela por categoria
+## Tools — tabela por categoria (contagem exata via `n_tools_info`)
 
 > Nomes conferidos via `rg 'reg\("n_' src/`. Descubra em runtime com `n_tools_info`.
 
@@ -88,8 +88,17 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 | `n_ubrowser_tabs` | Abas do dono (id, janela, título, url; IDs mudam — prefira `tab:"trecho"`). |
 | `n_ubrowser_read` | Lê aba com login (`distill` enxuto; `raw` integral + links; `outline:true` só estrutura; value separado do placeholder). |
 | `n_ubrowser_snapshot` | Clicáveis (`max`+`offset`; `find` localiza ±3 contexto; `layer:"modal\|menu\|popover\|tooltip"` foca só a camada; `scan` antes p/ virtualizada; `shadow:` p/ web components; refs morrem na navegação). |
-| `n_ubrowser_act` | Automação no Chrome logado (mira: selector, `ref` do snapshot ou `text:"trecho"`; `fill` substitui, `type` anexa; `wait`=waitMs; `console` lê erros+rede — erros chegam sozinhos via push; `tooltip`/`catchup`/`aesthetic` sem clique; `expectUrl/Text/Gone` afirma sem reler; `snap:true` pós-navegação economiza 1 call; clique retorna `verified`; alto risco exige `confirm`). |
+| `n_ubrowser_act` | Automação no Chrome logado (mira: selector, `ref` do snapshot ou `text:"trecho"`; `fill` substitui, `type` anexa; `wait`=waitMs; `console` lê erros+rede — erros chegam sozinhos via push; `tooltip`/`catchup`/`aesthetic` sem clique; `expectUrl/Text/Gone` afirma sem reler; `snap:true` pós-navegação economiza 1 call; clique retorna `verified`; `elem_pick` abre o modo de marcação do dono na página; alto risco exige `confirm`). |
 | `n_ubrowser_shot` | Print só da aba **VISÍVEL** (fundo não imprime — use `n_browser_screenshot` p/ fundo; confirme ação via `verified`/`delta` antes de printar). |
+
+### Reports de elemento (2) — o dono marca na página, o agente resolve
+
+| Tool | Para que (1 linha) |
+|---|---|
+| `n_elemreports_list` | Reports de um site por `base_url` (origem normalizada; default = pendentes) com snapshot estático por elemento (seletor estável, fingerprint texto/papel, role/data-testid, outerHTML, rect). |
+| `n_elemreports_resolve` | Ciclo de vida com prova: `em_resolução` → `resolvido` (`proof` = antes/depois; some do highlight e vira histórico; `aberto` reabre). |
+
+Fluxo: *"no nosso site https://exemplo.com tem erros que reportei"* → `n_elemreports_list {base_url}` (filtro `grupo` = escopo que o dono digitou) → resolva um a um com prova. Marcação: popup → "Marcar o que está quebrado" (ou `act {action:"elem_pick"}`) — hit-test por camadas com **Tab ciclando** (alcança sob modal/banner e `pointer-events:none`), 1..N elementos por pack, ✕ no canto de cada seleção, caixa acoplada ao contorno com **grupo + prompt**, Enter salva / Cancelar aborta; chip numerado clicável abre o editor do pack (nota, grupo, ±elementos, apagar). Store: `~/.config/canivete/reports-elementos.jsonl` (append-only + dedupe por seletor+nota+grupo; nunca cookie/header/senha).
 
 ### WhatsApp dedicado (1)
 
@@ -105,7 +114,7 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 | `n_question` | Registra pergunta p/ o humano (o agente pergunta diretamente). |
 | `n_skill` | Carrega `SKILL.md` por nome (`refresh:true` lista/recarrega). |
 | `n_plan` | Aviso: plan mode só via `/plan` na TUI (não alternável pelo MCP). |
-| `n_report` | Reporta erro/falta/gargalo p/ refinar a tool (**obrigatório** em vez de improvisar; inbox com rotação em 500). |
+| `n_report` | Reporta refinação p/ a tool (**obrigatório** em vez de improvisar; `kind`: `bug`\|`ajuste`\|`aprimoramento`\|`sugestao`, aliases `missing`/`bottleneck`; inbox com rotação em 500; triagem via `status` + `resolucao`). |
 | `n_ctx_status` | Gasto da sessão (calls/chars/~tokens) vs `CANIVETE_CTX_BUDGET`; estouro → `distill/compact`. |
 
 ## Tarefas longas (com progresso, sem sleep cego)
@@ -131,12 +140,15 @@ Regra: **nunca sleep em loop** — 1 espera longa com teto + erro acionável no 
 | `SSRF bloqueado: host privado/intranet` | `n_browser_*` bloqueia intranet por padrão | Use URL pública ou `CANIVETE_BROWSER_ALLOW_PRIVATE=1` p/ permitir intranet. |
 | `chrome://…` / Web Store sem ação | Chrome bloqueia content script nessas páginas | Limite do Chrome — automatize só páginas web normais. |
 | Aba sumiu / `NOTFOUND` / snapshot vazio | IDs de aba mudam a cada restart/navegação; lista virtualizada só tem visíveis no DOM | Reliste `n_ubrowser_tabs`; prefira `tab:"trecho título/URL"` a `tabId`; `scan {pages:4}` antes de `snapshot`; `find:"texto"` p/ localizar sem despejar; `shadow:` no selector p/ web components; F5 + `ping` se versão velha. |
-| `evaluate` devolve `undefined` / CSP | Falta `return ...` no JS ou CSP bloqueou | Retorne valor (`return ...`); CSP bloqueado não tem workaround via extensão. |
+| `evaluate` syntax error / `undefined` | Formas aceitas: **expressão** (`document.title`) OU **corpo** (`return document.title`) — sem `return` vem `undefined` | Nos dois mundos (isolado primeiro, MAIN de fallback). CSP bloqueando ainda negará JS arbitrário → use `read`/`snapshot`. |
 | `Chrome só imprime aba VISÍVEL` | Print de aba em fundo | Traga p/ frente ou use `n_browser_screenshot` headless. |
 | `n_bash` timeout / `exit=timeout` | Comando passou do `timeout` | Aumente `timeout` até 600000 ou rode em background (`n_manage_background_process` + `read_logs`). |
 | `sleep PROIBIDO` em `n_bash`/exec | Regra do dono: sem espera cega | Dispare a ação e monitore com polling curto de status/log; tarefas longas → `nohup cmd > log 2>&1 &` + `tail`; buscar a palavra "sleep" no código → `n_grep` |
 | `patch check failed` / `oldString not found` | Diff com paths errados ou trecho inexato | `stat:true` p/ ver arquivos; paths relativos ao repo; `n_read` + copiar trecho exato (espaços/quebras). |
 | `body > N bytes` (modo remoto) | POST acima de `CANIVETE_MAX_BODY` (default 2MB) | Reduza o payload ou eleve `CANIVETE_MAX_BODY`. |
+| `comm: o arquivo N não está em ordem` | `sort`/`comm` em locale default (ordem ≠ byte) | Re-sort com `LC_ALL=C` antes do `comm`; o stdout plausível continua saindo — **nunca** confie no diff vendo só o stderr. |
+| `gh run view --job <id> --log` vazio (exit 0) | limitação do gh com `--job` sem run id | Use `gh api repos/<owner>/<repo>/actions/jobs/<id>/logs`; valide não-vazio antes de citar como evidência (`grep` em saída vazia = falso negativo). |
+| Inspector `chrome://extensions/?errors=…` lista erros de PÁGINAS (Instagram/Medium/etc.) com stack `mon-hook.js` | wrap de `console.*` no mundo MAIN re-emite erros da página; Chrome atribui à extensão | **Quiet é o default** (`CANIVETE_UB_MON_QUIET=1`): mon-hook não toca console (v2), only `error` real + `unhandledrejection` + fetch/XHR; `=0` reativa com dedupe 60s/assinatura |
 | Erro/falta/gargalo em qualquer tool | Comportamento inesperado ou capacidade ausente | Use `n_report({kind, where, expected, got})` em vez de improvisar. |
 
 ## Quickstart (5 min)
@@ -206,7 +218,7 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 
 ## Segurança (doutrina do dono)
 
-- O agente só age **quando o dono pede**. Fechar abas e roubar foco **não existem** no código.
+- O agente só age **quando o dono pede**. Fechar abas e roubar foco **existem mas exigem `confirm`** (fechamento de aba do dono em http(s), foco de SO) — recusados sem.
 - Alto risco (pagamento, senha/2FA, excluir conta, apagar tudo) exige `confirm="<frase do dono>"`.
 - Ponte local (`127.0.0.1:19422`) + token (`~/.config/canivete/token.txt`, gerado sozinho, `0600`, no `.gitignore`).
 - Kill switch: pause na extensão = acesso zero.
@@ -219,8 +231,9 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 | `CANIVETE_TASK_ENABLE` | — | `1` reativa a família `n_task*` (subagentes; desligado por RAM) |
 | `CANIVETE_HOST_GUARD_MS` | `170000` | teto de resposta (antes do timeout do host) |
 | `CANIVETE_TOKEN` / `CANIVETE_TOKEN_FILE` | `~/.config/canivete/token.txt` (autogerado) | auth da extensão |
-| `CANIVETE_BRIDGE_PORT` | `19422` | ponte da extensão |
+| `CANIVETE_BRIDGE_PORT` | `19422` | ponte da extensão (aliases: `UBROWSER_PORT`, `UB_PORT`) |
 | `CANIVETE_UB_TIMEOUT` | `60000` | timeout único da ponte ubrowser (clamp 1s–300s; mensagens mostram o valor real) |
+| `CANIVETE_UB_MON_QUIET` | `1` | `0` reativa o wrap de `console.*` da página no mon-hook (captura `ErrorUtils`/pixels; mais ruído no inspector da extensão — default `1` = quiet, Inspector limpo) |
 | `CANIVETE_CS_EXEC_TMO` | `120000` | timeout default do `n_codespace_exec` (clamp 5s–165s; por chamada: `timeoutSec`) |
 | `CANIVETE_GH_CONFIG_DIR` | — | perfil gh multi-conta do serviço (ex.: `/etc/canivete/gh`) |
 | `CANIVETE_CDP_PORT` | `19322` | Chrome headless (CDP) |
@@ -240,6 +253,36 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 | `CANIVETE_RUNNER` / `CANIVETE_RUN_TEMPLATE` | `opencode` / — | runner legado (`{prompt} {model} {agent} {id}`; só com `CANIVETE_TASK_ENABLE=1`) |
 | `CANIVETE_LLM_PROVIDER` + `CANIVETE_LLM_API_KEY` + `CANIVETE_LLM_MODEL` | — | LLM direto OpenAI-compatível (`groq\|cerebras\|gemini\|openrouter\|deepseek\|openai\|ollama` + fallbacks `_2.._5`) |
 | `CANIVETE_LLM_TIMEOUT` / `CANIVETE_LLM_MAX_TOKENS` | — | teto de espera / resposta do LLM direto |
+
+## Observabilidade universal (painel local, sem SaaS)
+
+mon-hook (extensão, mundo MAIN) captura console/erros/rede e, com opt-in, o replay rrweb;
+a ponte guarda os clipes e um painel local mostra tudo junto do inbox `n_report`:
+
+| Rota (127.0.0.1:19422) | Auth | O quê |
+|---|---|---|
+| `GET /painel` | público | painel web (Ledger) — erros/reports/replays |
+| `GET /uierr.js` | público | shim de evidência visual p/ sobrepor em app homolog |
+| `GET /assets/<arquivo>` | público | assets servidos (ex.: `rrweb.umd.min.js` vend) |
+| `GET /replays/<id>` | público | JSON do clipe rrweb gravado |
+| `GET /api/issues?source=&kind=&area=&agent=&q=&limit=` | público | issues fundidos: inbox (`source=report`) + mon-log (`source=auto`) + reports de elemento (`source=elem`) |
+| `GET /elemreports?base_url=&status=&area=&q=&limit=` | público | reports de elemento de um site (estado corrente; a extensão sincroniza o highlight por aqui) |
+| `GET /elemshots/<id>.png` | público | screenshot opcional de um report |
+| `POST /replay?token=` | token | grava clipe rrweb + 1 linha em `~/.config/canivete/mon-log.jsonl` |
+| `POST /elemreport?token=` | token | cria report de elemento vindo do overlay (dedupe por seletor+nota; devolve o report persistido) |
+| `POST /elemreport-update?token=` | token | edita pack existente (nota, `elements_add`/`elements_remove`, `apagar:true`) e devolve o report atualizado |
+
+Como o agente usa (Chrome do dono, via `n_ubrowser_act`):
+
+```
+act {action:"evaluate", js:"window.__ubTags={area:'autenticacao',agent:'agente-x'}"}   // nomeia a sessão
+act {action:"evaluate", js:"window.__ubReplay=true;dispatchEvent(new Event('ub-replay-on'))"}  // liga o replay (opt-in)
+```
+
+- Painel: `http://127.0.0.1:19422/painel` — clique numa linha expande in place; "Olhar replay" monta o player rrweb.
+- Shim em app de teste: `<script src="http://127.0.0.1:19422/uierr.js"></script>` + `window.__ubTags` + `window.__ubReplay=true` (badge visual do último erro; NENHUM POST — quem envia é o mon-hook).
+- Replay grava janela de 2400 eventos (mousemove/scroll/input amostrados) e manda o clipe no erro (1 por 45s) → `~/.config/canivete/replays/<id>.json`.
+- NOTA de segurança: ponte escuta **só em 127.0.0.1**; rotas de leitura do painel são públicas na máquina local, escritas (POST) continuam token-only. Extensions v1.9.0+, mon-hook v4.
 
 ## Solução de problemas
 
@@ -269,9 +312,14 @@ src/lib/cdp.mjs         núcleo CDP (headless)
 src/lib/tools-browser.mjs   browser_* (headless)
 src/lib/ubridge.mjs     ponte da extensão (HTTP + token + /exec)
 src/lib/tools-owner.mjs     ubrowser_* (Chrome do dono)
+src/lib/elemreports.mjs reports de elemento (marcação humana: store jsonl + n_elemreports_*)
+src/lib/feedback.mjs    n_report (inbox jsonl com rotação atômica)
+src/lib/gh.mjs          gh (n_github + contas gh p/ codespace)
+src/lib/llm.mjs         slots LLM (fallbacks 2-5, presets)
+src/lib/tools-codespace.mjs  n_codespace_* (ambiente de teste na nuvem gh)
 src/lib/risk.mjs        trava anti-destrutiva (compartilhada)
 config/models.json      modelos (modo opencode)
-extension/              extensão MV3 do Chrome do dono (background.js ponte+cursor trusted, content.js DOM, mon-hook.js console+rede, wa-hook.js WhatsApp, popup)
+extension/              extensão MV3 do Chrome do dono (background.js ponte+cursor trusted, content.js DOM+overlay de marcação, mon-hook.js console+rede, wa-hook.js WhatsApp, popup)
 examples/               configs prontas por CLI
 docs/                   skill global de referência
 test/smoke.mjs          fumaça offline-segura
