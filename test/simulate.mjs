@@ -33,7 +33,7 @@ const t = async (label, id, name, args, expect = /./, allowError = null) => {
 };
 
 // 1) catálogo
-await t("tools_info conta 56", 1, "n_tools_info", {}, /56 tools/);
+await t("tools_info conta 58", 1, "n_tools_info", {}, /58 tools/);
 
 // 2-4) risk matriz via risk.mjs local (sem rede)
 await t("risk Pix Total=low", 2, "n_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({text:'Pix Total'})))\"" }, /low/);

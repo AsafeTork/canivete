@@ -18,6 +18,7 @@ import "./lib/tools-codespace.mjs";
 import "./lib/tools-owner.mjs";
 import "./lib/tools-whatsapp.mjs";
 import "./lib/feedback.mjs";
+import "./lib/elemreports.mjs";
 
 reg("n_tools_info", {
   description: "Catálogo agrupado do canivete: filesystem+exec, web/APIs sem chave, orquestração, DevEngine, browsers e meta. Use para descobrir o que o MCP faz e qual tool chamar.",

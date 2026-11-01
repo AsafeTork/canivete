@@ -14,7 +14,7 @@ import { ubSend, ubConnected, UB_OFF } from "./ubridge.mjs";
 const WA_GW = process.env.WA_GW_URL || "http://127.0.0.1:19424";
 const WA_TOKEN = () =>
   (process.env.CANIVETE_TOKEN || "").trim() ||
-  (() => { try { return readFileSync(`${process.env.HOME || "/root"}/.config/canivete/token.txt`, "utf8").trim(); } catch { return ""; } })();
+  (() => { try { return readFileSync(process.env.CANIVETE_TOKEN_FILE || `${process.env.HOME || "/root"}/.config/canivete/token.txt`, "utf8").trim(); } catch { return ""; } })();
 import { readFileSync } from "node:fs";
 async function waGw(path, method = "GET", body = null, timeoutMs = 25000) {
   const ac = new AbortController();

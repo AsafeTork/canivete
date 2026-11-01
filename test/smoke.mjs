@@ -1,6 +1,9 @@
 // canivete smoke: offline-seguro, rápido (<30s). Falha != quebrou tudo: mostra PASS/FAIL por grupo.
 // OFFLINE: sem rede real, sem spawn opencode (família n_task desativada por padrão). Só stdio local + fs + risk local.
 import { spawn } from "node:child_process";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 const srv = spawn("node", ["src/server.mjs"], { cwd: new URL("..", import.meta.url).pathname, stdio: ["pipe", "pipe", "pipe"] });
 srv.stderr.on("data", () => {});
@@ -53,7 +56,7 @@ const t = async (label, id, name, args, expect = /./, allowError = null) => {
     ok ? pass++ : fail++;
   } catch (e) { console.log(`FAIL ${label} :: ${e.message}`); fail++; }
 };
-await t("tools_info conta 54", 1, "n_tools_info", {}, /54 tools/);
+await t("tools_info conta 56", 1, "n_tools_info", {}, /56 tools/);
 await t("read self", 2, "n_read", { filePath: "package.json", limit: 5 });
 await t("bash echo", 3, "n_bash", { command: "echo smoke-ok" });
 await t("glob", 4, "n_glob", { pattern: "src/lib/*.mjs" });
@@ -104,6 +107,12 @@ try {
     await t("mailbox recv roundtrip", 22, "n_task_recv", { task_id: "main", filter: mbTag }, new RegExp(mbTag));
   }
 } catch (e) { console.log(`SKIP mailbox (falha listando tools: ${e.message})`); }
+// elem reports (marcação humana de elemento): store roundtrip offline (fs /tmp via env) —
+// add + dedupe (seletor+nota parecida) + lista por base com path + ciclo de vida com prova.
+await t("elemreports roundtrip+dedupe (fs /tmp)", 50, "n_bash", { command: "CANIVETE_ELEMREPORTS_FILE=/tmp/er-smoke-$$.jsonl node -e 'import(\"./src/lib/elemreports.mjs\").then(m=>{const a=m.erAdd({base_url:\"https://ex.com/checkout\",nota:\"botao pagar nao funciona\",elements:[{selector:\"button.pagar\",tag:\"button\",text:\"Pagar\"}]});const b=m.erAdd({base_url:\"https://ex.com\",nota:\"botao pagar nao funciona!\",elements:[{selector:\"button.pagar\",tag:\"button\"}]});const l=m.erListPublic({base_url:\"https://ex.com/qualquer/path\"});const s0=m.erSetStatus({id:a.report.id,status:\"resolvido\"});const s1=m.erSetStatus({id:a.report.id,status:\"em_resolução\"});const s=m.erSetStatus({id:a.report.id,status:\"resolvido\",proof:\"arrumei o onclick no commit abc123 (antes nao fazia nada)\"});const l2=m.erListPublic({base_url:\"https://ex.com\"});const l3=m.erListPublic({base_url:\"https://ex.com\",status:\"resolvido\"});const bad=m.erNormalizeBase(\"não é url\")===null;console.log(a.ok&&b.ok&&b.deduped&&l.count===1&&!s0.ok&&s1.ok&&s.ok&&l2.count===0&&l3.count===1&&l3.items[0].resolucao&&bad?\"elem-ok\":\"elem-fail \"+JSON.stringify({a:a.ok,ded:b.deduped,l:l.count,s0:!!s0.error,s1:s1.ok,s:s.ok,l2:l2.count,l3:l3.count,bad}))})'" }, /elem-ok/);
+await t("elemreports_list sem base_url erro acionável", 51, "n_elemreports_list", {}, /./, /base_url OBRIGATÓRIO/);
+await t("elemreports_resolve id inválido erro acionável", 52, "n_elemreports_resolve", { id: "xyz", proof: "teste de prova antes/depois" }, /./, /id inválido/);
+await t("elemreports erUpdate (nota/±elementos/apagar/grupo)", 53, "n_bash", { command: "CANIVETE_ELEMREPORTS_FILE=/tmp/er-upd-$$.jsonl node -e 'import(\"./src/lib/elemreports.mjs\").then(m=>{const a=m.erAdd({base_url:\"https://ex.com/checkout\",nota:\"botao pagar nao funciona\",grupo:\"checkout\",elements:[{selector:\"button.pagar\",tag:\"button\",text:\"Pagar\"},{selector:\".resumo\",tag:\"div\"}]});const id=a.report.id;const g1=m.erListPublic({base_url:\"https://ex.com\",grupo:\"CHECKOUT\"});const g2=m.erListPublic({base_url:\"https://ex.com\",grupo:\"auth\"});const dup=m.erAdd({base_url:\"https://ex.com\",nota:\"botao pagar nao funciona!\",grupo:\"auth\",elements:[{selector:\"button.pagar\",tag:\"button\"}]});const n=m.erUpdate({id,nota:\"nota editada — agora com detalhe\",grupo:\"checkout-v2\"});const add=m.erUpdate({id,elements_add:[{selector:\"#finalizar\",tag:\"button\"}]});const rm=m.erUpdate({id,elements_remove:[\".resumo\"]});const last=m.erUpdate({id,elements_remove:[\"button.pagar\",\"#finalizar\"]});const ap=m.erUpdate({id,apagar:true});const l=m.erListPublic({base_url:\"https://ex.com\"});const bad=m.erUpdate({id:\"ernope\",nota:\"x y z\"});const shortv=m.erUpdate({id,nota:\"ab\"});console.log(a.ok&&a.report.grupo===\"checkout\"&&g1.count===1&&g2.count===0&&dup.ok&&!dup.deduped&&n.ok&&n.report.grupo===\"checkout-v2\"&&add.ok&&add.report.elements.length===3&&rm.ok&&rm.report.elements.length===2&&!last.ok&&ap.ok&&ap.apagado&&ap.report.apagado&&l.count===1&&!bad.ok&&!shortv.ok?\"erupd-ok\":\"erupd-fail \"+JSON.stringify({a:a.ok,g1:g1.count,g2:g2.count,ded:dup.deduped,n:n.ok,gn:n.report&&n.report.grupo,add:add.report&&add.report.elements.length,rm:rm.report&&rm.report.elements.length,last:last.ok,ap:ap.ok,l:l.count,bad:bad.ok,shortv:shortv.ok}))})'" }, /erupd-ok/);
 // tools_info sync == TOOLS: compara número no texto n_tools_info com tools/list (stdio offline). Sem import (pesado) nem /health (rede).
 if (_grepRe && !_grepRe.test("tools_info sync == tools/list")) { console.log(`SKIP tools_info sync == tools/list (filtro --grep)`); }
 else try {
@@ -118,5 +127,10 @@ else try {
   ok ? pass++ : fail++;
 } catch (e) { console.log(`FAIL tools_info sync :: ${e.message}`); fail++; }
 console.log(`\nSMOKE: ${pass} pass, ${fail} fail`);
+try { // resumo p/ o painel local (GET /api/status → card "testes"): último run, humano lê
+  const p = join(homedir(), ".config", "canivete", "smoke-last.json");
+  mkdirSync(join(homedir(), ".config", "canivete"), { recursive: true });
+  writeFileSync(p, JSON.stringify({ ts: new Date().toISOString(), pass, fail, total: pass + fail }) + "\n");
+} catch {}
 srv.kill("SIGKILL");
 setTimeout(() => process.exit(fail ? 1 : 0), 300);

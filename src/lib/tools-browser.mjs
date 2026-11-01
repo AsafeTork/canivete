@@ -129,7 +129,7 @@ async function withCdpRetry(fn, opts, label = "CDP") {
 }
 
 reg("n_browser_navigate", {
-  description: "Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. cookies:true inclui cookies da página. Ex: {url:\"http://localhost:5173\", waitMs:5000, cookies:true}.",
+  description: "Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. cookies:true inclui cookies da página. Sem JS? n_webfetch é mais barato. Página logada do dono? n_ubrowser_read (headless não tem sessão). Ex: {url:\"http://localhost:5173\", waitMs:5000, cookies:true}.",
   inputSchema: { type: "object", properties: { url: { type: "string" }, waitMs: { type: "number", default: 4000 }, cookies: { type: "boolean", description: "Retorna cookies da página via CDP" } }, required: ["url"] },
   run: async ({ url, waitMs, cookies }) => {
     const t0 = Date.now();
@@ -457,7 +457,7 @@ reg("n_browser_act", {
       const navNewDoc = ["goto", "back", "forward", "reload"].includes(a.action);
       const titleChanged = !!afterTitle && (urlChanged || navNewDoc);
       const afterLabel = String(afterTitle ? `${afterTitle} — ${afterUrl || ""}` : (afterUrl || `${a.action} ok`)).slice(0, 120);
-      const diff = urlChanged ? `${beforeUrl}→${afterUrl}` : (navNewDoc && afterUrl ? `navegou para ${afterLabel}` : `mesma página: ${afterLabel}`);
+      const diff = urlChanged ? `${beforeUrl}→${afterUrl}` : (navNewDoc && afterUrl ? `navegou para ${afterLabel}` : `mesma página: ${afterLabel} — URL não mudou; nem todo click navega, confirme o efeito (n_browser_snapshot/evaluate) antes de repetir`);
       const summary = `${a.action} ok — ${diff}`;
       const msAct = Date.now() - t0;
       // #60: click sem nada verificável = WARN (não sucesso cego)

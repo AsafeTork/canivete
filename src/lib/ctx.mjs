@@ -54,6 +54,40 @@ const KNOWN_CANIVETE_ENVS = new Set([
   "CANIVETE_LLM_5_MODEL",
   "CANIVETE_LLM_TIMEOUT",
   "CANIVETE_LLM_MAX_TOKENS",
+  "CANIVETE_LLM_TOTAL_TIMEOUT",
+  "CANIVETE_AGENTS",
+  "CANIVETE_BRIDGE_PORT",
+  "CANIVETE_BROWSER_ALLOW_PRIVATE",
+  "CANIVETE_BROWSER_FULLRENDER",
+  "CANIVETE_BROWSER_PDF_TIMEOUT_MS",
+  "CANIVETE_BROWSER_TIMEOUT_MS",
+  "CANIVETE_CDP_PORT",
+  "CANIVETE_CDP_TIMEOUT",
+  "CANIVETE_CDP_OWNER_PORT",
+  "CANIVETE_CDP_OWNER_DIR",
+  "CANIVETE_CHROME_BIN",
+  "CANIVETE_CHROME_IDLE_MS",
+  "CANIVETE_CHROME_LOWMEM",
+  "CANIVETE_CHROME_PROFILE",
+  "CANIVETE_DB_TIMEOUT_MS",
+  "CANIVETE_ELEMREPORTS_FILE",
+  "CANIVETE_EXPORT_TIMEOUT_MS",
+  "CANIVETE_HOST_GUARD_MS",
+  "CANIVETE_MAX_BODY",
+  "CANIVETE_MAX_MSG_CHARS",
+  "CANIVETE_MAX_MSGS",
+  "CANIVETE_MAX_POLLS",
+  "CANIVETE_MODELS_FILE",
+  "CANIVETE_SEARCH_MAX",
+  "CANIVETE_TASK_PREFIX",
+  "CANIVETE_TOKEN",
+  "CANIVETE_TOKEN_FILE",
+  "CANIVETE_UB_CHUNK",
+  "CANIVETE_UB_MAXPAY",
+  "CANIVETE_UB_MON_QUIET",
+  "CANIVETE_UB_TIMEOUT",
+  "CANIVETE_WATCH",
+  "CANIVETE_WATCH_MAIN",
 ]);
 try {
   const unknown = Object.keys(process.env).filter((k) => k.startsWith("CANIVETE_") && !KNOWN_CANIVETE_ENVS.has(k));
@@ -323,7 +357,7 @@ function devOut({ status = "success", summary = "", data = {}, telemetry = {}, n
 const HINT_PREFIX = "\u2192 DICA: "; // → DICA:
 const TOOL_LINE_SEP = " \u2014 "; // mesmo separador de server.mjs g(): `${t.name} — ${first(desc)}`
 const PARAM_SEP = "|";
-const PARAMS_PER_LINE = 12; // cobre toda tool real (maior schema: 37 em n_ubrowser_act → corta só a cauda)
+const PARAMS_PER_LINE = 12; // cobre toda tool real (maior schema: 42 em n_ubrowser_act → corta só a cauda)
 function paramNames(inputSchema) {
   const props = inputSchema && typeof inputSchema === "object" ? inputSchema.properties : null;
   if (!props || typeof props !== "object" || Array.isArray(props)) return [];
@@ -368,4 +402,16 @@ function sendToHost(obj) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...obj }) + "\n");
 }
 
-export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, capOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, fallbackHint, hintPrefix, paramNames, paramsSuffix, annotateToolLines, HINT_PREFIX, TOOL_LINE_SEP, PARAM_SEP, PARAMS_PER_LINE, estTokens, ctxStatusText, WALK_CAP, WALK_MAX_DEPTH, isSkippable, CTX, CTX_BUDGET, atomicWriteFile };
+// Rotação de JSONL (cap de linhas, descarta as mais antigas) — ÚNICA impl (inbox do
+// n_report e mon-log da ponte; elemreports tem variante própria p/ preservar abertos).
+// Atômica: disco cheio NUNCA trunca o original (#49).
+export function pruneJsonl(p, cap) {
+  try {
+    if (!existsSync(p)) return;
+    const raw = readFileSync(p, "utf8");
+    if (!raw) return;
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    if (lines.length >= cap) atomicWriteFile(p, lines.slice(-(cap - 1)).join("\n") + "\n", "utf8");
+  } catch {}
+}
+export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, fallbackHint, PARAMS_PER_LINE, estTokens, ctxStatusText, WALK_CAP, isSkippable, CTX, CTX_BUDGET, atomicWriteFile };

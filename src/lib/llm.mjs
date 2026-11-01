@@ -27,7 +27,7 @@ function readSlot(sfx) {
   const provider = (g(`CANIVETE_LLM${sfx}_PROVIDER`) || g(sfx ? "" : "CANIVETE_LLM_PROVIDER") || "").toLowerCase();
   const preset = PRESETS[provider] || {};
   const base = (g(`CANIVETE_LLM${sfx}_BASE_URL`) || (!sfx ? g("CANIVETE_LLM_BASE_URL") : "") || preset.base || "").replace(/\/$/, "");
-  const key = g(`CANIVETE_LLM${sfx}_API_KEY`) || (!sfx ? g("CANIVETE_LLM_API_KEY") : "");
+  const key = g(`CANIVETE_LLM${sfx}_API_KEY`) || g(`CANIVETE_LLM${sfx}_KEY`) || (!sfx ? g("CANIVETE_LLM_API_KEY") : "");
   const model = g(`CANIVETE_LLM${sfx}_MODEL`) || (!sfx ? g("CANIVETE_LLM_MODEL") : "") || preset.model || "";
   if (!key || !base || !model) return null;
   return { name: provider || `slot${sfx || 1}`, base, key, model };

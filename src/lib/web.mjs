@@ -652,4 +652,4 @@ function collapseHtml(s) {
   return s.replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/g, " ").replace(/\s+/g, " ").trim();
 }
 
-export { probeMeta, mainContent, cached, extractPriceAndJsonld, fetchRetry, normUrl, dedupeItems, normExcerpt, excerptTrigrams, jaccardSets, excerptSimilar, queryTerms, excerptScore, bestSnippet, splitSentences, buildQuickSummary, domainOf, capByDomain, dedupeExcerpts, publishDateStr };
+export { probeMeta, mainContent, cached, fetchRetry };

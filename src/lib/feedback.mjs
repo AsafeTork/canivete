@@ -2,35 +2,24 @@
 // Travou? Faltou tool/capacidade? Achou gargalo? NUNCA improvise em silêncio:
 // registre aqui (inbox global ~/.config/canivete/issues.jsonl) e siga pelo
 // alternativo. Sem report, o problema não existe.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { reg, out } from "./ctx.mjs";
+import { reg, out, pruneJsonl } from "./ctx.mjs";
 
-const KINDS = ["bug", "missing", "bottleneck"];
+const KINDS = ["bug", "ajuste", "aprimoramento", "sugestao", "missing", "bottleneck"];
 const MAX_INBOX_LINES = 500;
 const inboxPath = () => join(homedir(), ".config/canivete/issues.jsonl");
 
-// Rotação simples: mantém no máximo MAX_INBOX_LINES, descartando as mais antigas.
-function pruneInbox(p) {
-  try {
-    if (!existsSync(p)) return;
-    const raw = readFileSync(p, "utf8");
-    if (!raw) return;
-    const lines = raw.split("\n").filter((l) => l.length > 0);
-    if (lines.length >= MAX_INBOX_LINES) {
-      const keep = lines.slice(-(MAX_INBOX_LINES - 1));
-      writeFileSync(p, keep.join("\n") + "\n");
-    }
-  } catch {}
-}
+// Rotação: cap de linhas — delega ao pruneJsonl único (ctx), atômico (#49: ENOSPC não trunca).
+function pruneInbox(p) { pruneJsonl(p, MAX_INBOX_LINES); }
 
 reg("n_report", {
-  description: "Reporta erro/falta/gargalo p/ refinar a ferramenta (inbox global). Quando usar: tool falhou, faltou capacidade, gargalo. OBRIGATÓRIO em vez de improvisar. Ex: {kind:\"missing\", where:\"n_ubrowser_shot\", expected:\"print em aba de fundo\", got:\"só na visível\"}.",
+  description: "Reporta refinação p/ a ferramenta (inbox global). kind: bug (erro) | ajuste (correção de comportamento) | aprimoramento (perf/UX) | sugestao (capacidade nova); aliases legados aceitos: missing, bottleneck. OBRIGATÓRIO em vez de improvisar. Ex: {kind:\"missing\", where:\"n_ubrowser_shot\", expected:\"print em aba de fundo\", got:\"só na visível\"}.",
   inputSchema: {
     type: "object",
     properties: {
-      kind: { type: "string", enum: KINDS },
+      kind: { type: "string", enum: KINDS, description: "bug|ajuste|aprimoramento|sugestao (aliases: missing, bottleneck)" },
       where: { type: "string", description: "tool/área. Ex: n_ubrowser_shot" },
       expected: { type: "string", description: "O que deveria acontecer" },
       got: { type: "string", description: "O que aconteceu (erro exato)" },
@@ -42,7 +31,7 @@ reg("n_report", {
     required: ["kind", "where", "expected", "got"],
   },
   run: async ({ kind, where, expected, got, repro, blockedBy, suggestedCapability, dryRun }) => {
-    if (!KINDS.includes(kind)) return out(`kind inválido: ${kind} (use ${KINDS.join("|")})`, true);
+    if (!KINDS.includes(kind)) return out(`kind inválido: ${kind} (use bug|ajuste|aprimoramento|sugestao — aliases legados: missing, bottleneck)`, true);
     if (!where || !expected || !got) return out("where+expected+got obrigatórios", true);
     const entry = {
       id: `r${Date.now().toString(36)}`,
