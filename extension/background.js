@@ -10,11 +10,16 @@ let running = false;
 let UB_DEBUG = false;
 function logd(...args) { if (UB_DEBUG) console.log(...args); }
 
+// mon-hook quiet: NÃO wrappa console.* da página → extension-Inspector limpo.
+// Fonte: cfg.monQuiet da ponte (/hello; env CANIVETE_UB_MON_QUIET, default 1).
+let UB_MON_QUIET = true;
+
 async function load() {
-  const s = await chrome.storage.local.get(["token", "enabled", "url", "UB_DEBUG", "profileLabel"]);
+  const s = await chrome.storage.local.get(["token", "enabled", "url", "UB_DEBUG", "profileLabel", "ubMonQuiet"]);
   settings = { token: s.token || "", enabled: s.enabled !== false, url: s.url || DEFAULT_URL };
   settings.profileLabel = String(s.profileLabel || "").slice(0, 60); // rotas p/ perfil (ubResolveProfile na ponte)
   UB_DEBUG = s.UB_DEBUG === true;
+  if (typeof s.ubMonQuiet === "boolean") UB_MON_QUIET = s.ubMonQuiet; // last-inject flag sobra pro SW dormente
 }
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area !== "local") return;
@@ -36,7 +41,7 @@ try {
   });
 } catch {}
 
-const UB_EXPECTED = "14"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "15"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 // Versão do próprio worker (manifest): reportada no /hello + tab.diag → n_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
@@ -75,9 +80,9 @@ async function ubPushSend(tabId, entry, dropped) {
   try {
     let tab = null;
     try { tab = await chrome.tabs.get(tabId); } catch {}
-    await fetch(settings.url + "/ubpush?token=" + encodeURIComponent(settings.token || ""), {
+    await fetch(settings.url + "/ubpush", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-token": settings.token || "" },
       body: JSON.stringify({ tabId, title: (tab && tab.title) || "", url: (tab && tab.url) || "", entries: [entry].slice(0, 3), ...((dropped || 0) > 0 ? { dropped } : {}) }),
       signal: AbortSignal.timeout(8000),
     }).catch(() => {});
@@ -91,6 +96,61 @@ function ubPushFlush(tabId) {
     ubPushLast.set(tabId, Date.now());
     if (ubPushLast.size > 20) ubPushLast.delete(ubPushLast.keys().next().value);
     ubPushSend(tabId, p.entry, p.dropped || 0);
+  } catch {}
+}
+
+// ---- elem reports (marcação humana de elemento) — cache por origin + sync c/ a ponte ----
+// Fonte canônica = ~/.config/canivete/reports-elementos.jsonl (servidor). Aqui só um espelho
+// em chrome.storage.local p/ o content re-aplicar os highlights no boot sem rede; staleness
+// 60s + job "elem.changed" (notify do servidor) + sync de segurança no alarm de 1 min.
+const UB_ELEM_TTL = 60000;
+async function ubElemOrigin(url) {
+  try { return new URL(String(url || "")).origin; } catch { return null; }
+}
+async function ubElemCacheGet() {
+  try {
+    const s = await chrome.storage.local.get("ubElemReports");
+    const c = s && s.ubElemReports;
+    return (c && typeof c === "object" && !Array.isArray(c)) ? c : {};
+  } catch { return {}; }
+}
+async function ubElemCacheSet(cache) {
+  try {
+    const keys = Object.keys(cache).sort((a, b) => (cache[b].fetchedAt || 0) - (cache[a].fetchedAt || 0));
+    for (const k of keys.slice(30)) delete cache[k]; // cap de origins (os mais frescos ficam)
+    await chrome.storage.local.set({ ubElemReports: cache });
+  } catch {}
+}
+async function ubElemFetch(origin, force) {
+  // busca os reports da origin na ponte (GET /elemreports, slim) e atualiza o cache.
+  // Nunca lança: ponte fora = devolve o cache atual (highlights antigos batem certo).
+  try {
+    if (!origin) return [];
+    const cache = await ubElemCacheGet();
+    const cur = cache[origin];
+    if (!force && cur && Date.now() - (cur.fetchedAt || 0) < UB_ELEM_TTL) return Array.isArray(cur.reports) ? cur.reports : [];
+    const r = await fetch(settings.url + "/elemreports?base_url=" + encodeURIComponent(origin), {
+      headers: { "x-token": settings.token || "" }, signal: AbortSignal.timeout(6000),
+    });
+    if (!r.ok) return (cur && Array.isArray(cur.reports)) ? cur.reports : [];
+    const j = await r.json().catch(() => null);
+    const reports = (j && Array.isArray(j.items)) ? j.items : [];
+    cache[origin] = { fetchedAt: Date.now(), reports };
+    await ubElemCacheSet(cache);
+    return reports;
+  } catch { return []; }
+}
+async function ubElemApplyToTabs(origin, reports) {
+  // empurra os reports para as abas da origin (content re-aplica: some o resolvido, entra o novo)
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const t of tabs) {
+      try {
+        if (!t.id) continue;
+        if ((await ubElemOrigin(t.url)) !== origin) continue;
+        chrome.tabs.sendMessage(t.id, { cmd: "elem.apply", args: { reports } }).catch(() => {});
+      } catch {}
+    }
   } catch {}
 }
 
@@ -161,7 +221,10 @@ async function ensureContent(tabId) {
     await withTimeout(chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }), 12000, "injetar content");
     injectedTabs.add(tabId);
     // hook de observabilidade (console+rede, mundo MAIN, idempotente) — sem permissão nova.
+    // v4: mon-hook primeiro, setter DEPOIS — __ubMon.quiet flipa ao vivo; reinício de SW
+    // no meio de um mount perde quiet? O próximo ensure corrige sem F5 (setter depois do mount).
     try { await withTimeout(chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: ["mon-hook.js"] }), 8000, "injetar mon-hook"); } catch {}
+    try { await withTimeout(chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", func: (q) => { try { window.__ubMonQuiet = !!q; const m = window.__ubMon; if (m && m.v >= 3) m.quiet = !!q; } catch {} }, args: [!!UB_MON_QUIET] }), 4000, "injetar mon-flag"); } catch {}
     await new Promise((r) => setTimeout(r, 250)); // espaçamento p/ content inicializar após injeção
     const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd: "ping" }), 4000, "content ping2");
     if (r?.ok) return; // aceita a versão do disco (verdade atual)
@@ -265,6 +328,15 @@ async function handle(cmd, a = {}) {
     a.tabId = found.id;
   }
   if (cmd === "ping") return { pong: true, url: settings.url };
+  // reports de elemento mudaram na ponte (humano marcou / agente resolveu): re-sync do cache
+  // da origin + re-aplica os highlights nas abas do site (notify via job curto no /poll).
+  if (cmd === "elem.changed") {
+    const origin = String(a.origin || "");
+    if (!origin) return { skipped: "sem origin" };
+    const reports = await ubElemFetch(origin, true);
+    await ubElemApplyToTabs(origin, reports);
+    return { origin, reports: reports.filter((r) => r && r.status !== "resolvido").length };
+  }
   if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, focusRule: "tab.activate: default só eleva a aba na janela; focused:true rouba foco do dono — exige confirm={<frase>} (≥4 chars)" };
   if (cmd === "tabs.list") {
     const [tabs, wins, incog] = await Promise.all([
@@ -598,6 +670,34 @@ async function ubExpectEnsure(id, a, data, force) {
     return e || undefined;
   } catch { return undefined; }
 }
+// ---- CDP permanente por aba (a pedido do dono): parte do ubrowser, não tool nova ----
+// attach 1x → Runtime.evaluate IMUNE a CSP (WhatsApp), Page.captureScreenshot de aba em
+// fundo, Input trusted, DOM edit. Banner "depurando" fica visível (custo assumido do modo
+// permanente; desligue com act {action:"cdp", off:true}). DevTools aberto na aba → erro claro.
+// globalThis: o attach do Chrome SOBREVIVE ao SW dormindo, o cache não — re-attach cobre.
+if (!globalThis.__ubDbgInit) {
+  globalThis.__ubDbgInit = true;
+  globalThis.__ubDbgOn = new Set(); // tabIds com debugger preso
+  try { chrome.debugger.onDetach.addListener((src) => { try { if (src && src.tabId) globalThis.__ubDbgOn.delete(src.tabId); } catch {} }); } catch {}
+  try { chrome.tabs.onRemoved.addListener((tabId) => { try { globalThis.__ubDbgOn.delete(tabId); } catch {} }); } catch {}
+}
+async function ubDbgEnsure(tabId) {
+  const target = { tabId };
+  if (globalThis.__ubDbgOn && globalThis.__ubDbgOn.has(tabId)) return target;
+  try { await chrome.debugger.detach(target).catch(() => {}); } catch {} // zombie-detach best-effort
+  try {
+    await chrome.debugger.attach(target, "1.3");
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    if (/already attached|another debugger|already being debugged/i.test(msg)) { // já preso (SW reiniciou) — é nosso, aproveita
+      if (globalThis.__ubDbgOn) globalThis.__ubDbgOn.add(tabId);
+      return target;
+    }
+    throw e;
+  }
+  if (globalThis.__ubDbgOn) globalThis.__ubDbgOn.add(tabId);
+  return target;
+}
 // Cursor-remoto: clique TRUSTED via CDP Input (isTrusted=true, como o mouse do dono),
 // sem mover o mouse dele, escopado na aba (target=tabId). Banner "depurando" pisca
 // (attach→dispatch→detach na mesma tacada). Falhas (DevTools aberto, zombie) → caller faz fallback.
@@ -854,6 +954,47 @@ async function ubTrustedClick(tabId, x, y, opts) {
     const r = await withTimeout(chrome.tabs.sendMessage(id, { cmd: "ping" }), 4000, "content ping-reinject");
     return { reinjected: true, v: r?.data?.v || "?" };
   }
+  if (cmd === "tab.monstate") {
+    // Leitura do estado do mon-hook — func serializada pelo Chrome: CSP da página
+    // NÃO bloqueia (fecha o gap do eval-string; ver n_report rmvhj6chw).
+    const id = a.tabId || (await activeTabId());
+    const [mr] = await withTimeout(chrome.scripting.executeScript({
+      target: { tabId: id }, world: "MAIN",
+      func: () => {
+        const m = window.__ubMon;
+        return {
+          v: m ? m.v : 0,
+          quiet: m ? (m.quiet === true) : null,
+          count: m && m.count ? m.count() : 0,
+          hasFlag: window.__ubMonQuiet === true,
+        };
+      },
+    }), 8000, "monstate (func, imune a CSP)");
+    const r = (mr && mr.result) || {};
+    return { value: { v: r.v || 0, quiet: r.quiet === undefined || r.quiet === null ? (r.v ? false : null) : r.quiet, count: r.count || 0, hasFlag: r.hasFlag === true } };
+  }
+  if (cmd === "tab.cdp") {
+    // CDP cru na aba (dentro do ubrowser): ver/editar/ler em nível debugger — Runtime.evaluate
+    // IMUNE a CSP; Page.captureScreenshot funciona em aba de FUNDO; risco avaliado no caller.
+    if (a.off) {
+      const idOff = a.tabId || (await activeTabId());
+      try { await chrome.debugger.detach({ tabId: idOff }); } catch {}
+      if (globalThis.__ubDbgOn) globalThis.__ubDbgOn.delete(idOff);
+      return { value: { ok: true, detached: true, tabId: idOff } };
+    }
+    if (!a.method || !String(a.method).trim()) throw new Error("cdp exige method (ex.: \"Runtime.evaluate\") — ver docs/SKILL.md Observabilidade");
+    const id = a.tabId || (await activeTabId());
+    await getTabOrThrow(id);
+    const target = await ubDbgEnsure(id);
+    const t0d = Date.now();
+    try {
+      const res = await withTimeout(chrome.debugger.sendCommand(target, String(a.method), a.params || {}), 15000, "cdp " + a.method);
+      return { value: { ok: true, method: a.method, result: res ?? null, ms: Date.now() - t0d } };
+    } catch (e) {
+      if (globalThis.__ubDbgOn) globalThis.__ubDbgOn.delete(id); // attach caiu (aba fechou/DevTools) → re-attach automático no próximo uso
+      return { value: { ok: false, method: a.method, error: String((e && e.message) || e).slice(0, 200) } };
+    }
+  }
   if (cmd === "tab.evaluate") {
     if (!a.js) throw new Error("js obrigatório");
     const id = a.tabId || (await activeTabId());
@@ -874,7 +1015,12 @@ async function ubTrustedClick(tabId, x, y, opts) {
     // "script nem executou" (resultado vazio = aba navegando/descartada — era null silencioso, #45/#46).
     const runEval = async () => {
       const [r] = await withTimeout(chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func: (code) => {
-        try { return { v: eval(code) }; }
+        try {
+          // Duas formas: expressão OU corpo de função (`return …` → IIFE; idêntico ao isolated).
+          const src = String(code);
+          const bodyForm = /^\s*return\b/.test(src.trim()) || /[\n;{]\s*return\b/.test(src);
+          return { v: bodyForm ? eval("(function(){\n" + src + "\n})()") : eval(src) };
+        }
         catch (e) { return { err: String((e && e.message) || e).slice(0, 300) }; }
       }, args: [String(a.js)] }), 20000, "evaluate (página pode estar ocupada/bloqueando script)");
       return r;
@@ -942,7 +1088,19 @@ async function ubTrustedClick(tabId, x, y, opts) {
     // NUNCA troca de aba: só fotografa a aba VISÍVEL (fundo = sem print, use read)
     const id = a.tabId || (await activeTabId());
     const cur = await activeTabId().catch(() => null);
-    if (cur && cur !== id) throw new Error("print só na aba VISÍVEL — traga p/ frente (fundo: use read/snapshot, foco é intocável)");
+    if (cur && cur !== id) {
+      // aba em FUNDO: CDP fotografa sem trazer à frente e sem roubar foco (dono pediu "ver" total).
+      try {
+        const target = await ubDbgEnsure(id);
+        const rs = await withTimeout(chrome.debugger.sendCommand(target, "Page.captureScreenshot", { format: "png" }), 12000, "cdp shot fundo");
+        const t = await getTabOrThrow(id);
+        const dataUrl = "data:image/png;base64," + rs.data;
+        let hash = null; try { hash = ubShotHash(dataUrl); } catch {}
+        return { dataUrl, hash, capturedAt: Date.now(), mime: "image/png", via: "cdp-fundo", tab: { id, title: t.title, url: t.url } };
+      } catch (eCdp) {
+        throw new Error("print de aba em fundo falhou via CDP (" + String((eCdp && eCdp.message) || eCdp).slice(0, 120) + ") — DevTools aberto na aba bloqueia attach; traga à frente p/ captureVisibleTab");
+      }
+    }
     const t = await getTabOrThrow(id);
     // v14 frescor: aquieta SPA + 2 frames antes de capturar (evita print no meio do paint).
     try { await ask(id, "settle", { timeoutMs: 1500 }).catch(() => {}); } catch {}
@@ -1037,7 +1195,7 @@ async function pollOnce() {
     let r;
     const cid = await ubClientId();
     try {
-      r = await fetch(settings.url + "/poll?token=" + encodeURIComponent(settings.token) + "&ext=" + encodeURIComponent(cid), { signal: ctl.signal });
+      r = await fetch(settings.url + "/poll?ext=" + encodeURIComponent(cid), { headers: { "x-token": settings.token || "" }, signal: ctl.signal });
     } catch (e) {
       if (e.name === "AbortError") throw e;
       throw new Error("bridge offline (" + settings.url + "/poll inacessível) — suba o bridge e aguarde reconnect");
@@ -1058,9 +1216,9 @@ async function result(id, ok, data, error) {
   const body = JSON.stringify({ id, ok, data, error: error ? String(error).slice(0, 500) : undefined });
   for (let i = 0; i < 2; i++) { // 1 retry: resposta perdida = __timeout no caller (com efeito pronto). /result é idempotente por id.
     try {
-      await fetch(settings.url + "/result?token=" + encodeURIComponent(settings.token), {
+      await fetch(settings.url + "/result", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-token": settings.token || "" },
         body,
       });
       return;
@@ -1079,11 +1237,12 @@ async function hello(force) {
     try {
       const tabs = await chrome.tabs.query({});
       const cid = await ubClientId();
-      await fetch(settings.url + "/hello?token=" + encodeURIComponent(settings.token), {
+      const r = await fetch(settings.url + "/hello", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ info: { clientId: cid, tabs: tabs.length, tabUrls: tabs.map((t) => t.url).slice(0, 25), ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED, profileLabel: settings.profileLabel || "" } }),
+        headers: { "content-type": "application/json", "x-token": settings.token || "" },
+        body: JSON.stringify({ info: { clientId: cid, extId: chrome.runtime.id, tabs: tabs.length, tabUrls: tabs.map((t) => t.url).slice(0, 25), ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED, profileLabel: settings.profileLabel || "" } }),
       });
+      try { const j = await r.json().catch(() => null); if (j && typeof j.cfg?.monQuiet !== "undefined") { UB_MON_QUIET = j.cfg.monQuiet === true; try { await chrome.storage.local.set({ ubMonQuiet: UB_MON_QUIET }); } catch {} } } catch {}
       diag.helloOk = new Date().toLocaleTimeString();
     } catch (e) { diag.lastError = "hello: " + (e.message || e); }
     finally { ubHelloAt = Date.now(); }
@@ -1222,6 +1381,73 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     })();
     return false;
   }
+  if (msg && msg.__ubReplayClip) {
+    // clipe de replay do mon-hook v4 (rrweb opt-in): fire-and-forget p/ /replay na
+    // ponte — sem debounce (clipSend já taxa 1 clipe/45s), sem replyChannel.
+    (async () => {
+      try {
+        const cid = await ubClientId();
+        fetch(settings.url + "/replay", {
+          method: "POST", headers: { "content-type": "application/json", "x-token": settings.token || "" },
+          body: JSON.stringify({ clientId: cid, ...msg.__ubReplayClip }),
+        }).catch(() => {});
+      } catch {}
+    })();
+    return false;
+  }
+  // commit da marcação humana (content → ponte): grava report (dedupe lá), guarda o espelho
+  // local e devolve o report persistido p/ a aba aplicar o highlight com o id real.
+  if (msg && (msg.__ubElemCommit || msg.__ubElemUpdate)) {
+    (async () => {
+      try {
+        const isUpd = !!msg.__ubElemUpdate;
+        const payload = { ...(isUpd ? msg.__ubElemUpdate : msg.__ubElemCommit) };
+        // screenshot opcional: só da aba visível/focada (best-effort; sem print = segue sem)
+        if (payload.shot) {
+          delete payload.shot;
+          try {
+            const tabId = _s && _s.tab && _s.tab.id;
+            const tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
+            if (tab && tab.active) {
+              const win = await chrome.windows.get(tab.windowId).catch(() => null);
+              if (win && win.focused) payload.shotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+            }
+          } catch {}
+        }
+        const r = await fetch(settings.url + (isUpd ? "/elemreport-update" : "/elemreport"), {
+          method: "POST", headers: { "content-type": "application/json", "x-token": settings.token || "" },
+          body: JSON.stringify(payload), signal: AbortSignal.timeout(20000),
+        });
+        const j = await r.json().catch(() => null);
+        if (!r.ok || !j || !j.ok) { reply({ ok: false, error: (j && j.error) || ("ponte HTTP " + r.status) }); return; }
+        try { // espelho local atualiza na hora (sem esperar TTL); apagado sai do cache
+          const origin = String((j.report && j.report.base_url) || payload.base_url || "");
+          if (origin) {
+            const cache = await ubElemCacheGet();
+            const cur = cache[origin] || { reports: [] };
+            const reports = (Array.isArray(cur.reports) ? cur.reports : [])
+              .filter((x) => x && x.id !== j.report.id && !(j.apagado && x.id === j.report.id));
+            if (!j.apagado) reports.push(j.report);
+            cache[origin] = { fetchedAt: Date.now(), reports };
+            await ubElemCacheSet(cache);
+          }
+        } catch {}
+        reply({ ok: true, report: j.report, deduped: !!j.deduped, apagado: !!j.apagado });
+      } catch (e) { reply({ ok: false, error: String(e.message || e).slice(0, 200) }); }
+    })();
+    return true;
+  }
+  // content pede os reports da origin no boot (re-aplica os highlights; cache c/ TTL 60s)
+  if (msg && msg.__ubElemGet) {
+    (async () => {
+      try {
+        const origin = String((msg.__ubElemGet && msg.__ubElemGet.origin) || "");
+        const reports = await ubElemFetch(origin, false);
+        reply({ ok: true, reports });
+      } catch { reply({ ok: true, reports: [] }); }
+    })();
+    return true;
+  }
   if (msg.cmd === "pingBridge") {
     (async () => {
       try {
@@ -1232,8 +1458,8 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
         // Sem isso o popup dizia "OK" p/ qualquer texto colado (falso verde).
         if (!settings.token) { reply({ ok: true, http: r.status, body: (await r.text()).slice(0, 120), token: "sem token salvo — cole o token.txt", clientId: cid }); return; }
         try {
-          const pr = await fetch(settings.url + "/hello?token=" + encodeURIComponent(settings.token), {
-            method: "POST", headers: { "content-type": "application/json" },
+          const pr = await fetch(settings.url + "/hello", {
+            method: "POST", headers: { "content-type": "application/json", "x-token": settings.token || "" },
             body: JSON.stringify({ info: { probe: true } }), signal: AbortSignal.timeout(5000),
           });
           if (pr.status === 401) { reply({ ok: false, error: "token INCORRETO — confira ~/.config/canivete/token.txt e cole de novo" }); return; }
@@ -1255,6 +1481,28 @@ chrome.alarms.onAlarm.addListener(() => {
   try {
     if (!loopBeat || Date.now() - loopBeat > 90000) { running = false; loop().catch(() => {}); }
     else loop().catch(() => {});
+  } catch {}
+  // sync de segurança dos reports: origins COM cache (site já marcado) e aba aberta,
+  // cache velho (>90s) → re-fetch + re-aplica. Só esses: sites normais custam zero.
+  try {
+    (async () => {
+      const cache = await ubElemCacheGet();
+      const keys = Object.keys(cache);
+      if (!keys.length) return;
+      const tabs = await chrome.tabs.query({});
+      const seen = new Set();
+      for (const t of tabs) {
+        try {
+          const o = await ubElemOrigin(t.url);
+          if (!o || seen.has(o) || !cache[o]) continue;
+          seen.add(o);
+          if (Date.now() - (cache[o].fetchedAt || 0) > 90000) {
+            const reports = await ubElemFetch(o, true);
+            await ubElemApplyToTabs(o, reports);
+          }
+        } catch {}
+      }
+    })();
   } catch {}
 });
 chrome.runtime.onStartup.addListener(() => loop());

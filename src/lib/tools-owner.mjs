@@ -1,6 +1,7 @@
 // canivete — tools do navegador LOGADO do dono (ubrowser_*)
 import { reg, devOut, trimOut } from "./ctx.mjs";
 import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsHint, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
+import { ownerCdpSend } from "./cdp.mjs";
 import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks } from "../core/snapshot.mjs";
 // recovery sem mudar protocolo: só texto de erro acionável (janela NORMAL, popup, token) + fallback headless
 const UB_REC = "Recovery dono: 1) Chrome janela NORMAL mesmo perfil (sem anonimo) 2) popup extensao UBrowser ATIVO 3) token ~/.config/canivete/token.txt igual na extensao 4) rode n_ubrowser_status p/ confirmar";
@@ -91,7 +92,7 @@ reg("n_ubrowser_tabs", {
 });
 
 reg("n_ubrowser_read", {
-  description: "Lê aba do dono COM login (texto+links). Mire com tab:\"trecho\" ou tabId. mode=distill (default, enxuto) | raw (integral + links). outline=true: só estrutura (h1-h6 + contagens) p/ triagem. maxChars/maxLinks dão teto. AUTOMÁTICO: espera a página aquietar (SPA), perfura shadow DOM, inputs mostram value separado (`[campo text Nome] = \"João\"`). Pra JS use evaluate no act; pra erros/rede use act console. selector=\"CSS\" escopa a leitura a um container (#app, table, ...); texto curto em página grande ganha WARN no summary (tente mode:\"raw\" ou snapshot).",
+  description: "Lê aba do dono COM login (texto+links). Mire com tab:\"trecho\" ou tabId. Página pública (sem login)? NÃO use este — n_webfetch (estática) ou n_browser_navigate (JS); não gasta a aba do dono. mode=distill (default, enxuto) | raw (integral + links). outline=true: só estrutura (h1-h6 + contagens) p/ triagem. maxChars/maxLinks dão teto. AUTOMÁTICO: espera a página aquietar (SPA), perfura shadow DOM, inputs mostram value separado (`[campo text Nome] = \"João\"`). Pra JS use evaluate no act; pra erros/rede use act console. selector=\"CSS\" escopa a leitura a um container (#app, table, ...); texto curto em página grande ganha WARN no summary (tente mode:\"raw\" ou snapshot).",
   inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" }, selector: { type: "string", description: "CSS p/ escopar a leitura a um container (ex: \"#app\", \"table.turmas\") — erro \"seletor não encontrado\" se não achar" } }, required: [] },
   run: async ({ tabId, tab, mode, maxChars, maxLinks, outline, selector, profile }) => {
     const t0 = Date.now();
@@ -246,6 +247,7 @@ function ubShotCacheKey({ tabId, tab }, data) {
 // UB_OWNER_POWER_START — ganhos de PODER/usabilidade (verções, erros que instruem, tabs
 // multi-perfil, timeout de ações pesadas, activate). Puros: testáveis via node sem extensão.
 const UB_VER_ACT = "1.7.3"; // tab.activate exige extensão ≥ 1.7.3 (contrato c/ background)
+const UB_VER_ELEM = "1.9.0"; // elem_pick (marcação humana de elemento) exige extensão ≥ 1.9.0
 function ubVerNum(v) {
   try {
     const m = String(v || "").match(/(\d+)\.(\d+)(?:\.(\d+))?/);
@@ -277,6 +279,7 @@ const ubHeavyMs = () => Math.min(Math.max(UB_TIMEOUT_MS, 90000), 165000);
 const UB_REQ = {
   goto: ["url", '{action:"goto", tab:"trecho", url:"https://…"}'],
   evaluate: ["js", '{action:"evaluate", tab:"trecho", js:"location.href"}'],
+  cdp: ["method", '{action:"cdp", tab:"trecho", method:"Runtime.evaluate", params:{expression:"document.title", returnByValue:true}}'],
   flow: ["steps", '{action:"flow", tab:"trecho", steps:[{cmd:"tab.read"},{cmd:"tab.click", selector:"a"}]}'],
   count: ["selector", '{action:"count", selector:".item"}'],
   attr: ["selector+name", '{action:"attr", selector:"a", name:"href"}'],
@@ -396,11 +399,12 @@ reg("n_ubrowser_snapshot", {
 });
 
 reg("n_ubrowser_act", {
-  description: "AUTOMAÇÃO no Chrome LOGADO do dono (só quando ele pedir; NUNCA destrutivo sem pedido; alto risco exige confirm; FECHAR ABAS DO DONO PROIBIDO). Mire por selector CSS, ref do snapshot OU text=\"trecho\" (qualquer elemento visível). activate troca a aba à frente NO Chrome — foco de SO intocado por padrão; focused=true (roubar foco de SO p/ device-flow) exige confirm=\"<frase>\". EFICIÊNCIA (aja direto, sem enrolar): goto/new/back/forward/reload com snap:true já voltam top-10 (1 call a menos); click/fill/type/select/press retornam delta (o que mudou — sem re-snapshot p/ confirmar); flow = N cmds em 1 ida-volta; find no snapshot em vez de paginar. Funciona em aba de fundo (tabId). fill SUBSTITUI (Monaco/CodeMirror via API); type ANEXA. wait=waitMs reais (teto 15s). evaluate no MAIN (retry em null; CSP bloqueia → read/snapshot). console {filter:all|errors|net|console} lê erros+rede da aba (erros CHEGAM SOZINHOS via push + 📬 nas respostas). click/fill/type/select/press mostram 🔔 aviso efêmero no delta. scan {pages} p/ virtualizada. click/cursor retornam verified+whatChanged (verified:true = confie sem re-snapshot). tooltip {selector|x,y} revela tooltip via hover SEM clicar (só-leitura). snapshot marca layer=modal|menu|popover nos itens + overlay aberto no topo (aja dentro da camada). catchup {durationMs} pesca transientes (toasts/snackbars/aria-live, role=status|alert) que somem em segundos — volta apareceu/sumiu + texto, sem snapshot. Alvo que some entre snapshot e ação volta com WHERE (removed|hidden|scrolled-out|zero-box|recycled|never-found) em vez de NOTFOUND seco; scroll re-mede e re-resolve por texto/papel (até 3 tentativas, resolve=moved|recycled) em lista virtualizada. aesthetic julga layout (score 0-100 + issues até 12: contrast/tap-target/overflow-x/overlap/fonts) sem print — opinião visual direta. click/fill/type/select aceitam expectUrl/expectText/expectGone (assert pós-settle com PASS/FAIL no expect, sem re-ler a página). reload-extension recarrega a extensão remota (aplica código novo do disco; ponte reconecta sozinha). close fecha SÓ aba-fantasma do agente (about:blank) — aba do dono com http(s) ativo é RECUSADA sem confirm=\"<frase do dono>\"; {action:\"close\", mode:\"close_by_prefix\"} limpa TODAS as about:blank de uma vez. activate precisa extensão 1.7.3+ (n_ubrowser_status → data.version); antiga = erro com hint de reload-extension.",
+  description: "AUTOMAÇÃO no Chrome LOGADO do dono (só quando ele pedir; NUNCA destrutivo sem pedido; alto risco exige confirm; FECHAR ABAS DO DONO PROIBIDO). Mire por selector CSS, ref do snapshot OU text=\"trecho\" (qualquer elemento visível). activate troca a aba à frente NO Chrome — foco de SO intocado por padrão; focused=true (roubar foco de SO p/ device-flow) exige confirm=\"<frase>\". EFICIÊNCIA (aja direto, sem enrolar): goto/new/back/forward/reload com snap:true já voltam top-10 (1 call a menos); click/fill/type/select/press retornam delta (o que mudou — sem re-snapshot p/ confirmar); flow = N cmds em 1 ida-volta; find no snapshot em vez de paginar. Funciona em aba de fundo (tabId). fill SUBSTITUI (Monaco/CodeMirror via API); type ANEXA. wait=waitMs reais (teto 15s). evaluate no MAIN (retry em null; CSP bloqueia → read/snapshot). cdp = CDP cru na aba (Runtime.evaluate imune a CSP, DOM edit, Input trusted) — padrão via chrome.debugger da extensão (zero cliques, banner fica; só http(s)/file); se o dono armar o toggle do chrome://inspect, a porta 9222 dele assume (WS persistente, sem banner, alcança até chrome:// — 1 \"Permitir\" por sessão); off:true desanexa. console {filter:all|errors|net|console} lê erros+rede da aba (erros CHEGAM SOZINHOS via push + 📬 nas respostas). click/fill/type/select/press mostram 🔔 aviso efêmero no delta. scan {pages} p/ virtualizada. click/cursor retornam verified+whatChanged (verified:true = confie sem re-snapshot). tooltip {selector|x,y} revela tooltip via hover SEM clicar (só-leitura). snapshot marca layer=modal|menu|popover nos itens + overlay aberto no topo (aja dentro da camada). catchup {durationMs} pesca transientes (toasts/snackbars/aria-live, role=status|alert) que somem em segundos — volta apareceu/sumiu + texto, sem snapshot. Alvo que some entre snapshot e ação volta com WHERE (removed|hidden|scrolled-out|zero-box|recycled|never-found) em vez de NOTFOUND seco; scroll re-mede e re-resolve por texto/papel (até 3 tentativas, resolve=moved|recycled) em lista virtualizada. aesthetic julga layout (score 0-100 + issues até 12: contrast/tap-target/overflow-x/overlap/fonts) sem print — opinião visual direta. click/fill/type/select aceitam expectUrl/expectText/expectGone (assert pós-settle com PASS/FAIL no expect, sem re-ler a página). reload-extension recarrega a extensão remota (aplica código novo do disco; ponte reconecta sozinha). close fecha SÓ aba-fantasma do agente (about:blank) — aba do dono com http(s) ativo é RECUSADA sem confirm=\"<frase do dono>\"; {action:\"close\", mode:\"close_by_prefix\"} limpa TODAS as about:blank de uma vez. activate precisa extensão 1.7.3+ (n_ubrowser_status → data.version); antiga = erro com hint de reload-extension. elem_pick abre o modo de marcação NA PÁGINA para o dono apontar 1..N elementos com problema (contorno+badge que sobrevivem a reload; o report fica persistente por site — liste com n_elemreports_list e resolva com n_elemreports_resolve); off:true desliga.",
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "console", "close", "activate"] },
+      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "monstate", "cdp", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "console", "close", "activate", "elem_pick"] },
+      off: { type: "boolean", description: "p/ elem_pick: desliga o modo de marcação" },
       tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, url: { type: "string" }, selector: { type: "string" }, text: { type: "string" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — omitir = mais recente" },
       ref: { type: "number", description: "ref do snapshot (resolve p/ selector via cache; expira se navegar — re-snapshot)" },
       name: { type: "string", description: "atributo p/ attr (href/src/value/text/html)" },
@@ -437,7 +441,7 @@ reg("n_ubrowser_act", {
   },
   run: async (a) => {
     const t0 = Date.now();
-    if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate | exemplos: {action:"goto", tab:"trecho", url:"https://..."} / {action:"click", ref:3} / {action:"activate", tab:"Gmail"}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | exemplos: {action:"goto", tab:"trecho", url:"https://..."} / {action:"click", ref:3} / {action:"activate", tab:"Gmail"}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     // roteamento multi-perfil: profile pedido SEM match = erro acionável (lista conectados),
     // nunca despacha em silêncio p/ outro perfil. Um só resolve vale p/ ida e retry.
     const tgt = ubTarget(a.profile);
@@ -448,12 +452,35 @@ reg("n_ubrowser_act", {
       if (!res.ok) return devOut({ status: "error", summary: `${res.error} | ${UB_FB}`, data: { action: a.action, ref: a.ref }, telemetry: { execution_time_ms: Date.now() - t0 } });
       a = { ...a, selector: res.selector };
     }
+    // cdp: method+params viram texto ANTES da trava — mesma régua de risco do evaluate
+    // (pagamento/senha/rm em Runtime.evaluate NÃO passam sem confirm do dono).
+    if (a.action === "cdp") a = { ...a, text: String(a.method || "") + " " + JSON.stringify(a.params || {}).slice(0, 1500) };
     const risk = ubRisk(a);
     if (risk === "high" && !(a.confirm && a.confirm.trim().length >= 4))
       return devOut({ status: "error", summary: `BLOQUEADO (alto risco: pagamento/senha/excluir/apagar). Só com pedido EXPLÍCITO + confirm="<frase do dono>". Ação: ${a.action} ${a.selector || a.url || ""}`, data: { action: a.action, risk }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    // CDP do dono (porta 9222, WS persistente): tenta PRIMEIRO se o toggle estiver armado —
+    // sem banner e alcança chrome://. Modo em efeito (escolha do dono): toggle OFF → o fast-fail
+    // do ownerConnect recusa em ms e a extensão abaixo responde tudo (zero cliques). tab:"trecho" casa URL/título; indisponível
+    // (toggle off, consentimento pendente, trecho ambíguo) → cai p/ tab.cdp da extensão abaixo.
+    if (a.action === "cdp" && !a.off && a.method) {
+      try {
+        const oc = await ownerCdpSend(String(a.tab ?? ""), String(a.method), a.params || {});
+        const res = oc.result ?? null;
+        const isEval = /Runtime\.evaluate/i.test(String(a.method));
+        const val = isEval && res && typeof res === "object" && res.result ? res.result.value : undefined;
+        const preview = val === undefined ? undefined : JSON.stringify(val)?.slice(0, 200);
+        const resSlim = res && typeof res === "object" && typeof res.data === "string" && res.data.length > 300
+          ? { ...res, data: `(base64 ${res.data.length}B omitido — evidência visual vai por n_ubrowser_shot)` } : res;
+        return devOut({ summary: `[cdp·9222] ${a.method} ok (${oc.ms}ms)${preview !== undefined ? ` · valor: ${preview}` : ""}`, data: { action: "cdp", via: "9222", method: a.method, value: val, result: resSlim }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_act", reason: "Conexão CDP do dono é persistente — próximos cdp respondem sem dialog" }] });
+      } catch (e) {
+        if (!e || !e.__ownerDown) // erro do COMANDO (sintaxe/domínio CDP) — caminho ok, não cai p/ extensão
+          return devOut({ status: "warn", summary: `[cdp·9222] ${a.method}: ${String((e && e.message) || e).slice(0, 180)}`, data: { action: "cdp", via: "9222", method: a.method, error: String((e && e.message) || e).slice(0, 200) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+        // indisponível/matching → segue p/ extensão (banner, mas funciona e resolve por tabId)
+      }
+    }
     if (a.action === "wait") { await new Promise((r) => setTimeout(r, Math.min(Number(a.waitMs ?? a.ms) || 2000, 15000))); return devOut({ summary: "wait ok", data: { action: "wait" }, telemetry: { execution_time_ms: Date.now() - t0 } }); }
-    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", console: "tab.console", close: "tab.close", activate: "tab.activate" };
-    if (!map[a.action]) return devOut({ status: "error", summary: `action "${a.action}" desconhecida — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", monstate: "tab.monstate", cdp: "tab.cdp", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", console: "tab.console", close: "tab.close", activate: "tab.activate", elem_pick: "tab.elem_pick" };
+    if (!map[a.action]) return devOut({ status: "error", summary: `action "${a.action}" desconhecida — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // valida antes da ida-volta: param que a extensão joga como throw vira erro AQUI com exemplo pronto p/ colar.
     {
       const req = ubReqMiss(a.action, a);
@@ -474,6 +501,13 @@ reg("n_ubrowser_act", {
     // tooltip exige alvo (selector vence; senão x+y) — falha local, sem ida-volta.
     if (a.action === "tooltip" && !a.selector && (a.x === undefined || a.y === undefined))
       return devOut({ status: "error", summary: `tooltip exige selector OU x+y — exemplo: {action:"tooltip", selector:"button[aria-label]"} ou {action:"tooltip", x:120, y:300} | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    // elem_pick (marcação humana de elemento): só ≥ 1.9.0 — antiga = erro com hint de reload.
+    if (a.action === "elem_pick") {
+      const extEl = ubListExtensions().find((e) => e.id === tgt.id);
+      const verEl = extEl?.info?.bg ? String(extEl.info.bg) : null;
+      if (verEl && ubVerLt(verEl, UB_VER_ELEM))
+        return devOut({ status: "error", summary: `elem_pick requer extensão ${UB_VER_ELEM}+ (rodando ${verEl}) — rode {action:"reload-extension"} e confirme versão com n_ubrowser_status (data.version) | ${UB_FB}`, data: { action: "elem_pick", version: verEl, required: UB_VER_ELEM }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    }
     // console zera os alertas push ANTES da ida-volta: vale mesmo se a extensão falhar
     // (o hint já cumpriu o papel de levar o agente até aqui).
     if (a.action === "console") ubAlertsRead();
@@ -508,6 +542,11 @@ reg("n_ubrowser_act", {
       // auto-reload remoto da extensão (aplica código novo do disco).
       return devOut({ summary: `[reload-extension] ok — extensão recarregando, ponte reconecta sozinha em segundos (confira versões com n_ubrowser_status)`, data: { action: a.action, risk, reloading: true, bg: d.bg || undefined }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
+    if (a.action === "elem_pick") {
+      // modo de marcação do dono: report chega DEPOIS via /elemreport (push da extensão).
+      if (a.off) return devOut({ summary: `[elem_pick] modo de marcação DESLIGADO na aba${d.marks !== undefined ? ` · ${d.marks} marcação(ões) viva(s) na página` : ""}`, data: { action: "elem_pick", off: true, ...d }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ summary: `[elem_pick] modo de marcação ATIVO — o dono clica nos elementos (1..N) e escreve o que está errado; o report fica persistente por site. O report chega sozinho: depois de ele marcar, rode n_elemreports_list {base_url:"<url da aba>"}.`, data: { action: "elem_pick", ...d }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_elemreports_list", reason: "Listar reports da base_url (o dono já marcou?)" }] });
+    }
     if (a.action === "evaluate") {
       // v14 chunked (>500kB): remonta em vez de degradar p/ null-warn.
       if (r.chunked && Array.isArray(r.chunks)) {
@@ -527,6 +566,29 @@ reg("n_ubrowser_act", {
       if (!a.selector && ubEvalNullKind(d) === "undefined") return devOut({ status: "warn", summary: `evaluate executou e retornou undefined — termine o JS com o valor desejado | ${UB_FB}`, data: { action: a.action, risk, value: null, undefined: true, cspBlocked: false, selectorFound: selFound, note: d.note || undefined }, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (!a.selector && value === null) return devOut({ status: "warn", summary: `evaluate retornou null${d.note ? ` — ${String(d.note).slice(0, 160)}` : " — termine JS com valor + confira n_ubrowser_snapshot/read"} | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: false, selectorFound: selFound, note: d.note || undefined }, telemetry: { execution_time_ms: Date.now() - t0 } });
       return devOut({ summary: "[evaluate] ok", data: { action: a.action, risk, value, cspBlocked: false, selectorFound: selFound }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_shot", reason: "Confirmar visualmente" }] });
+    }
+    if (a.action === "monstate") {
+      // estado do mon-hook (v/quiet/count/hasFlag) — func-based, imune à CSP da página.
+      const mv = d && typeof d === "object" ? d.value || d : {};
+      const vOut = Number(mv.v) || 0, qOut = mv.quiet;
+      const st = vOut === 0 ? "sem-hook (mon-hook ainda não injetado nesta página)" : `mon-hook v${vOut}, quiet: ${qOut === null ? "?" : (qOut ? "true" : "false")}${vOut < 4 ? ` (obsoleto — o próximo ensure monta v4)` : ""}`;
+      return devOut({ summary: `[monstate] ${st} · buffer: ${Number(mv.count) || 0} entradas · __ubMonQuiet: ${mv.hasFlag === true}`, data: { action: "monstate", ...mv }, telemetry: { execution_time_ms: Date.now() - t0 }, next: qOut === false ? [{ tool: "n_ubrowser_act", reason: "quiet falso ao vivo: rode qualquer act nesta aba p/ re-ensure (extensão ≥1.8.2 corrige sem F5)" }] : [] });
+    }
+    if (a.action === "cdp") {
+      // CDP permanente: executa command de debugger na aba (ver/editar/ler — imune a CSP).
+      if (a.off) return devOut({ summary: "[cdp] detach ok — banner de debug some; próximo cdp re-atacha sozinho", data: { action: "cdp", off: true }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      // shape da ponte: resposta da extensão vem em d.value ({ok, method, result, ms}); tolera d plano.
+      const cv = d && typeof d === "object" ? d.value : null;
+      const cd = (cv && typeof cv === "object" && ("method" in cv || "ok" in cv || "result" in cv)) ? cv : ((d && typeof d === "object") ? d : {});
+      if (cd.ok === false) return devOut({ status: "warn", summary: `[cdp·ext] ${cd.method}: ${cd.error} — re-attach é automático no retry; DevTools aberto na aba também bloqueia attach | ${UB_FB}`, data: { action: "cdp", via: "extensão", ...cd }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      const res = cd.result ?? null;
+      const isEval = /Runtime\.evaluate/i.test(String(cd.method || ""));
+      const val = isEval && res && typeof res === "object" && res.result ? res.result.value : undefined;
+      const preview = val === undefined ? undefined : JSON.stringify(val)?.slice(0, 200);
+      const resSlim = res && typeof res === "object" && typeof res.data === "string" && res.data.length > 300
+        ? { ...res, data: `(base64 ${res.data.length}B omitido — n_ubrowser_shot salva imagem; CDP de fundo já vem no shot automaticamente)` }
+        : res;
+      return devOut({ summary: `[cdp·ext] ${cd.method} ok (${cd.ms}ms)${preview !== undefined ? ` · valor: ${preview}` : ""}`, data: { action: "cdp", via: "extensão", method: cd.method, value: val, result: resSlim }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_act", reason: "Attach é permanente por aba — próximos cdp não mostram banner novo" }] });
     }
     if (a.action === "console") {
       // #47: console+erros+rede da aba (hook MAIN; só vê o que aconteceu após a 1ª injeção).

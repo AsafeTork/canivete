@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { UA } from "./ctx.mjs";
 import { sleep } from "../core/retry.mjs";
 
@@ -522,4 +522,93 @@ async function cdpCookies(send) {
   return r.cookies || [];
 }
 
-export { ensureBrowser, withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, cdpSetViewport, cdpClearViewport, isTextFirstEnabled, TEXT_BLOCK_URLS, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN, CDP_PORT };
+// ---- CDP do Chrome do DONO (porta 9222): ver/editar/ler na aba logada, SEM banner ----
+// Fonte: toggle "Remote debugging" do chrome://inspect OU --remote-debugging-port no
+// launcher (política RemoteDebuggingAllowed reabilita a flag no perfil default; Chrome 136+).
+// Chrome 156 desligou a descoberta HTTP (/json/* → 404): fontes = DevToolsActivePort (porta
+// + path do browser com UUID) e Target.getTargets SOBRE o WS do browser. O consentimento do
+// toggle é POR CONEXÃO → UMA conexão persistente compartilhada (dono permite 1×; a flag no
+// launcher é RECUSADA no perfil default do 156 — "requires a non-default data directory").
+// MODO EM EFEITO (escolha do dono): toggle OFF — extensão responde tudo (zero cliques); 9222
+// só quando o dono arma o toggle. Indisponibilidade carrega __ownerDown → caller
+// (tools-owner) cai p/ tab.cdp da extensão (chrome.debugger, banner).
+const OWNER_PORT = Number(process.env.CANIVETE_CDP_OWNER_PORT) || 9222;
+const OWNER_DIR = process.env.CANIVETE_CDP_OWNER_DIR || join(homedir(), ".config", "google-chrome");
+let ownerWs = null;
+const ownerPend = new Map();
+let ownerId = 0;
+function ownerDown(msg) { const e = new Error(msg); e.__ownerDown = true; return e; }
+function ownerActivePort() {
+  try {
+    const [port, path] = readFileSync(join(OWNER_DIR, "DevToolsActivePort"), "utf8").trim().split("\n");
+    if (!port || !path) return null;
+    return { port: Number(port) || OWNER_PORT, path: path.trim() };
+  } catch { return null; }
+}
+function ownerWsDead() {
+  try { ownerWs?.close(); } catch {}
+  ownerWs = null;
+  for (const [, p] of ownerPend) { clearTimeout(p.t); p.rej(ownerDown("conexão CDP do dono caiu")); }
+  ownerPend.clear();
+}
+async function ownerConnect() {
+  if (ownerWs && ownerWs.readyState === 1) return ownerWs;
+  const ap = ownerActivePort();
+  if (!ap) throw ownerDown(`DevToolsActivePort não encontrado em ${OWNER_DIR} — Chrome do dono sem remote debugging (toggle do chrome://inspect ou flag no launcher)`);
+  const ws = new WebSocket(`ws://127.0.0.1:${ap.port}${ap.path}`);
+  try {
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => rej(ownerDown(`WS do Chrome do dono não abriu (${WS_OPEN_TIMEOUT_MS}ms) — dialog "Permitir a depuração remota" pendente? Permita 1× (a conexão fica permanente pela sessão do Chrome)`)), WS_OPEN_TIMEOUT_MS);
+      ws.onopen = () => { clearTimeout(t); res(); };
+      ws.onerror = () => { clearTimeout(t); rej(ownerDown(`porta ${ap.port} do dono recusou a conexão — toggle OFF (modo zero dialogs do dono); p/ 9222, o dono arma o toggle em chrome://inspect e permite 1×`)); };
+    });
+  } catch (e) { try { ws.close(); } catch {}; ownerWs = null; throw e; }
+  ws.onclose = ownerWsDead;
+  ws.onerror = ownerWsDead;
+  ownerWs = ws;
+  return ws;
+}
+function ownerRaw(method, params = {}, sessionId, timeout = CDP_TIMEOUT_MS) {
+  return new Promise((res, rej) => {
+    const ws = ownerWs;
+    if (!ws || ws.readyState !== 1) return rej(ownerDown("CDP do dono desconectado"));
+    const i = ++ownerId;
+    const t = setTimeout(() => { ownerPend.delete(i); rej(new Error(`CDP timeout: ${method} (${timeout}ms)`)); }, timeout);
+    ownerPend.set(i, { res, rej, t });
+    try { ws.send(JSON.stringify({ id: i, method, params, ...(sessionId ? { sessionId } : {}) })); }
+    catch (e) { clearTimeout(t); ownerPend.delete(i); rej(ownerDown(String(e.message || e))); }
+  });
+}
+// Comando CDP em aba do DONO: casa trecho de URL/título em Target.getTargets → attach
+// (flatten, invisível ao dono) → send → detach. match: trecho de URL/título ("" = erro
+// ambíguo se >1 aba — caller cai p/ extensão, que resolve por tabId).
+async function ownerCdpSend(match, method, params = {}) {
+  const trecho = String(match || "").toLowerCase().trim();
+  const t0 = Date.now();
+  await ownerConnect();
+  let sessionId = null;
+  try {
+    let targetInfos;
+    try {
+      ({ targetInfos } = await ownerRaw("Target.getTargets", {}, undefined, 6000)); // descoberta rápida: pendência de consentimento não trava o caller
+    } catch (e) {
+      if (/timeout/i.test(String(e.message))) throw ownerDown(`Chrome do dono não respondeu getTargets — dialog "Permitir a depuração remota" pendente? Permita 1× (a conexão do serviço fica permanente pela sessão do Chrome)`);
+      throw e;
+    }
+    const pages = (targetInfos || []).filter((t) => t.type === "page");
+    let hit = pages;
+    if (trecho) {
+      hit = pages.filter((t) => String(t.url || "").toLowerCase().includes(trecho) || String(t.title || "").toLowerCase().includes(trecho));
+      if (!hit.length) throw ownerDown(`nenhuma aba do dono casa "${trecho.slice(0, 40)}" (abas: ${pages.map((p) => String(p.url).slice(0, 40)).join(" · ") || "nenhuma"})`);
+      if (hit.length > 1) throw ownerDown(`"${trecho.slice(0, 40)}" casa ${hit.length} abas — afine o trecho (${hit.map((p) => String(p.url).slice(0, 45)).join(" · ")})`);
+    } else if (pages.length > 1) {
+      throw ownerDown(`sem tab:"trecho" e há ${pages.length} abas — passe tab:"trecho" da URL/título (${pages.map((p) => String(p.url).slice(0, 40)).join(" · ")})`);
+    }
+    ({ sessionId } = await ownerRaw("Target.attachToTarget", { targetId: hit[0].targetId, flatten: true }));
+    const result = await ownerRaw(method, params, sessionId);
+    return { ok: true, method, result: result ?? null, ms: Date.now() - t0 };
+  } finally { if (sessionId) { try { await ownerRaw("Target.detachFromTarget", { sessionId }); } catch {} } }
+}
+function ownerCdpAvailable() { return !!ownerActivePort(); }
+
+export { ensureBrowser, withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, cdpSetViewport, cdpClearViewport, isTextFirstEnabled, TEXT_BLOCK_URLS, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN, CDP_PORT, ownerCdpSend, ownerCdpAvailable };

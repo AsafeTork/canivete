@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "14"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "15"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -485,12 +485,12 @@ function ubShowCursor() {
   if (!document.getElementById("ubrowser-kf")) {
     const st = document.createElement("style");
     st.id = "ubrowser-kf";
-    st.textContent = "@keyframes ubPulseLoop{0%,100%{filter:drop-shadow(0 0 5px #7c3aed)}50%{filter:drop-shadow(0 0 14px #a855f7)}}";
+    st.textContent = "@keyframes ubPulseLoop{0%,100%{filter:drop-shadow(0 0 5px #c2ff3d)}50%{filter:drop-shadow(0 0 14px #c2ff3d)}}";
     document.documentElement.appendChild(st);
   }
   ubCursor = document.createElement("div");
   ubCursor.id = "ubrowser-cursor";
-  ubCursor.innerHTML = `<svg width="34" height="34" viewBox="0 0 26 26" style="animation:ubPulseLoop 1.6s ease-in-out infinite"><g><path d="M4,2 L4,19 L9.5,14.5 L12.5,21 L15,19.8 L12,13.5 L17.5,13.5 Z" fill="#7c3aed" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></g></svg>`;
+  ubCursor.innerHTML = `<svg width="34" height="34" viewBox="0 0 26 26" style="animation:ubPulseLoop 1.6s ease-in-out infinite"><g><path d="M4,2 L4,19 L9.5,14.5 L12.5,21 L15,19.8 L12,13.5 L17.5,13.5 Z" fill="#c2ff3d" stroke="#0b0b0b" stroke-width="1.6" stroke-linejoin="round"/></g></svg>`;
   ubCX = Math.round(innerWidth / 2); ubCY = Math.round(innerHeight / 2); // nasce no CENTRO, nunca no canto
   Object.assign(ubCursor.style, { position: "fixed", zIndex: "2147483647", width: "34px", height: "34px", pointerEvents: "none", left: ubCX - 4 + "px", top: ubCY - 2 + "px", transition: "none" });
   ubCursor._arrow = ubCursor.firstChild;
@@ -594,7 +594,7 @@ function ubTopmostCover(target, x, y) {
       stack = stack.filter((el) => {
         try {
           if (!el) return false;
-          if (el.id === "ubrowser-cursor" || el.id === "ubrowser-kf") return false;
+          if (el.id === "ubrowser-cursor" || el.id === "ubrowser-kf" || ubElemIsOwn(el)) return false;
           if (el.getAttribute && el.getAttribute("data-ub-shadow") === "1") return false;
           let pe = "";
           try { pe = (window.getComputedStyle(el) || {}).pointerEvents || ""; }
@@ -1007,7 +1007,7 @@ function ubAesthetic() {
     for (const el of pool) {
       try {
         if (rows.length >= 80) break;
-        if (!el || el.id === "ubrowser-cursor" || el.id === "ubrowser-kf") continue;
+        if (!el || ubElemIsOwn(el)) continue;
         const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
         if (!r || !(r.width > 0) || !(r.height > 0)) continue;
         const cs = g ? g(el) : null;
@@ -1995,6 +1995,644 @@ try {
     } catch {}
   });
 } catch {}
+// ponte do clipe de replay (mon-hook v4): no erro, o rrweb opt-in dispara o trecho
+// gravado; content repassa ao background → bridge /replay. Fire-and-forget.
+try {
+  window.addEventListener("__ubReplayClip", (ev) => {
+    try {
+      const d = ev && ev.detail;
+      if (d) chrome.runtime.sendMessage({ __ubReplayClip: d });
+    } catch {}
+  });
+} catch {}
+
+// ---- elem reports: marcação humana de ELEMENTO (contorno+chip que SOBREVIVE a reload) ----
+// O dono marca 1..N elementos no picker e escreve o que está errado; o report vai para a
+// ponte (~/.config/canivete/reports-elementos.jsonl, por site) e o highlight é re-aplicado
+// em toda navegação daquele site. Resolvido (via agente) some do highlight; histórico fica.
+// ESTILO: Ácido-Noir (docs/DESIGN.md) — fundo #0b0b0b, luz #faf9f5 (18.68:1), UM acento
+// #c2ff3d (16.56:1) reservado à semântica "reportado" (contorno + chip + CTA);
+// raio único 6px; hairline 1px #262626; corpo system-ui 13/20 peso 450; mono SÓ em dado
+// (seletor/id/contagem). ABUSE do estilo (acentar todo hover; mono em metadata estética)
+// evitado: hover do picker é luz branca, labels em system-ui.
+var UB_ELEM_MARKS = [];   // [{id, nota, els:[el]}] — marcações vivas nesta página
+var UB_ELEM_REPORTS = []; // reports correntes da origin (cache do background via ponte)
+var UB_ELEM_PICK = null;  // picker ativo {sel:[{el,prevOutline,prevBoxShadow}], panel, hover, ...}
+var UB_ELEM_POS_ON = false, ubElemPosBusy = false, ubElemRetryN = 0, UB_ELEM_RETRY = null;
+
+// nós da própria extensão (cursor + raiz elem) são INVISÍVEIS p/ coletores/hit-test
+function ubElemIsOwn(el) {
+  try {
+    if (!el) return false;
+    const id = el.id || "";
+    if (id === "ubrowser-cursor" || id === "ubrowser-kf" || id === "ubrowser-elem") return true;
+    return !!(el.closest && el.closest("#ubrowser-elem"));
+  } catch { return false; }
+}
+function ubElemRoot() {
+  try {
+    let root = document.getElementById("ubrowser-elem");
+    if (root && root.isConnected) return root;
+    if (!document.getElementById("ubrowser-elem-css")) {
+      const st = document.createElement("style");
+      st.id = "ubrowser-elem-css";
+      st.textContent = [
+        "#ubrowser-elem{position:fixed;inset:0;pointer-events:none;z-index:2147483647;font-family:'Space Grotesk',system-ui,sans-serif}",
+        "[data-ub-elem]{outline:2px dashed #c2ff3d !important;outline-offset:2px !important}",
+        "#ubrowser-elem .chip{position:fixed;display:flex;align-items:center;gap:4px;background:#0b0b0b;color:#faf9f5;border:1px solid #c2ff3d;border-radius:6px;padding:1px 6px;font:450 11px/16px 'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:auto;cursor:pointer}",
+        "#ubrowser-elem .chip:hover{background:#1a1a1a}",
+        "#ubrowser-elem .chip b{color:#0b0b0b;background:#c2ff3d;border-radius:3px;padding:0 4px;font-weight:650}",
+        "#ubrowser-elem .hover{position:fixed;border:2px solid #faf9f5;border-radius:6px;box-shadow:0 0 0 2px rgba(11,11,11,.85);transition:all 80ms ease-out}",
+        "#ubrowser-elem .hover .tag{position:absolute;top:-19px;left:-2px;background:#0b0b0b;color:#faf9f5;border:1px solid #262626;border-radius:6px;padding:0 6px;font:450 11px/16px 'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace}",
+        "#ubrowser-elem .selbox{position:fixed;border:2px solid #c2ff3d;border-radius:6px}",
+        "#ubrowser-elem .note,#ubrowser-elem .editor{position:fixed;width:300px;background:#0b0b0b;color:#faf9f5;border:1px solid #262626;border-radius:6px;padding:12px;pointer-events:auto;font:450 13px/20px 'Space Grotesk',system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.45)}",
+        "#ubrowser-elem .note::before,#ubrowser-elem .editor::before{content:'';position:absolute;left:-7px;top:14px;width:12px;height:1px;background:#262626}",
+        "#ubrowser-elem .note.left::before,#ubrowser-elem .editor.left::before{left:auto;right:-7px}",
+        "#ubrowser-elem .note .hd,#ubrowser-elem .editor .hd{font:450 11px/16px 'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace;color:#9a9a95;margin-bottom:6px}",
+        "#ubrowser-elem .note textarea,#ubrowser-elem .editor textarea{width:100%;box-sizing:border-box;background:#141414;color:#faf9f5;border:1px solid #262626;border-radius:6px;padding:6px 8px;font:450 13px/20px 'Space Grotesk',system-ui,sans-serif;resize:vertical}",
+        "#ubrowser-elem .note textarea:focus-visible,#ubrowser-elem .editor textarea:focus-visible{outline:2px solid #c2ff3d;outline-offset:0}",
+        "#ubrowser-elem .note .hint{font:450 11px/16px 'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace;color:#9a9a95;margin-top:6px}",
+        "#ubrowser-elem .note input,#ubrowser-elem .editor input{width:100%;box-sizing:border-box;background:#141414;color:#faf9f5;border:1px solid #262626;border-radius:6px;padding:4px 8px;font:450 11px/16px 'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace}",
+        "#ubrowser-elem .note input:focus-visible,#ubrowser-elem .editor input:focus-visible{outline:2px solid #c2ff3d;outline-offset:0}",
+        "#ubrowser-elem .note .row{display:flex;gap:6px;margin-top:8px}",
+        "#ubrowser-elem .unmark{position:fixed;width:16px;height:16px;border-radius:4px;background:#0b0b0b;color:#faf9f5;border:1px solid #262626;font:650 11px/14px 'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace;display:flex;align-items:center;justify-content:center;pointer-events:auto;cursor:pointer}",
+        "#ubrowser-elem .unmark:hover{border-color:#ff6b5e;color:#ff6b5e}",
+        "#ubrowser-elem .editor ul{list-style:none;margin:6px 0;padding:0;display:grid;gap:4px;max-height:96px;overflow:auto}",
+        "#ubrowser-elem .editor li{display:flex;gap:6px;align-items:center;font:500 11px/16px 'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace;border-top:1px solid #262626;padding-top:4px}",
+        "#ubrowser-elem .editor li .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+        "#ubrowser-elem .editor .btns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}",
+        "#ubrowser-elem button{border:1px solid #262626;background:#141414;color:#faf9f5;border-radius:6px;padding:4px 10px;font:500 13px/20px 'Space Grotesk',system-ui,sans-serif;cursor:pointer}",
+        "#ubrowser-elem button:hover{border-color:#9a9a95}",
+        "#ubrowser-elem button:focus-visible{outline:2px solid #c2ff3d;outline-offset:0}",
+        "#ubrowser-elem button.primary{background:#c2ff3d;border-color:#c2ff3d;color:#0b0b0b;font-weight:650}",
+        "#ubrowser-elem button.primary:hover{filter:brightness(.92)}",
+        "#ubrowser-elem button.danger{color:#ff6b5e}",
+        "#ubrowser-elem button.danger.armed{border-color:#ff6b5e}",
+        "#ubrowser-elem button:disabled{opacity:.6;cursor:default}",
+        "#ubrowser-elem .err{color:#ff6b5e;font:450 11px/16px 'Space Grotesk',system-ui,sans-serif;min-height:16px;margin-top:6px}",
+      ].join("");
+      (document.documentElement || document.head).appendChild(st);
+    }
+    root = document.createElement("div");
+    root.id = "ubrowser-elem";
+    (document.documentElement || document).appendChild(root);
+    return root;
+  } catch { return null; }
+}
+function ubElemPosLoop() {
+  if (ubElemPosBusy) return;
+  ubElemPosBusy = true;
+  try { requestAnimationFrame(() => { ubElemPosBusy = false; ubElemSyncChips(); }); } catch { ubElemPosBusy = false; }
+}
+function ubElemSyncChips() {
+  // chips flutuantes junto ao 1º elemento de cada report (contorno fica no próprio elemento;
+  // chip só acompanha posição — sem tocar no layout da página). Chip clicável = abre o editor
+  // do pack (editar nota, ±elementos, apagar).
+  try {
+    const root = document.getElementById("ubrowser-elem");
+    if (!root) return;
+    for (const ch of [...root.querySelectorAll(".chip")]) ch.remove();
+    let n = 0;
+    for (const m of UB_ELEM_MARKS) {
+      n++;
+      const el = m.els && m.els[0];
+      if (!el || !el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      if (r.bottom < -50 || r.top > innerHeight + 50) continue; // fora da viewport: sem chip
+      const chip = document.createElement("div");
+      chip.className = "chip";
+      chip.title = "editar pack — nota, elementos, apagar";
+      const b = document.createElement("b");
+      b.textContent = String(n);
+      chip.appendChild(b);
+      const sp = document.createElement("span");
+      sp.textContent = String(m.nota || "").slice(0, 80);
+      chip.appendChild(sp);
+      chip.addEventListener("click", (ev) => { try { ev.stopPropagation(); ubElemOpenEditor(m); } catch {} });
+      chip.style.left = Math.max(2, Math.round(r.left)) + "px";
+      chip.style.top = Math.max(2, Math.round(r.top - 20)) + "px";
+      root.appendChild(chip);
+    }
+    // caixas acopladas (editor aberto + anotação do picker) acompanham o contorno no scroll
+    try { if (UB_ELEM_EDIT && UB_ELEM_EDIT.box && UB_ELEM_EDIT.mark) { const a = UB_ELEM_EDIT.mark.els && UB_ELEM_EDIT.mark.els.find((el) => el.isConnected); if (a) ubElemAnchorBox(UB_ELEM_EDIT.box, a); else ubElemCloseEditor(); } } catch {}
+    try { const st = UB_ELEM_PICK; if (st) { if (st.noteBox && st.noteBox.parentNode && st.sel.length && st.sel[0].el.isConnected) ubElemAnchorBox(st.noteBox, st.sel[0].el); if (st.posBadges) st.posBadges(); } } catch {}
+  } catch {}
+}
+function ubElemClearMarks() {
+  try {
+    for (const m of UB_ELEM_MARKS) for (const el of (m.els || [])) { try { el.removeAttribute("data-ub-elem"); } catch {} }
+  } catch {}
+  UB_ELEM_MARKS = [];
+  try {
+    const root = document.getElementById("ubrowser-elem");
+    if (root) for (const ch of [...root.querySelectorAll(".chip")]) ch.remove();
+  } catch {}
+  if (UB_ELEM_POS_ON && !UB_ELEM_PICK && !UB_ELEM_EDIT) {
+    try { window.removeEventListener("scroll", ubElemPosLoop, { capture: true }); window.removeEventListener("resize", ubElemPosLoop); } catch {}
+    UB_ELEM_POS_ON = false;
+  }
+}
+function ubElemResolve(e) {
+  try {
+    let el = null;
+    try { el = findEl(e.selector); } catch {}
+    if (!el && e.fingerprint) { try { el = ubFindByFingerprintLive(e.fingerprint); } catch {} } // SPA reciclou o nó: acha pelo texto/papel
+    return el;
+  } catch { return null; }
+}
+function ubElemApply(reports, isRetry) {
+  try {
+    if (Array.isArray(reports)) UB_ELEM_REPORTS = reports;
+    ubElemClearMarks();
+    const open = UB_ELEM_REPORTS.filter((r) => r && r.status !== "resolvido");
+    let marks = 0, missing = 0, idx = 0;
+    for (const rep of open) {
+      idx++;
+      const els = [];
+      for (const e of (rep.elements || [])) {
+        const el = ubElemResolve(e);
+        if (!el) { missing++; continue; }
+        try { el.setAttribute("data-ub-elem", String(idx)); els.push(el); marks++; } catch {}
+      }
+      if (els.length) UB_ELEM_MARKS.push({ id: rep.id, nota: rep.nota || "", grupo: rep.grupo || "", els });
+    }
+    if (marks && !UB_ELEM_POS_ON) {
+      UB_ELEM_POS_ON = true;
+      try { window.addEventListener("scroll", ubElemPosLoop, { capture: true, passive: true }); window.addEventListener("resize", ubElemPosLoop); } catch {}
+    }
+    ubElemSyncChips();
+    if (!marks && !UB_ELEM_PICK && !UB_ELEM_EDIT && UB_ELEM_POS_ON) {
+      try { window.removeEventListener("scroll", ubElemPosLoop, { capture: true }); window.removeEventListener("resize", ubElemPosLoop); } catch {}
+      UB_ELEM_POS_ON = false;
+    }
+    // SPA hidrata depois do boot: tenta re-aplicar em janelas curtas (teto 4 × ≤10s, sem loop)
+    if (missing && !isRetry) {
+      ubElemRetryN = 0;
+      try { if (UB_ELEM_RETRY) clearTimeout(UB_ELEM_RETRY); } catch {}
+    }
+    if (missing && ubElemRetryN < 4) {
+      const ms = [1200, 3000, 6000, 10000][ubElemRetryN];
+      ubElemRetryN++;
+      try { if (UB_ELEM_RETRY) clearTimeout(UB_ELEM_RETRY); } catch {}
+      UB_ELEM_RETRY = setTimeout(() => { try { ubElemApply(null, true); } catch {} }, ms);
+    }
+    return { reports: open.length, marks, missing };
+  } catch { return { reports: 0, marks: 0, missing: 0 }; }
+}
+// snapshot estático do elemento marcado (o que torna o report robusto a prompt ruim)
+function ubElemDescribe(el) {
+  try {
+    const selector = cssPath(el);
+    const fp = ubFpOf(selector, el);
+    let tag = "", role = "", testid = "";
+    try { tag = ((el.tagName || "") + "").toLowerCase(); } catch {}
+    try { role = (el.getAttribute && el.getAttribute("role")) || ubEphemRole(el) || ""; } catch {}
+    try { testid = (el.getAttribute && (el.getAttribute("data-testid") || el.getAttribute("data-test-id") || el.getAttribute("data-cy"))) || ""; } catch {}
+    let text = "";
+    try { text = ((el.innerText || el.textContent || "") + "").replace(/\s+/g, " ").trim().slice(0, 400); } catch {}
+    let html = "";
+    try { html = (el.outerHTML || "").slice(0, 2000); } catch {}
+    // doutrina do mon-hook: valor de senha NUNCA sai do browser (filtra na fonte + no server)
+    try { if ((el.type || "") === "password" || /type\s*=\s*["']?password/i.test(html)) html = html.replace(/(\svalue\s*=\s*)"[^"]*"/gi, '$1"'); } catch {}
+    const r = el.getBoundingClientRect();
+    return { selector, tag, role: String(role).slice(0, 60), testid: String(testid).slice(0, 120), text, html, fingerprint: fp, rect: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height) } };
+  } catch { return { selector: "?" }; }
+}
+// pilha de CAMADAS no ponto: elementsFromPoint (topo→fundo, ignora oclusão — alcança o que
+// está sob modal/banner) + descendentes visíveis com pointer-events:none que cobrem o ponto
+// (camadas que o cursor ATRAVESSA e elementsFromPoint pula). deep=false = só a pilha (barato,
+// p/ o hover); deep=true inclui a varredura pointer-events:none (p/ o Tab ciclar).
+function ubElemStackAt(x, y, deep) {
+  const out = [];
+  const seen = new Set();
+  const push = (el) => {
+    try {
+      if (!el || !el.getBoundingClientRect || seen.has(el) || ubElemIsOwn(el)) return;
+      if (el === document.body || el === document.documentElement) return;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return;
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;
+      seen.add(el);
+      out.push(el);
+    } catch {}
+  };
+  try {
+    const stack = (typeof document.elementsFromPoint === "function") ? (document.elementsFromPoint(x, y) || []) : [];
+    for (const el of stack) {
+      push(el);
+      if (!deep) continue;
+      try { // orçamento: no máx 300 descendentes avaliados — página grande não trava o Tab
+        if (!el.querySelectorAll) continue;
+        let visits = 0;
+        for (const k of el.querySelectorAll("*")) {
+          if (visits++ >= 300) break;
+          try {
+            if (getComputedStyle(k).pointerEvents !== "none") continue;
+            push(k);
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+  return out;
+}
+// caixa de anotação ACOPLADA à margem do contorno do elemento (tick aponta p/ o elemento);
+// se não couber à direita, acopla à esquerda; nunca sai da viewport.
+function ubElemAnchorBox(box, el) {
+  try {
+    const r = el.getBoundingClientRect();
+    const w = box.offsetWidth || 300, h = box.offsetHeight || 80, gap = 14;
+    let left = r.right + gap;
+    box.classList.remove("left");
+    if (left + w > innerWidth - 8) { left = Math.max(8, r.left - w - gap); box.classList.add("left"); }
+    let top = r.top;
+    if (top + h > innerHeight - 8) top = Math.max(8, innerHeight - h - 8);
+    box.style.left = Math.round(left) + "px";
+    box.style.top = Math.round(top) + "px";
+  } catch {}
+}
+// envia edição de pack p/ a ponte e re-aplica o estado local (sem esperar sync do background)
+async function ubElemSendUpdate(payload) {
+  try {
+    const r = await chrome.runtime.sendMessage({ __ubElemUpdate: payload });
+    if (!r || !r.ok) return { ok: false, error: (r && r.error) || "ponte indisponível — tente de novo" };
+    const merged = UB_ELEM_REPORTS.filter((x) => x && x.id !== r.report.id);
+    if (!r.apagado) merged.push(r.report);
+    ubElemApply(merged);
+    return r;
+  } catch (e) { return { ok: false, error: String(e && e.message || e).slice(0, 120) }; }
+}
+var UB_ELEM_EDIT = null; // editor de pack aberto {mark, box, ...}
+function ubElemCloseEditor() {
+  try {
+    const e = UB_ELEM_EDIT;
+    UB_ELEM_EDIT = null;
+    if (e && e.box && e.box.parentNode) e.box.remove();
+  } catch {}
+}
+// editor do pack: nota (campo único), remover elementos, adicionar, apagar — acoplado ao contorno
+function ubElemOpenEditor(mark) {
+  try {
+    ubElemCloseEditor();
+    const root = ubElemRoot();
+    const anchor = (mark.els && mark.els.find((el) => el.isConnected)) || null;
+    if (!root || !anchor) return;
+    const box = document.createElement("div");
+    box.className = "editor";
+    const hd = document.createElement("div");
+    hd.className = "hd";
+    hd.textContent = `pack · ${mark.els.length} elemento(s)`;
+    box.appendChild(hd);
+    const ta = document.createElement("textarea");
+    ta.rows = 2;
+    ta.value = String(mark.nota || "");
+    ta.placeholder = "o que está errado?";
+    box.appendChild(ta);
+    const gi = document.createElement("input");
+    gi.maxLength = 60;
+    gi.placeholder = "grupo (escopo): ex: checkout";
+    gi.setAttribute("aria-label", "grupo ou escopo do pack");
+    try { gi.value = String(mark.grupo || ""); } catch {}
+    box.appendChild(gi);
+    const ul = document.createElement("ul");
+    box.appendChild(ul);
+    const err = document.createElement("div");
+    err.className = "err";
+    box.appendChild(err);
+    const btns = document.createElement("div");
+    btns.className = "btns";
+    box.appendChild(btns);
+    const mkBtn = (labelText, cls) => {
+      const b = document.createElement("button");
+      b.textContent = labelText;
+      if (cls) b.className = cls;
+      btns.appendChild(b);
+      return b;
+    };
+    const save = mkBtn("Salvar", "primary");
+    const add = mkBtn("+ elemento");
+    const del = mkBtn("Apagar", "danger");
+    const close = mkBtn("Fechar");
+    const drawEls = () => {
+      try {
+        ul.textContent = "";
+        const rep = UB_ELEM_REPORTS.find((x) => x && x.id === mark.id);
+        const els = (rep && rep.elements) || [];
+        els.forEach((e2, i) => {
+          const li = document.createElement("li");
+          const nm = document.createElement("span");
+          nm.className = "nm";
+          nm.textContent = `#${i + 1} ${e2.tag || "?"} ${e2.text ? '"' + e2.text.slice(0, 28) + '"' : e2.selector.slice(0, 34)}`;
+          nm.title = e2.selector;
+          const rm = document.createElement("button");
+          rm.textContent = "✕";
+          rm.title = "remover do pack";
+          rm.onclick = async () => {
+            rm.disabled = true;
+            const r = await ubElemSendUpdate({ id: mark.id, elements_remove: [e2.selector] });
+            if (!r.ok) { err.textContent = r.error; rm.disabled = false; return; }
+            err.textContent = "";
+            const m2 = UB_ELEM_MARKS.find((x) => x.id === mark.id);
+            if (!m2) { ubElemCloseEditor(); return; }
+            mark = m2;
+            drawEls();
+          };
+          li.appendChild(nm);
+          li.appendChild(rm);
+          ul.appendChild(li);
+        });
+      } catch {}
+    };
+    save.onclick = async () => {
+      const n = String(ta.value || "").trim();
+      if (n.length < 3) { err.textContent = "escreva o que está errado (≥3 caracteres)"; ta.focus(); return; }
+      save.disabled = true;
+      const r = await ubElemSendUpdate({ id: mark.id, nota: n, grupo: String(gi.value || "").trim().slice(0, 60) });
+      save.disabled = false;
+      err.textContent = r.ok ? "" : r.error;
+      if (r.ok) { const m2 = UB_ELEM_MARKS.find((x) => x.id === mark.id); if (m2) mark = m2; }
+    };
+    add.onclick = () => {
+      // modo adicionar: volta a marcar na página; Enter confirma no grupo
+      const s = ubElemPickStart({ add: mark.id });
+      if (!s.picker) { err.textContent = s.error || "falha ao abrir marcação"; return; }
+      ubElemCloseEditor();
+    };
+    let armed = null;
+    del.onclick = async () => {
+      // destrutivo ao FIM do gesto: 1º clique arma ("Confirmar apagar"), 2º executa
+      if (!armed) {
+        del.classList.add("armed");
+        del.textContent = "Confirmar?";
+        armed = setTimeout(() => { del.classList.remove("armed"); del.textContent = "Apagar"; armed = null; }, 3000);
+        return;
+      }
+      clearTimeout(armed); armed = null;
+      del.disabled = true;
+      const r = await ubElemSendUpdate({ id: mark.id, apagar: true });
+      if (!r.ok) { err.textContent = r.error; del.disabled = false; return; }
+      ubElemCloseEditor();
+    };
+    close.onclick = () => ubElemCloseEditor();
+    ta.addEventListener("keydown", (ev) => {
+      try {
+        if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); save.onclick(); }
+      } catch {}
+    });
+    root.appendChild(box);
+    ubElemAnchorBox(box, anchor);
+    UB_ELEM_EDIT = { mark, box };
+    drawEls();
+    ta.focus();
+  } catch {}
+}
+function ubElemPickStop() {
+  try {
+    const st = UB_ELEM_PICK;
+    UB_ELEM_PICK = null;
+    if (!st) return { picker: false };
+    try { document.removeEventListener("mousemove", st.onMove, true); } catch {}
+    try { document.removeEventListener("click", st.onClick, true); } catch {}
+    try { document.removeEventListener("keydown", st.onKey, true); } catch {}
+    for (const s of st.sel) { try { s.el.style.outline = s.prevOutline; s.el.style.boxShadow = s.prevBoxShadow; s.el.style.outlineOffset = s.prevOffset; } catch {} try { if (s.badge && s.badge.parentNode) s.badge.remove(); } catch {} }
+    try { if (st.hoverBox && st.hoverBox.parentNode) st.hoverBox.remove(); } catch {}
+    try { if (st.noteBox && st.noteBox.parentNode) st.noteBox.remove(); } catch {}
+    if (!UB_ELEM_MARKS.length && !UB_ELEM_EDIT && UB_ELEM_POS_ON) {
+      try { window.removeEventListener("scroll", ubElemPosLoop, { capture: true }); window.removeEventListener("resize", ubElemPosLoop); } catch {}
+      UB_ELEM_POS_ON = false;
+    }
+    return { picker: false };
+  } catch { UB_ELEM_PICK = null; return { picker: false }; }
+}
+// picker: clique 1..N elementos (pilha de camadas; Tab cicla o que está embaixo do cursor) →
+// caixa ACOPLADA ao contorno do 1º selecionado com grupo (escopo, texto livre) + prompt,
+// Enter finaliza, Cancelar/Esc abortam. Cada seleção pendente tem um ✕ no canto p/ desmarcar.
+// opts.add = id p/ adicionar elementos a um pack existente.
+function ubElemPickStart(opts) {
+  try {
+    if (UB_ELEM_PICK) return { picker: true, selected: UB_ELEM_PICK.sel.length, already: true };
+    const root = ubElemRoot();
+    if (!root) throw new Error("sem DOM p/ o overlay");
+    const addId = (opts && opts.add) || null;
+    const st = { sel: [], addId, hoverBox: null, noteBox: null, stack: [], sx: -1e4, sy: -1e4, depth: 0, deep: false, onMove: null, onClick: null, onKey: null };
+    UB_ELEM_PICK = st;
+    // hover: contorno luz (a seleção é que é ácida); tag mostra a camada quando há pilha
+    const hoverBox = document.createElement("div");
+    hoverBox.className = "hover";
+    const hoverTag = document.createElement("span");
+    hoverTag.className = "tag";
+    hoverTag.textContent = "selecionar";
+    hoverBox.appendChild(hoverTag);
+    st.hoverBox = hoverBox;
+    // caixa acoplada: grupo (escopo digitado na hora — o agente filtra por ele) + prompt
+    const noteBox = document.createElement("div");
+    noteBox.className = "note";
+    const hd = document.createElement("div");
+    hd.className = "hd";
+    hd.textContent = addId ? "adicionar ao pack" : "novo pack";
+    noteBox.appendChild(hd);
+    const gi = document.createElement("input");
+    gi.maxLength = 60;
+    gi.placeholder = "grupo (escopo): ex: checkout";
+    gi.setAttribute("aria-label", "grupo ou escopo da marcação");
+    noteBox.appendChild(gi);
+    const ta = document.createElement("textarea");
+    ta.rows = 2;
+    ta.placeholder = "o que está errado? Enter salva · Esc cancela";
+    noteBox.appendChild(ta);
+    const err = document.createElement("div");
+    err.className = "err";
+    noteBox.appendChild(err);
+    const row = document.createElement("div");
+    row.className = "row";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancelar";
+    cancel.onclick = () => { try { ubElemPickStop(); } catch {} };
+    row.appendChild(cancel);
+    noteBox.appendChild(row);
+    st.noteBox = noteBox;
+    const anchorNote = () => {
+      const a = st.sel.length ? st.sel[0].el : null;
+      if (a && a.isConnected) ubElemAnchorBox(noteBox, a);
+    };
+    const showNote = () => { if (!noteBox.parentNode) { root.appendChild(noteBox); } anchorNote(); ta.focus(); };
+    const labelOf = (el) => {
+      let label = ((el.tagName || "") + "").toLowerCase();
+      const t = ((el.innerText || el.value || "") + "").replace(/\s+/g, " ").trim();
+      if (t) label += ` "${t.slice(0, 40)}"`;
+      const tid = el.getAttribute && (el.getAttribute("data-testid") || el.getAttribute("aria-label"));
+      if (tid) label += ` [${String(tid).slice(0, 30)}]`;
+      return label;
+    };
+    // ✕ no canto do elemento selecionado: desmarcar sem sair do gesto (reposicionado no scroll)
+    const mkBadge = (s) => {
+      const b = document.createElement("button");
+      b.className = "unmark";
+      b.textContent = "✕";
+      b.title = "desmarcar";
+      b.setAttribute("aria-label", "desmarcar elemento");
+      b.onclick = (ev) => {
+        try {
+          ev.stopPropagation(); ev.preventDefault();
+          removeSel(s);
+        } catch {}
+      };
+      root.appendChild(b);
+      return b;
+    };
+    const posBadges = () => {
+      for (const s of st.sel) {
+        try {
+          if (!s.badge || !s.el.isConnected) continue;
+          const r = s.el.getBoundingClientRect();
+          s.badge.style.left = Math.max(2, Math.round(r.right - 8)) + "px";
+          s.badge.style.top = Math.max(2, Math.round(r.top - 8)) + "px";
+        } catch {}
+      }
+    };
+    st.posBadges = posBadges;
+    const removeSel = (s) => {
+      try {
+        s.el.style.outline = s.prevOutline; s.el.style.boxShadow = s.prevBoxShadow; s.el.style.outlineOffset = s.prevOffset;
+        if (s.badge && s.badge.parentNode) s.badge.remove();
+        st.sel = st.sel.filter((x) => x !== s);
+        hd.textContent = `${addId ? "adicionar" : "novo pack"}${st.sel.length ? " · " + st.sel.length + " elemento(s)" : ""}`;
+        if (!st.sel.length && noteBox.parentNode) noteBox.remove(); // sem seleção, sem caixa
+      } catch {}
+    };
+    st.removeSel = removeSel;
+    const addSel = (el) => {
+      try {
+        if (!el || st.sel.some((s) => s.el === el)) return;
+        const prevOutline = el.style.outline, prevBoxShadow = el.style.boxShadow, prevOffset = el.style.outlineOffset;
+        el.style.outline = "2px solid #c2ff3d";
+        el.style.outlineOffset = "2px";
+        const s = { el, prevOutline, prevBoxShadow, prevOffset, label: labelOf(el), badge: null };
+        s.badge = mkBadge(s);
+        st.sel.push(s);
+        hd.textContent = `${addId ? "adicionar" : "novo pack"} · ${st.sel.length} elemento(s)`;
+        posBadges();
+        showNote();
+      } catch {}
+    };
+    // pilha cacheada por ponto (>8px move = recalcula barato; Tab aprofunda na hora)
+    const stackAt = (x, y, deep) => {
+      if (!deep && st.stack.length && Math.abs(x - st.sx) <= 8 && Math.abs(y - st.sy) <= 8) return st.stack;
+      st.stack = ubElemStackAt(x, y, deep);
+      st.sx = x; st.sy = y; st.deep = deep;
+      if (st.depth >= st.stack.length) st.depth = 0;
+      return st.stack;
+    };
+    const paintHover = (x, y) => {
+      try {
+        const stack = stackAt(x, y, st.deep);
+        const el = stack[st.depth] || null;
+        if (!el) { if (hoverBox.parentNode) hoverBox.remove(); return; }
+        const r = el.getBoundingClientRect();
+        if (!hoverBox.parentNode) root.appendChild(hoverBox);
+        hoverBox.style.left = Math.round(r.left) + "px";
+        hoverBox.style.top = Math.round(r.top) + "px";
+        hoverBox.style.width = Math.round(r.width) + "px";
+        hoverBox.style.height = Math.round(r.height) + "px";
+        hoverTag.textContent = stack.length > 1 ? `camada ${st.depth + 1}/${stack.length} · Tab` : "selecionar";
+      } catch {}
+    };
+    st.onMove = (ev) => {
+      try {
+        if (Math.abs(ev.clientX - st.sx) > 8 || Math.abs(ev.clientY - st.sy) > 8) st.depth = 0; // ponto novo = volta ao topo
+        paintHover(ev.clientX, ev.clientY);
+      } catch {}
+    };
+    st.onClick = (ev) => {
+      try {
+        if (!ev.isTrusted) return; // dispatch sintético (verify/fake click de script) não marca
+        if (ubElemIsOwn(ev.target)) return; // cliques na caixa/✕ não marcam
+        // a pilha/depth só valem pro ponto do hover; clique noutro ponto (sem mousemove
+        // prévio) = recalcula ali e volta ao topo — senão selecionaria o elemento errado
+        if (Math.abs(ev.clientX - st.sx) > 8 || Math.abs(ev.clientY - st.sy) > 8) {
+          st.depth = 0; st.deep = false;
+          st.stack = ubElemStackAt(ev.clientX, ev.clientY, false);
+          st.sx = ev.clientX; st.sy = ev.clientY;
+        }
+        const el = st.stack[st.depth] || ubElemStackAt(ev.clientX, ev.clientY, false)[0];
+        if (!el) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        addSel(el);
+      } catch {}
+    };
+    st.onKey = (ev) => {
+      try {
+        if (ev.key === "Escape") { ubElemPickStop(); return; }
+        if (ev.key === "Tab" && st.stack.length > 1) {
+          ev.preventDefault();
+          st.deep = true; // ciclar inclui as camadas pointer-events:none
+          st.depth = (st.depth + (ev.shiftKey ? -1 : 1) + st.stack.length) % st.stack.length;
+          paintHover(st.sx, st.sy);
+        }
+      } catch {}
+    };
+    const commit = () => {
+      try {
+        const n = String(ta.value || "").trim();
+        const g = String(gi.value || "").trim().slice(0, 60);
+        if (!st.sel.length) { err.textContent = "clique em ao menos um elemento"; return; }
+        if (n.length < 3) { err.textContent = "escreva o que está errado (≥3 caracteres)"; ta.focus(); return; }
+        err.textContent = "";
+        (async () => {
+          try {
+            if (st.addId) {
+              const r = await ubElemSendUpdate({ id: st.addId, elements_add: st.sel.map((s) => ubElemDescribe(s.el)) });
+              ubElemPickStop();
+              const m = UB_ELEM_MARKS.find((x) => x.id === st.addId);
+              if (m) ubElemOpenEditor(m);
+              return;
+            }
+            const r = await chrome.runtime.sendMessage({ __ubElemCommit: {
+              base_url: location.origin,
+              page: { url: location.href, title: document.title },
+              nota: n, grupo: g, shot: true,
+              elements: st.sel.map((s) => ubElemDescribe(s.el)),
+            } });
+            if (!r || !r.ok) { err.textContent = (r && r.error) || "ponte indisponível — tente de novo"; return; }
+            const merged = UB_ELEM_REPORTS.filter((x) => x && x.id !== r.report.id).concat([r.report]);
+            ubElemPickStop();
+            ubElemApply(merged);
+          } catch (e) { err.textContent = "falha: " + String(e && e.message || e).slice(0, 120); }
+        })();
+      } catch {}
+    };
+    ta.addEventListener("keydown", (ev) => {
+      try {
+        if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); ev.stopPropagation(); commit(); }
+      } catch {}
+    });
+    gi.addEventListener("keydown", (ev) => {
+      try {
+        if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); commit(); }
+      } catch {}
+    });
+    document.addEventListener("mousemove", st.onMove, true);
+    document.addEventListener("click", st.onClick, true);
+    document.addEventListener("keydown", st.onKey, true);
+    if (!UB_ELEM_POS_ON) {
+      UB_ELEM_POS_ON = true;
+      try { window.addEventListener("scroll", ubElemPosLoop, { capture: true, passive: true }); window.addEventListener("resize", ubElemPosLoop); } catch {}
+    }
+    ta.addEventListener("click", (ev) => { try { ev.stopPropagation(); } catch {} });
+    return { picker: true, selected: 0 };
+  } catch (e) {
+    try { ubElemPickStop(); } catch {}
+    return { picker: false, error: String(e && e.message || e).slice(0, 120) };
+  }
+}
+// boot: re-aplica os highlights dos reports abertos deste site (cache do background, TTL 60s)
+try {
+  chrome.runtime.sendMessage({ __ubElemGet: { origin: location.origin } }).then((r) => {
+    try { if (r && r.ok && Array.isArray(r.reports) && r.reports.length) ubElemApply(r.reports); } catch {}
+  }).catch(() => {});
+} catch {}
+
 chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (myN !== globalThis.__ubLatestN) return; // injeção antiga: silenciosa (evita resposta dupla)
   (async () => {
     const a = msg.args || {};
@@ -2320,11 +2958,12 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
       // leitura de nós recém-aparecidos perto do cursor + attrs (title/data-tippy/...).
       // Args: {selector} ou {x, y} (+hoverMs opcional). Responde {ok:true, data:{tooltip, source, x, y}}.
       try {
-        let el = null, px = null, py = null;
+        let el = null, px = null, py = null, fTip = null;
         if (a.selector) {
           el = await findElResilient(a.selector);
           if (!el) return reply({ ok: false, error: ubNotFoundError(a.selector) });
           const f = await elCenterFresh(a.selector);
+          fTip = f;
           el = (f && f.el) || el;
           if (f && f.p) { px = f.p.x; py = f.p.y; }
           else { try { const r0 = elRect(el); px = r0.x; py = r0.y; } catch {} }
@@ -2473,8 +3112,8 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
       if (!el) return reply({ ok: false, error: "NOTFOUND: " + (a.selector ?? (a.x + "," + a.y)) });
       const prevOutline = el.style.outline;
       const prevBoxShadow = el.style.boxShadow;
-      el.style.outline = "3px solid #f97316";
-      el.style.boxShadow = "0 0 0 4px rgba(249,115,22,.35)";
+      el.style.outline = "3px solid #c2ff3d";
+      el.style.boxShadow = "0 0 0 4px rgba(194,255,61,.35)";
       setTimeout(() => {
         try { el.style.outline = prevOutline; el.style.boxShadow = prevBoxShadow; } catch {}
       }, 1200);
@@ -2555,7 +3194,12 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         }
         let fn = null;
         try {
-          fn = new Function("el", '"use strict"; return (' + String(code) + "\n);");
+          const src = String(code);
+          // Duas formas aceitas: expressão (`document.title`) OU corpo de função
+          // (`return document.title` — docs Since sempre pediram return; wrap IIFE).
+          const bodyForm = /^\s*return\b/.test(src.trim()) || /[\n;{]\s*return\b/.test(src);
+          const prog = bodyForm ? "(function(){\n" + src + "\n})()" : "(" + src + "\n)";
+          fn = new Function("el", '"use strict"; return ' + prog + ";");
         } catch (e) {
           if (ubIsCSPError(e)) reply({ ok: false, error: "CSP_BLOCKED: eval/new Function bloqueado (" + String((e && e.message) || e).slice(0, 200) + ") — use seletor/snapshot/html em vez de JS arbitrário" });
           else reply({ ok: false, error: "EVAL_ERROR (sintaxe): " + String((e && e.message) || e).slice(0, 300) });
@@ -2581,6 +3225,22 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         if (ubIsCSPError(e)) reply({ ok: false, error: "CSP_BLOCKED: " + String((e && e.message) || e).slice(0, 250) });
         else reply({ ok: false, error: "EVAL_ERROR: " + String((e && e.message) || e).slice(0, 300) });
       }
+    } else if (msg.cmd === "elem_pick") {
+      // modo de marcação do dono (overlay): liga/desliga; o report vai p/ a ponte no "Marcar"
+      if (a.off) { const s = ubElemPickStop(); reply({ ok: true, data: { off: true, ...s, marks: UB_ELEM_MARKS.length } }); return; }
+      const s = ubElemPickStart();
+      if (!s.picker) return reply({ ok: false, error: "picker falhou: " + (s.error || "sem DOM") });
+      reply({ ok: true, data: { picker: true, selected: s.selected || 0, already: !!s.already, marks: UB_ELEM_MARKS.length } });
+    } else if (msg.cmd === "elem.apply") {
+      // reports novos/resolvidos vindos do background: re-aplica (some resolvido, entra novo)
+      reply({ ok: true, data: ubElemApply(Array.isArray(a.reports) ? a.reports : []) });
+    } else if (msg.cmd === "elem.state") {
+      reply({ ok: true, data: { picker: !!UB_ELEM_PICK, selected: UB_ELEM_PICK ? UB_ELEM_PICK.sel.length : 0, marks: UB_ELEM_MARKS.length, reports: UB_ELEM_REPORTS.length } });
+    } else if (msg.cmd === "elem.reload") {
+      try {
+        const g = await chrome.runtime.sendMessage({ __ubElemGet: { origin: location.origin } });
+        reply({ ok: true, data: ubElemApply(g && Array.isArray(g.reports) ? g.reports : []) });
+      } catch { reply({ ok: true, data: { reports: 0, marks: 0, missing: 0 } }); }
     } else {
       reply({ ok: false, error: "cmd desconhecido no content: " + msg.cmd });
     }
