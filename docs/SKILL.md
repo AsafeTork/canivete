@@ -64,7 +64,7 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `n_browser_screenshot` | PNG página/elemento (`selector`, `fullPage`). |
 | `n_browser_pdf` | PDF em `/tmp`. |
 | `n_browser_contrast` | Contraste REAL em pixel (clip → PNG → mediana borda vs miolo → razão WCAG 2.1) — a11y sem screenshot. |
-| `n_ubrowser_status` | **Antes de tudo** no Chrome do dono (offline → janela normal + popup ATIVO). |
+| `n_ubrowser_status` | **Antes de tudo** no Chrome do dono (offline → **`open:true` abre o Chrome sozinho, qualquer perfil** — ou janela normal + popup ATIVO). |
 | `n_ubrowser_tabs` | Abas (IDs mudam; prefira `tab:"trecho"`). |
 | `n_ubrowser_read` | Aba logada (`distill` default; `raw` integral+links; `outline:true` só estrutura; `selector:"#app"` escopa a leitura). Texto curto em página grande → WARN no summary (tente `raw`/`snapshot`). |
 | `n_ubrowser_snapshot` | Clicáveis (`max` ≤120 + `offset`; `find` ±3 contexto; `layer:"modal\|menu\|popover\|tooltip"` foca a camada; `scan` antes p/ virtualizada). |
@@ -111,7 +111,7 @@ A tabela de cima diz **o que** cada tool faz. Esta diz **quando escolher qual** 
 |---|---|---|
 | Ler página pública/estática | `n_webfetch` | barato, sem browser, sem render |
 | Página com JS/SPA pública | `n_browser_navigate` + snapshot/act headless | renderiza sem tocar no Chrome do dono |
-| Página logada / aba real do dono | `n_ubrowser_status` → `tabs` → `read/snapshot/act` | sessão viva do dono; login JAMAIS por iniciativa própria |
+| Página logada / aba real do dono | `n_ubrowser_status` → `tabs` → `read/snapshot/act` | sessão viva do dono; login JAMAIS por iniciativa própria; Chrome fechado? `status {open:true}` abre sozinho |
 | Evidência visual | headless `n_browser_screenshot` · dono `n_ubrowser_shot` (visível ou fundo via CDP) | screenshot custa tokens — texto/`verified`/`delta` primeiro |
 | Erro na aba do dono (console/rede) | chega sozinho (push 📬) → `act console {filter:"errors"}` → `monstate` → painel `/painel` | escada: evento → buffer → estado do hook → histórico |
 | Dono marcou problema visual na página | `n_elemreports_list {base_url}` → um a um → `n_elemreports_resolve` com prova antes/depois | fila humana priorizada; NÃO confunda com `n_report` |
@@ -164,7 +164,7 @@ Armadilhas que custam caro (nomeadas — se pegou, pare e troque):
 | `429` / `no results — 429` / `GitHub rate limit` | Aguarde ~60s; search `fresh:false` (cache 10min); GitHub com `GITHUB_TOKEN`. |
 | `websearch` externo 429 (parallel.ai MCP, não é nosso) | Cadeia de fallback: externo → `n_websearch` (`fresh:false`, cache 10min) → `n_browser_navigate`. |
 | Fallback só após 429/zero do externo | Aguarde ~60s; não force `fresh:true` em loop (agrava 429); confirme página/preço via browser. |
-| `EXTENSAO_OFFLINE` / `timeout 60s` extensão | `n_ubrowser_status`: janela NORMAL, popup ATIVO, token `~/.config/canivete/token.txt`. |
+| `EXTENSAO_OFFLINE` / `timeout 60s` extensão | `n_ubrowser_status {open:true}` — o agente abre o Chrome sozinho (display com WM, perfil pedido) e espera a ponte; se o Chrome JÁ roda: janela NORMAL, popup ATIVO, token `~/.config/canivete/token.txt`. |
 | `SSRF bloqueado: host privado` | URL pública ou `CANIVETE_BROWSER_ALLOW_PRIVATE=1`. |
 | `chrome://` sem ação | Bloqueio do Chrome (só páginas web). |
 | Aba `NOTFOUND` / snapshot vazio | Reliste `tabs`; use `tab:"trecho"`; `scan {pages:4}` antes de `snapshot`; `find`/`layer` p/ localizar sem despejar. Alvo que sumiu volta com WHERE (`removed\|hidden\|scrolled-out\|recycled`); `resolve=moved\|recycled` = re-resolvido sozinho. |

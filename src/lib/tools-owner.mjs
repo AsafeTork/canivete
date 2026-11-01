@@ -1,15 +1,89 @@
 // canivete — tools do navegador LOGADO do dono (ubrowser_*)
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { sleep } from "../core/retry.mjs";
 import { reg, devOut, trimOut } from "./ctx.mjs";
 import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsHint, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
 import { ownerCdpSend } from "./cdp.mjs";
 import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks } from "../core/snapshot.mjs";
 // recovery sem mudar protocolo: só texto de erro acionável (janela NORMAL, popup, token) + fallback headless
-const UB_REC = "Recovery dono: 1) Chrome janela NORMAL mesmo perfil (sem anonimo) 2) popup extensao UBrowser ATIVO 3) token ~/.config/canivete/token.txt igual na extensao 4) rode n_ubrowser_status p/ confirmar";
+const UB_REC = "Recovery: 0) sem Chrome? n_ubrowser_status {open:true} abre sozinho (qualquer perfil) 1) Chrome janela NORMAL mesmo perfil (sem anonimo) 2) popup extensao UBrowser ATIVO 3) token ~/.config/canivete/token.txt igual na extensao 4) rode n_ubrowser_status p/ confirmar";
 const UB_FB = "Sem login? fallback headless: n_browser_navigate / n_browser_screenshot";
 const UB_OFF_FULL = `${UB_OFF} | ${UB_REC} | ${UB_FB}`;
 // timeout de transporte ÚNICO (const UB_TIMEOUT_MS do ubridge): mensagem mostra o valor REAL
 // (env CANIVETE_UB_TIMEOUT, piso 1s teto 300s) — antes dizia "60s" fixo mesmo com env mudado.
 const ubTimeoutMsg = (ms = UB_TIMEOUT_MS) => `timeout ${Math.round(ms / 1000)}s — extensao nao respondeu: tente de novo ou cheque n_ubrowser_status`;
+
+// ---- Abrir o Chrome do dono SOZINHO (doutrina: agente pode lançar em qualquer perfil) ----
+// EXTENSAO_OFFLINE não é mais beco: n_ubrowser_status {open:true} resolve o display com WM
+// (console real primeiro — CRD :20 não tem WM), limpa Singleton de crash e lança o Chrome
+// (renderer-limit 3 do dono + restore-last-session) no perfil pedido, esperando a ponte (poll
+// com teto — sleep cego é proibido). Perfil precisa ter a extensão UBrowser carregada.
+const UB_CHROME_DIR = process.env.CANIVETE_UB_CHROME_DIR || join(homedir(), ".config", "google-chrome");
+const UB_CHROME_BIN = ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/bin/chromium"].find((p) => existsSync(p)) || "google-chrome";
+const UB_PROC_CMD = (pid) => { try { return readFileSync(join("/proc", String(pid), "cmdline"), "utf8").replace(/\0/g, " "); } catch { return ""; } };
+const UB_OWNER_PIDS = () => {
+  const pids = [];
+  try {
+    for (const d of readdirSync("/proc")) {
+      if (!/^\d+$/.test(d)) continue;
+      const cmd = UB_PROC_CMD(d);
+      // Chrome do DONO: processo principal sem --type=; exclui headless do canivete (outro perfil) e crashpad
+      if (!/google-chrome|chromium/.test(cmd) || cmd.includes("--type=") || cmd.includes("--headless") || cmd.includes("canivete-chrome-profile") || cmd.includes("crashpad")) continue;
+      pids.push({ pid: Number(d), cmd: cmd.trim().slice(0, 100) });
+    }
+  } catch {}
+  return pids;
+};
+function ubResolveDisplay() {
+  const cands = [];
+  if (process.env.DISPLAY) cands.push({ display: process.env.DISPLAY, auth: process.env.XAUTHORITY || "" });
+  if (process.env.CANIVETE_UB_DISPLAY) cands.push({ display: process.env.CANIVETE_UB_DISPLAY, auth: process.env.CANIVETE_UB_XAUTH || "" });
+  try { // X servers vivos: console real (-seat/vt) primeiro; virtual do chrome-remote-desktop por último
+    const xs = [];
+    for (const d of readdirSync("/proc")) {
+      if (!/^\d+$/.test(d)) continue;
+      const m = UB_PROC_CMD(d).match(/(?:^|\/)(?:Xorg|Xvnc|Xvfb)\s+:(\d+)/);
+      if (m) xs.push({ display: `:${m[1]}`, console: /-seat\s|vt\d+/.test(UB_PROC_CMD(d)) });
+    }
+    xs.sort((a, b) => (b.console ? 1 : 0) - (a.console ? 1 : 0));
+    for (const x of xs) for (const auth of [process.env.XAUTHORITY || "", `/var/run/lightdm/root/${x.display}`, join(homedir(), ".Xauthority")]) {
+      if (!cands.some((c) => c.display === x.display && c.auth === auth)) cands.push({ display: x.display, auth });
+    }
+  } catch {}
+  for (const c of cands) {
+    try { // exit 0 do wmctrl = display com gerenciador de janelas = mesa do dono (CRD :20 falha)
+      if (spawnSync("wmctrl", ["-l"], { env: { ...process.env, DISPLAY: c.display, ...(c.auth ? { XAUTHORITY: c.auth } : {}) }, timeout: 3000 }).status === 0) return c;
+    } catch {}
+  }
+  return cands[0] || { display: ":0", auth: "" };
+}
+function ubNormProfile(p) {
+  if (!p) return "Default";
+  const s = String(p).trim();
+  let dirs = [];
+  try { dirs = readdirSync(UB_CHROME_DIR).filter((d) => d === "Default" || /^Profile/.test(d)); } catch {}
+  if (!dirs.length) return "Default";
+  const norm = (x) => x.toLowerCase().replace(/[\s_-]/g, "");
+  return dirs.find((d) => norm(d) === norm(s)) || (/^\d+$/.test(s) ? dirs.find((d) => d === `Profile ${s}`) : null) || null;
+}
+async function ubOpenAndWait(profileDir, waitMs) {
+  const disp = ubResolveDisplay();
+  if (!UB_OWNER_PIDS().length) { // sem Chrome vivo: Singleton de crash atrapalha o boot limpo
+    for (const f of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) { try { unlinkSync(join(UB_CHROME_DIR, f)); } catch {} }
+    const env = { ...process.env, DISPLAY: disp.display, ...(disp.auth ? { XAUTHORITY: disp.auth } : {}), ...(process.env.DBUS_SESSION_BUS_ADDRESS ? {} : { DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` }) };
+    spawn(UB_CHROME_BIN, ["--renderer-process-limit=3", "--restore-last-session", `--profile-directory=${profileDir}`], { detached: true, stdio: "ignore", env }).unref();
+  }
+  const t0 = Date.now();
+  while (Date.now() - t0 < waitMs) { // poll com teto (sleep cego proibido)
+    ubEnsure();
+    if (ubConnected()) return { ok: true, ms: Date.now() - t0, display: disp.display };
+    await sleep(700);
+  }
+  return { ok: false, ms: Date.now() - t0, display: disp.display };
+}
 
 // Roteamento por perfil: SE o caller pediu `profile` e ele não casa com nenhuma extensão,
 // NÃO roteia em silêncio p/ "qualquer" (comando no perfil ERRADO é pior que erro) —
@@ -26,12 +100,25 @@ function ubTarget(profile) {
 }
 
 reg("n_ubrowser_status", {
-  description: "Status da ponte com o Chrome LOGADO do dono (extensão local). SEMPRE o passo 1: offline → janela NORMAL (anônima é invisível), mesmo perfil, popup ATIVO, token igual. Fluxo: status→tabs→read|snapshot→act→shot. IDs de aba mudam — nas tools prefira tab:\"trecho do título/URL\".",
-  inputSchema: { type: "object", properties: {}, required: [] },
-  run: async () => {
+  description: "Status da ponte com o Chrome LOGADO do dono (extensão local). SEMPRE o passo 1: offline → open:true (o agente ABRE o Chrome sozinho, em qualquer perfil — sem refém do dono). Fluxo: status→tabs→read|snapshot→act→shot. IDs de aba mudam — nas tools prefira tab:\"trecho do título/URL\".",
+  inputSchema: { type: "object", properties: { open: { type: "boolean", description: "ponte offline? abre o Chrome do dono sozinho (display com WM detectado, perfil abaixo) e espera a ponte conectar (teto 25s)" }, profile: { type: "string", description: "com open: perfil do Chrome — \"Default\", \"Profile 1\"… ou só o número (1, 2…); o perfil precisa ter a extensão UBrowser carregada" }, wait: { type: "number", description: "teto de espera pós-launch em ms (default 25000, teto 60000)" } }, required: [] },
+  run: async ({ open, profile, wait } = {}) => {
     const t0 = Date.now();
     ubEnsure();
-    const c = ubConnected();
+    let c = ubConnected();
+    let launchNote = "";
+    if (!c && open) {
+      const pdir = ubNormProfile(profile);
+      if (!pdir) {
+        let dirs = [];
+        try { dirs = readdirSync(UB_CHROME_DIR).filter((d) => d === "Default" || /^Profile/.test(d)); } catch {}
+        return devOut({ status: "error", summary: `perfil "${profile}" não existe em ${UB_CHROME_DIR} — disponíveis: ${dirs.join(", ") || "nenhum (Chrome nunca rodou?)"}`, data: { open: true, profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      }
+      const r = await ubOpenAndWait(pdir, Math.min(Number(wait) || 25000, 60000));
+      c = ubConnected();
+      if (!c) return devOut({ status: "error", summary: `Chrome lançado em ${r.display}/${pdir}, ponte não subiu em ${Math.round(r.ms / 1000)}s — perfil tem a extensão UBrowser? ${UB_REC}`, data: { open: true, display: r.display, profile: pdir, connected: false }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_status", reason: "Re-checar: SW da extensão pode acordar 1 ciclo depois" }] });
+      launchNote = ` · Chrome aberto pelo agente (${r.display}, ${pdir}) — ponte em ${r.ms}ms`;
+    } else if (open && c) launchNote = " · open ignorado — ponte já conectada";
     const st = ubStats();
     const exts = Array.isArray(st.extensions) ? st.extensions : [];
     const conns = exts.filter((e) => e.connected);
@@ -45,7 +132,7 @@ reg("n_ubrowser_status", {
     if (conns.length > 1) hints.push(`${conns.length} perfis conectados — alvo por profile:"<clientId>" (extensions[].id), trecho de label/URL; omitir = ext mais recente`);
     if (conns.length === 1) hints.push("1 perfil só — omita profile (ou passe o clientId exato)");
     if (noLabel) hints.push("profileLabel ausente — configure o nome do perfil no popup da extensão p/ alvo por nome legível");
-    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${conns.length} perfil(es) conectado(s)` : "EXTENSÃO OFFLINE — dono: abra o Chrome (janela NORMAL, mesmo perfil, popup ATIVO)", data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), ...st }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "n_ubrowser_status", reason: "Re-checar após abrir o Chrome (popup ativo)" }] : [{ tool: "n_ubrowser_tabs", reason: conns.length > 1 ? "Abas vêm consolidadas dos perfis — aponte profile ao agir" : "Listar abas do dono" }] });
+    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${conns.length} perfil(es) conectado(s)${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: n_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), ...st }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "n_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [{ tool: "n_ubrowser_tabs", reason: conns.length > 1 ? "Abas vêm consolidadas dos perfis — aponte profile ao agir" : "Listar abas do dono" }] });
   },
 });
 

@@ -84,7 +84,7 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 
 | Tool | Para que (1 linha) |
 |---|---|
-| `n_ubrowser_status` | **Antes de tudo**: ponte/extensão conectada? (offline → janela normal + popup ATIVO). |
+| `n_ubrowser_status` | **Antes de tudo**: ponte/extensão conectada? Offline → `open:true` **abre o Chrome sozinho** (display com WM detectado, `profile` qualquer — "Default", "1", "Profile 1"…), espera a ponte (teto 25s) e devolve o que aconteceu; se o Chrome já roda, diagnostica janela normal + popup ATIVO. |
 | `n_ubrowser_tabs` | Abas do dono (id, janela, título, url; IDs mudam — prefira `tab:"trecho"`). |
 | `n_ubrowser_read` | Lê aba com login (`distill` enxuto; `raw` integral + links; `outline:true` só estrutura; value separado do placeholder). |
 | `n_ubrowser_snapshot` | Clicáveis (`max`+`offset`; `find` localiza ±3 contexto; `layer:"modal\|menu\|popover\|tooltip"` foca só a camada; `scan` antes p/ virtualizada; `shadow:` p/ web components; refs morrem na navegação). |
@@ -136,7 +136,7 @@ Regra: **nunca sleep em loop** — 1 espera longa com teto + erro acionável no 
 |---|---|---|
 | `n_webfetch` retorna shell vazio / "SPA" | Site 100% JS, login-wall ou preço dinâmico (`n_webfetch` é **SEM JS**) | Use `n_browser_navigate({url})` (renderiza JS) ou `n_ubrowser_*` (sessão logada). |
 | `no results — 429 received` / `GitHub rate limit` / `ReceitaWS failed (429)` | Rate-limit do backend (GitHub 60 req/h sem token; search com retry 2×2s p/ 429) | Aguarde ~60s e tente de novo; search: `fresh:false` (lê cache 10min) em vez de `fresh:true`; GitHub: defina `GITHUB_TOKEN`/`GH_TOKEN`. |
-| `EXTENSAO_OFFLINE` / `TIMEOUT_EXTENSAO` / `timeout 60s aguardando extensão` | Chrome fechado, janela anônima, popup pausado ou token divergente | `n_ubrowser_status` diagnostica: Chrome aberto, **janela normal** (anônima é invisível), popup **ATIVO**, token igual a `~/.config/canivete/token.txt`; SW dormente acorda em ~1min (popup → Testar conexão). Timeout único configurável: `CANIVETE_UB_TIMEOUT` (1s–300s). |
+| `EXTENSAO_OFFLINE` / `TIMEOUT_EXTENSAO` / `timeout 60s aguardando extensão` | Chrome fechado, janela anônima, popup pausado ou token divergente | `n_ubrowser_status {open:true}` **resolve sozinho**: abre o Chrome (qualquer perfil, display com WM) e espera a ponte conectar; se o Chrome JÁ roda: **janela normal** (anônima é invisível), popup **ATIVO**, token igual a `~/.config/canivete/token.txt`; SW dormente acorda em ~1min (popup → Testar conexão). Timeout único configurável: `CANIVETE_UB_TIMEOUT` (1s–300s). |
 | `SSRF bloqueado: host privado/intranet` | `n_browser_*` bloqueia intranet por padrão | Use URL pública ou `CANIVETE_BROWSER_ALLOW_PRIVATE=1` p/ permitir intranet. |
 | `chrome://…` / Web Store sem ação | Chrome bloqueia content script nessas páginas | Limite do Chrome — automatize só páginas web normais. |
 | Aba sumiu / `NOTFOUND` / snapshot vazio | IDs de aba mudam a cada restart/navegação; lista virtualizada só tem visíveis no DOM | Reliste `n_ubrowser_tabs`; prefira `tab:"trecho título/URL"` a `tabId`; `scan {pages:4}` antes de `snapshot`; `find:"texto"` p/ localizar sem despejar; `shadow:` no selector p/ web components; F5 + `ping` se versão velha. |
@@ -257,6 +257,8 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 | `CANIVETE_TOKEN` / `CANIVETE_TOKEN_FILE` | `~/.config/canivete/token.txt` (autogerado) | auth da extensão |
 | `CANIVETE_BRIDGE_PORT` | `19422` | ponte da extensão (aliases: `UBROWSER_PORT`, `UB_PORT`) |
 | `CANIVETE_UB_TIMEOUT` | `60000` | timeout único da ponte ubrowser (clamp 1s–300s; mensagens mostram o valor real) |
+| `CANIVETE_UB_DISPLAY` / `CANIVETE_UB_XAUTH` | — | display/Xauthority fixos pro `status {open:true}` abrir o Chrome (auto: detecta X com WM via wmctrl; console real antes do virtual do CRD) |
+| `CANIVETE_UB_CHROME_DIR` | `~/.config/google-chrome` | diretório de perfis do Chrome do dono (valida `profile` e limpa Singleton de crash) |
 | `CANIVETE_UB_MON_QUIET` | `1` | `0` reativa o wrap de `console.*` da página no mon-hook (captura `ErrorUtils`/pixels; mais ruído no inspector da extensão — default `1` = quiet, Inspector limpo) |
 | `CANIVETE_CS_EXEC_TMO` | `120000` | timeout default do `n_codespace_exec` (clamp 5s–165s; por chamada: `timeoutSec`) |
 | `CANIVETE_GH_CONFIG_DIR` | — | perfil gh multi-conta do serviço (ex.: `/etc/canivete/gh`) |
