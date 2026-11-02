@@ -222,16 +222,19 @@ args = ["/home/voce/.codex/mcp/canivete/src/server.mjs"]
 ln -sfn /caminho/canivete ~/.codex/mcp/canivete   # o caminho do args resolve pro repo
 ```
 
-## Atualizar o canivete (qualquer CLI)
+## Atualizar o canivete (qualquer CLI) — 1 comando
 
 ```bash
-cd /caminho/canivete && git pull    # como o DONO do repo (tork) — não como root
-systemctl --user restart canivete   # daemon recarrega o código; todos os clientes puxam junto
+npm run atualizar        # ou: bash scripts/atualizar.sh
 ```
+
+Funciona do terminal do dono OU via `n_bash` de qualquer CLI (root cai pro tork sozinho; o
+reinício é agendado via `systemd-run` — sobrevive mesmo executando de dentro do daemon).
+Detalhes do fluxo:
 
 - **Remote (opencode)**: sem restart do cliente — o daemon atende código novo por chamada.
 - **stdio (codex/claude)**: sessão nova spawna o proxy atualizado; sessão aberta segue no código antigo até fechar.
-- **Pegadinha**: se alguém editou arquivos como **root**, o `git pull` do tork falha (arquivo root-owned). Conserte com `sudo chown -R tork:tork /caminho/canivete` e puxe de novo.
+- **Pegadinha**: se alguém editou arquivos como **root**, o `git pull` do tork falha (arquivo root-owned). Conserte com `sudo chown -R tork:tork /caminho/canivete` e rode de novo.
 
 ## Persistência (sobrevive ao reboot)
 
