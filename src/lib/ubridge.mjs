@@ -19,7 +19,7 @@ const UB_MAXPAY = Number(process.env.CANIVETE_UB_MAXPAY) || 500 * 1024;
 const UB_CHUNK = Number(process.env.CANIVETE_UB_CHUNK) || 400 * 1024;
 // painel local + observabilidade: assets do pacote (src/lib → ../assets) e logs em ~/.config/canivete
 const UB_ASSETS_DIR = join(dirname(fileURLToPath(import.meta.url)), "../assets");
-const UB_CONFIG_DIR = () => join(homedir(), ".config/canivete");
+const UB_CONFIG_DIR = () => process.env.CANIVETE_CONFIG_DIR || join(homedir(), ".config/canivete");
 const UB_MONLOG_MAX = 2000, UB_REPLAY_MAXPAY = 12 * 1024 * 1024;
 // Timeout de transporte ÚNICO do ubrowser: default 60s, piso 1s, teto 300s (env respeitado).
 // tools-owner usa p/ mensagem fiel ("timeout Xs"); ubSend clampa qualquer caller por aqui.

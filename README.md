@@ -205,7 +205,9 @@ daemon no boot e vira proxy** (cada linha JSON-RPC vira POST `/mcp`, resposta vo
 zero disputa de porta. O bug "funciona numa CLI e não na outra" era exatamente isso: a 2ª
 instância re-bindava 19422/19423 já ocupados (EADDRINUSE). Se o daemon NÃO estiver no ar, o stdio
 assume as portas ele mesmo (comportamento solo de sempre). Porta configurável via
-`CANIVETE_MCP_HTTP_PORT` (default 19423).
+`CANIVETE_MCP_HTTP_PORT` (default 19423). Os `n_report` de TODAS as CLIs caem na MESMA inbox
+(`~/.config/canivete/issues.jsonl` do usuário do daemon) — via proxy, não há ilha por usuário;
+várias instalações/usuarios → aponte `CANIVETE_ISSUES_FILE` pro mesmo arquivo em todas.
 
 **codex** (`~/.codex/config.toml`) — aponte pro REPO via symlink (fonte única: cópia defasada era
 a outra metade do problema):
@@ -270,6 +272,8 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 | `CANIVETE_UB_TIMEOUT` | `60000` | timeout único da ponte ubrowser (clamp 1s–300s; mensagens mostram o valor real) |
 | `CANIVETE_UB_DISPLAY` / `CANIVETE_UB_XAUTH` | — | display/Xauthority fixos pro `status {open:true}` abrir o Chrome (auto: detecta X com WM via wmctrl; console real antes do virtual do CRD) |
 | `CANIVETE_UB_CHROME_DIR` | `~/.config/google-chrome` | diretório de perfis do Chrome do dono (valida `profile` e limpa Singleton de crash) |
+| `CANIVETE_ISSUES_FILE` | `~/.config/canivete/issues.jsonl` | inbox única de `n_report` — aponte pro MESMO arquivo em toda instalação/usuário (ex.: `sudo -u tork` vs root) |
+| `CANIVETE_CONFIG_DIR` | `~/.config/canivete` | estado da ponte (issues-state, mon-log, tools-off, replays, elemreports) — unificar multi-instalação |
 | `CANIVETE_UB_MON_QUIET` | `1` | `0` reativa o wrap de `console.*` da página no mon-hook (captura `ErrorUtils`/pixels; mais ruído no inspector da extensão — default `1` = quiet, Inspector limpo) |
 | `CANIVETE_CS_EXEC_TMO` | `120000` | timeout default do `n_codespace_exec` (clamp 5s–165s; por chamada: `timeoutSec`) |
 | `CANIVETE_GH_CONFIG_DIR` | — | perfil gh multi-conta do serviço (ex.: `/etc/canivete/gh`) |

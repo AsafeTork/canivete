@@ -9,7 +9,9 @@ import { reg, out, pruneJsonl } from "./ctx.mjs";
 
 const KINDS = ["bug", "ajuste", "aprimoramento", "sugestao", "missing", "bottleneck"];
 const MAX_INBOX_LINES = 500;
-const inboxPath = () => join(homedir(), ".config/canivete/issues.jsonl");
+// Inbox ÚNICA por máquina: o daemon é o dono (todas as CLIs gravam através dele — modo proxy);
+// CANIVETE_ISSUES_FILE aponta um arquivo compartilhado quando há várias instalações/usuarios.
+const inboxPath = () => process.env.CANIVETE_ISSUES_FILE || join(homedir(), ".config/canivete/issues.jsonl");
 
 // Rotação: cap de linhas — delega ao pruneJsonl único (ctx), atômico (#49: ENOSPC não trunca).
 function pruneInbox(p) { pruneJsonl(p, MAX_INBOX_LINES); }
@@ -52,6 +54,6 @@ reg("n_report", {
     } catch (e) {
       return out(`inbox indisponível: ${e.message}`, true);
     }
-    return out(`report ${entry.id} registrado (${kind} em ${where}) — obrigado, isso refina a ferramenta. Siga pelo alternativo e cite o id. Triagem: operador lê ~/.config/canivete/issues.jsonl (sem SLA).`);
+    return out(`report ${entry.id} registrado (${kind} em ${where}) — obrigado, isso refina a ferramenta. Siga pelo alternativo e cite o id. Triagem: operador lê ${p} (sem SLA).`);
   },
 });
