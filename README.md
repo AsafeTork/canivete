@@ -235,6 +235,7 @@ Detalhes do fluxo:
 - **Remote (opencode)**: sem restart do cliente — o daemon atende código novo por chamada.
 - **stdio (codex/claude)**: sessão nova spawna o proxy atualizado; sessão aberta segue no código antigo até fechar.
 - **Pegadinha**: se alguém editou arquivos como **root**, o `git pull` do tork falha (arquivo root-owned). Conserte com `sudo chown -R tork:tork /caminho/canivete` e rode de novo.
+- **Auto (padrão)**: timer `canivete-updater` a cada 2h + 5min pós-boot — pull discreto e reinício SÓ se veio código novo (log: `journalctl --user -u canivete-updater`; carimbo: `~/.config/canivete/last-update`). Desligar: `systemctl --user disable --now canivete-updater.timer`. Quer aplicar agora sem esperar o ciclo? `npm run atualizar`.
 
 ## Persistência (sobrevive ao reboot)
 
