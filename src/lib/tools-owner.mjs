@@ -610,6 +610,10 @@ reg("n_ubrowser_act", {
     }
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg(ubTo)} | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) {
+      // BFCache (report rmvzh2gx8): o efeito JÁ FOI, a página migrou p/ cache e fechou o canal —
+      // resposta perdida ≠ ação falhou. Volta warn acionável (confirme na aba nova) em vez de erro seco.
+      if (/back\/forward cache|message channel is closed/i.test(String(r.error || "")))
+        return devOut({ status: "warn", summary: `efeito aplicado, resposta perdida no BFCache (${String(r.error).slice(0, 90)}) — re-attach é automático; confirme o efeito na aba nova`, data: { action: a.action, bfCache: true, error: r.error }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_tabs", reason: "Ver a aba aberta/navegada e confirmar o efeito" }] });
       // extensão antiga (<1.7.3) sem tab.activate: "cmd desconhecido"/"unknown action" → hint de versão/reload
       const unknownAct = a.action === "activate" && /desconhecido|unknown/i.test(String(r.error || ""));
       return devOut({ status: "error", summary: `extensão: ${r.error}${ubErrHint(r.error) || ""}${unknownAct ? ` — tab.activate precisa extensão ${UB_VER_ACT}+ (n_ubrowser_status → data.version); rode {action:"reload-extension"}` : ""} | ${UB_FB}`, data: { action: a.action, ...(unknownAct ? { versionHint: UB_VER_ACT } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
