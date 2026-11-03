@@ -17,6 +17,7 @@ import "./lib/tools-browser.mjs";
 import "./lib/tools-codespace.mjs";
 import "./lib/tools-owner.mjs";
 import "./lib/tools-whatsapp.mjs";
+import "./lib/tools-media.mjs";
 import "./lib/feedback.mjs";
 import "./lib/elemreports.mjs";
 

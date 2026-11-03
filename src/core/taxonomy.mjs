@@ -4,7 +4,8 @@
 export const TOOL_GROUPS = [
   { title: "Filesystem + execução", hint: "ler/listar/criar/editar/patch/shell/glob/grep", names: ["n_read", "n_list", "n_write", "n_edit", "n_apply_patch", "n_bash", "n_glob", "n_grep"] },
   { title: "Web + APIs públicas sem chave", hint: "fetch enxuto, search 7 backends, currency/cep/cnpj/ip/weather/github/npm", names: ["n_webfetch", "n_websearch", "n_currency", "n_cep", "n_cnpj", "n_ipinfo", "n_weather", "n_github", "n_npm"] },
-  { title: "Browser headless", hint: "CDP zero-deps: navegar com JS, snapshot, agir, screenshot, pdf", names: ["n_browser_navigate", "n_browser_snapshot", "n_browser_act", "n_browser_screenshot", "n_browser_pdf"] },
+  { title: "Browser headless", hint: "CDP zero-deps: navegar com JS, snapshot, agir, screenshot, pdf, screencast", names: ["n_browser_navigate", "n_browser_snapshot", "n_browser_act", "n_browser_screenshot", "n_browser_screencast", "n_browser_pdf"] },
+  { title: "Mídia local (ffprobe/ffmpeg)", hint: "análise de áudio no disco: duração, loudness LUFS, mapa de silêncios — zero upload", names: ["n_audio_analyze"] },
   { title: "Navegador LOGADO do dono", hint: "via extensão local: status, abas, ler, snapshot, agir, print", names: ["n_ubrowser_status", "n_ubrowser_tabs", "n_ubrowser_read", "n_ubrowser_snapshot", "n_ubrowser_act", "n_ubrowser_shot"] },
   { title: "Reports de elemento (site)", hint: "marcação humana na página viva: listar reports abertos por site e resolver com prova", names: ["n_elemreports_list", "n_elemreports_resolve"] },
   { title: "Orquestração", hint: "todos in-memory (+ família n_task* só com CANIVETE_TASK_ENABLE=1)", names: ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"], dynamicTitle: true },

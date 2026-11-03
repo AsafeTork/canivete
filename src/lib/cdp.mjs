@@ -490,22 +490,31 @@ async function cdpDrainConsole(send, ws, { timeoutMs = 1500, limit = 30 } = {}) 
 
 // Retorna clip {x,y,width,height,scale} do elemento via DOM.getBoxModel.
 async function cdpElementClip(send, selector) {
-  await send("DOM.enable");
-  const doc = await send("DOM.getDocument", { depth: 1 });
-  const q = await send("DOM.querySelector", { nodeId: doc.root.nodeId, selector });
-  if (!q.nodeId) throw new Error(`elemento não encontrado: ${selector}`);
-  const box = await send("DOM.getBoxModel", { nodeId: q.nodeId });
-  const quad = box.content || box.border;
-  if (!quad) throw new Error(`sem box model p/ ${selector}`);
-  const xs = [quad[0], quad[2], quad[4], quad[6]];
-  const ys = [quad[1], quad[3], quad[5], quad[7]];
-  const x = Math.max(0, Math.min(...xs));
-  const y = Math.max(0, Math.min(...ys));
-  const width = Math.max(1, Math.max(...xs) - x);
-  const height = Math.max(1, Math.max(...ys) - y);
-  try { await send("DOM.scrollIntoViewIfNeeded", { nodeId: q.nodeId }); } catch {}
-  await new Promise((r) => setTimeout(r, 300));
-  return { x, y, width, height, scale: 1 };
+  try {
+    await send("DOM.enable");
+    const doc = await send("DOM.getDocument", { depth: 1 });
+    const q = await send("DOM.querySelector", { nodeId: doc.root.nodeId, selector });
+    if (!q.nodeId) throw new Error(`elemento não encontrado: ${selector}`);
+    const box = await send("DOM.getBoxModel", { nodeId: q.nodeId });
+    const quad = box.content || box.border;
+    if (!quad) throw new Error("quad vazio — cai pro fallback DOM-vivo");
+    const xs = [quad[0], quad[2], quad[4], quad[6]];
+    const ys = [quad[1], quad[3], quad[5], quad[7]];
+    const x = Math.max(0, Math.min(...xs));
+    const y = Math.max(0, Math.min(...ys));
+    const width = Math.max(1, Math.max(...xs) - x);
+    const height = Math.max(1, Math.max(...ys) - y);
+    try { await send("DOM.scrollIntoViewIfNeeded", { nodeId: q.nodeId }); } catch {}
+    await new Promise((r) => setTimeout(r, 300));
+    return { x, y, width, height, scale: 1 };
+  } catch {
+    // Fallback DOM-vivo (Chrome 156: getBoxModel devolve quad vazio em certas sessões —
+    // getBoundingClientRect no DOM vivo é imune ao estado do DOM domain; mesma convenção de coords).
+    const r = await send("Runtime.evaluate", { expression: `(() => { const e = document.querySelector(${JSON.stringify(String(selector))}); if (!e) return null; e.scrollIntoView({ block: "center", inline: "center" }); const b = e.getBoundingClientRect(); return { x: b.x + window.scrollX, y: b.y + window.scrollY, width: b.width, height: b.height }; })()`, returnByValue: true }, 8000);
+    const v = r?.result?.value;
+    if (!v || !v.width) throw new Error(`elemento não encontrado ou sem caixa: ${selector}`);
+    return { x: Math.max(0, v.x), y: Math.max(0, v.y), width: Math.max(1, v.width), height: Math.max(1, v.height), scale: 1 };
+  }
 }
 
 // Cookies da página via CDP (Storage.getCookies, fallback Network.getCookies).

@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node
 import { join, dirname, basename } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { reg, devOut, trimOut, fpath, humanSize, exec } from "./ctx.mjs";
+import { sleep } from "../core/retry.mjs";
 import { probeMeta, mainContent } from "./web.mjs";
 import { withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, cdpSetViewport, cdpClearViewport, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN as CHROME_BIN_CDP } from "./cdp.mjs";
 
@@ -530,6 +531,147 @@ reg("n_browser_screenshot", {
         }
       } catch {}
       return devOut({ status: "error", summary: `screenshot falhou: ${e.message} ${(r.se || "").slice(0, 300)}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    }
+  },
+});
+
+reg("n_browser_screencast", {
+  description: "Grava a página headless DURANTE uma interação (Page.startScreencast + ações input-trusted): frames com timestamps reais → WebM/MP4 via ffmpeg (sem ffmpeg = só frames) + meta.json. Viewport/escala definidos. Tudo LOCAL. Ex: {url, actions:[{click:\"#btn\"},{wait:600}]}.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "página inicial (sem url = aba atual do headless)" },
+      width: { type: "number", default: 1280 },
+      height: { type: "number", default: 800 },
+      scale: { type: "number", enum: [0.5, 1], default: 1, description: "deviceScaleFactor: 0.5 = metade dos pixels/bytes" },
+      format: { type: "string", enum: ["jpeg", "png"], default: "jpeg", description: "jpeg=leve (padrão p/ vídeo); png=sem perda (frames grandes)" },
+      actions: { type: "array", items: { type: "object" }, description: "executadas durante a gravação, em ordem — cada item: {click:selector} | {type:texto, into:selector?} | {press:tecla} | {scroll:px} | {focus:selector} | {wait:ms} (teto: 20 ações, 30s de wait somados)" },
+    },
+    required: [],
+  },
+  run: async ({ url, width, height, scale, format, actions } = {}) => {
+    const t0 = Date.now();
+    const w = Math.min(Math.max(Number(width) || 1280, 320), 2560);
+    const h = Math.min(Math.max(Number(height) || 800, 320), 2560);
+    const dsf = Number(scale) === 0.5 ? 0.5 : 1;
+    const fmt = format === "png" ? "png" : "jpeg";
+    const acts = Array.isArray(actions) ? actions : [{ wait: 800 }]; // sem ações: ~1s da página parada
+    if (acts.length > 20) return devOut({ status: "error", summary: `teto de 20 ações (recebi ${acts.length}) — divida em duas gravações`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const waitTotal = acts.reduce((s, a) => s + (a && "wait" in a ? Math.min(Number(a.wait) || 0, 10000) : 0), 0);
+    if (waitTotal > 30000) return devOut({ status: "error", summary: `teto de 30s de wait somado (recebi ${waitTotal / 1000}s) — gravação longa demais p/ uma chamada`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (url) { try { assertSafeUrl(url); } catch (e) { return devOut({ status: "error", summary: e.message, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } }); } }
+    // teclas suportadas no {press} — Input.dispatchKeyEvent precisa de code+virtualKeyCode
+    const KEY_CODES = { Enter: [13, "Enter"], Tab: [9, "Tab"], Escape: [27, "Escape"], Backspace: [8, "Backspace"], ArrowDown: [40, "ArrowDown"], ArrowUp: [38, "ArrowUp"], ArrowLeft: [37, "ArrowLeft"], ArrowRight: [39, "ArrowRight"] };
+    const act = async (send, a) => {
+      if (!a || typeof a !== "object") throw new Error("ação inválida (use objetos: {click:...} | {type:...} | {press:...} | {scroll:...} | {focus:...} | {wait:...})");
+      if ("wait" in a) { await sleep(Math.min(Math.max(Number(a.wait) || 200, 10), 10000)); return `wait ${a.wait}ms`; }
+      if ("click" in a) {
+        const sel = String(a.click);
+        // rect via DOM vivo (coords de VIEWPORT — exatas pro Input.dispatchMouseEvent; getBoxModel não é confiável aqui no 156)
+        const r = await send("Runtime.evaluate", { expression: `(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; e.scrollIntoView({ block: "center", inline: "center" }); const b = e.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; })()`, returnByValue: true }, 8000);
+        const v = r?.result?.value;
+        if (!v || !v.w) throw new Error(`elemento não encontrado ou sem caixa p/ click no screencast: ${sel}`);
+        const x = Math.round(v.x + v.w / 2), y = Math.round(v.y + v.h / 2);
+        await sleep(150);
+        await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+        await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+        return `click [${sel}] @ ${x},${y}`;
+      }
+      if ("type" in a) {
+        if (a.into) await act(send, { focus: a.into });
+        await send("Input.insertText", { type: "insertText", text: String(a.type) });
+        return `type ${String(a.type).length} chars${a.into ? ` em [${a.into}]` : ""}`;
+      }
+      if ("focus" in a) {
+        const sel = String(a.focus);
+        await send("Runtime.evaluate", { expression: `(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return "sem-el"; e.focus(); return "ok"; })()` });
+        await sleep(100);
+        return `focus [${sel}]`;
+      }
+      if ("press" in a) {
+        const kc = KEY_CODES[String(a.press)] || [String(a.press).charCodeAt(0) || 0, String(a.press)];
+        for (const type of ["rawKeyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: String(a.press), code: kc[1], windowsVirtualKeyCode: kc[0], nativeVirtualKeyCode: kc[0] });
+        return `press ${a.press}`;
+      }
+      if ("scroll" in a) {
+        const dy = Number(a.scroll) || 0;
+        await send("Input.dispatchMouseEvent", { type: "mouseWheel", x: Math.round(w / 2), y: Math.round(h / 2), deltaX: 0, deltaY: dy });
+        return `scroll ${dy}px`;
+      }
+      throw new Error(`ação desconhecida "${Object.keys(a).join(",")}" — use click | type | press | scroll | focus | wait`);
+    };
+    try {
+      const { frames, state, vp } = await withCdpRetry(async ({ send, ws }) => {
+        await cdpSetFullRender(send);
+        if (url) await cdpGoto(send, url);
+        const vp = await cdpSetViewport(send, w, h, dsf);
+        const frames = [];
+        const onMsg = (e) => { // eventos Page.* chegam no mesmo WS — este listener é nosso (cdpSend usa addEventListener, não sobrescreve)
+          let m; try { m = JSON.parse(e.data); } catch { return; }
+          if (m?.method === "Page.screencastFrame" && m.params?.data) {
+            frames.push({ data: m.params.data, ts: m.params.metadata?.timestamp ?? null });
+            send("Page.screencastFrameAck", { sessionId: m.params.sessionId }).catch(() => {}); // sem ack o Chrome para de mandar
+          }
+        };
+        ws.addEventListener("message", onMsg);
+        try {
+          await send("Page.startScreencast", { format: fmt, quality: 80, everyNthFrame: 1 });
+          for (const a of acts) await act(send, a);
+          await sleep(500); // cauda: render do último estado entra no vídeo
+        } finally {
+          try { await send("Page.stopScreencast"); } catch {}
+          await sleep(150); // drenar frames em voo
+          try { ws.removeEventListener("message", onMsg); } catch {}
+          try { await cdpClearViewport(send); } catch {}
+        }
+        return { frames, state: await cdpState(send), vp };
+      }, { url }, "n_browser_screencast");
+      if (!frames.length) return devOut({ status: "error", summary: "nenhum frame capturado — página estática sem repaint não emite frame; adicione uma ação (click/scroll/wait) ou confira a url", data: { url: state.url || url || null }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      const dir = join(tmpdir(), `opencode-screencast-${Date.now().toString(36)}`);
+      mkdirSync(dir, { recursive: true });
+      const files = [];
+      for (let i = 0; i < Math.min(frames.length, 400); i++) {
+        const f = join(dir, `frame-${String(i + 1).padStart(5, "0")}.${fmt === "png" ? "png" : "jpg"}`);
+        await writeFile(f, Buffer.from(frames[i].data, "base64"));
+        files.push({ file: f, ts: frames[i].ts });
+      }
+      // vídeo: durações reais pelos timestamps do CDP; fallback 0.5s; webm (vp9) → mp4 (h264) → só frames
+      let video = null, videoErr = null;
+      if (files.length >= 2) {
+        const lines = ["ffconcat version 1.0"];
+        for (let i = 0; i < files.length; i++) {
+          const dur = i < files.length - 1 && files[i].ts != null && files[i + 1].ts != null ? Math.max(files[i + 1].ts - files[i].ts, 0.04) : 0.5;
+          lines.push(`file '${basename(files[i].file)}'`, `duration ${dur.toFixed(3)}`);
+        }
+        lines.push(`file '${basename(files[files.length - 1].file)}'`); // concat exige o último repetido sem duration
+        await writeFile(join(dir, "list.ffconcat"), lines.join("\n") + "\n");
+        const tenta = (out, codecArgs) => exec("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", "list.ffconcat", ...codecArgs, basename(out)], { timeout: 180000, cwd: dir });
+        try {
+          const vfWebm = join(dir, "screencast.webm");
+          const r1 = await tenta(vfWebm, ["-c:v", "libvpx-vp9", "-b:v", "1M", "-pix_fmt", "yuv420p"]);
+          if (r1.code === 0) video = vfWebm;
+          else {
+            const vfMp4 = join(dir, "screencast.mp4");
+            const r2 = await tenta(vfMp4, ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"]);
+            if (r2.code === 0) video = vfMp4; else videoErr = ((r2.se || "") + (r1.se || "")).slice(-200) || "ffmpeg indisponível";
+          }
+        } catch (e) { videoErr = e.message; }
+      } else videoErr = "menos de 2 frames — sem vídeo, só frames";
+      if (video) { // vídeo pronto: frames eram matéria-prima — limpa (a não ser que pediram explícito... default enxuto)
+        for (const f of files) { try { await unlink(f.file); } catch {} }
+        try { await unlink(join(dir, "list.ffconcat")); } catch {}
+      }
+      await writeFile(join(dir, "meta.json"), JSON.stringify({ url: state.url || url || null, title: state.title || null, viewport: { width: w, height: h, dsf }, frames: files.length, video, timestamps: video ? null : files.map((f) => f.ts) }, null, 2));
+      const durVid = files.length >= 2 && files[files.length - 1].ts != null && files[0].ts != null ? (files[files.length - 1].ts - files[0].ts).toFixed(1) : "?";
+      return devOut({
+        status: "success",
+        summary: `screencast: ${files.length} frames em ${w}x${h}@${dsf}x${video ? ` → ${video === join(dir, "screencast.webm") ? "screencast.webm" : "screencast.mp4"} (~${durVid}s)` : " (sem ffmpeg — frames mantidos)"} → ${dir}${videoErr ? ` | vídeo falhou: ${String(videoErr).slice(0, 90)}` : ""}`,
+        data: { dir, video, frames: files.length, duracao_s: durVid, viewport: { width: w, height: h, dsf }, url: state.url || url || null, title: state.title || null, videoErro: videoErr || null, processamento: "local (CDP+ffmpeg) — proveniência: nenhum byte saiu da máquina" },
+        telemetry: { execution_time_ms: Date.now() - t0 },
+        next: [{ tool: "n_bash", reason: "Juntar com áudio: ffmpeg -i screencast.webm -i narração.mp3 -c:v copy -c:a aac demo.mp4" }],
+      });
+    } catch (e) {
+      return devOut({ status: "error", summary: `screencast falhou: ${e.message}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_browser_screenshot", reason: "Evidência estática como alternativa" }] });
     }
   },
 });

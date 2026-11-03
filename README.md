@@ -78,6 +78,8 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 | `n_browser_snapshot` | Elementos interativos da página (`compact:true` economiza ~60% tokens). |
 | `n_browser_act` | Interage via CDP: goto/click/fill/press/scroll/wait/`evaluate` (+ `console:true` p/ logs). |
 | `n_browser_screenshot` | PNG da página ou de um elemento (`selector`, `fullPage`, `scale`). |
+| `n_browser_screencast` | Grava a página **durante interação**: `actions:[{click:"#btn"},{wait:600}…]` → frames com timestamps + WebM/MP4 via ffmpeg (tudo local). |
+| `n_audio_analyze` | Análise de áudio LOCAL (ffprobe/ffmpeg no disco): duração, codec, loudness LUFS (ebur128) e mapa de silêncios = pontos de corte pra montagem de vídeo — zero upload. |
 | `n_browser_pdf` | PDF da página em `/tmp` (exportar relatório/evidência). |
 
 ### Chrome LOGADO do dono via extensão (6)

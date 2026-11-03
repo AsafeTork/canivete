@@ -62,6 +62,8 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `n_browser_snapshot` | Interativos (`compact:true` −60% tokens). |
 | `n_browser_act` | goto/click/fill/press/scroll/wait/`evaluate` (`console:true` = 30 logs). |
 | `n_browser_screenshot` | PNG página/elemento (`selector`, `fullPage`). |
+| `n_browser_screencast` | Grava a página DURANTE interação: `actions:[{click},{wait}…]` → frames + WebM/MP4 (local). |
+| `n_audio_analyze` | Áudio local: duração, LUFS, **mapa de silêncios** (pontos de corte) — ffprobe/ffmpeg no disco, zero upload. |
 | `n_browser_pdf` | PDF em `/tmp`. |
 | `n_browser_contrast` | Contraste REAL em pixel (clip → PNG → mediana borda vs miolo → razão WCAG 2.1) — a11y sem screenshot. |
 | `n_ubrowser_status` | **Antes de tudo** no Chrome do dono (offline → **`open:true` abre o Chrome sozinho, qualquer perfil** — ou janela normal + popup ATIVO). |
