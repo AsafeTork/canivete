@@ -17,7 +17,7 @@ const inboxPath = () => process.env.CANIVETE_ISSUES_FILE || join(homedir(), ".co
 function pruneInbox(p) { pruneJsonl(p, MAX_INBOX_LINES); }
 
 reg("n_report", {
-  description: "Reporta refinação p/ a ferramenta (inbox global). kind: bug (erro) | ajuste (correção de comportamento) | aprimoramento (perf/UX) | sugestao (capacidade nova); aliases legados aceitos: missing, bottleneck. OBRIGATÓRIO em vez de improvisar. Ex: {kind:\"missing\", where:\"n_ubrowser_shot\", expected:\"print em aba de fundo\", got:\"só na visível\"}.",
+  description: "Reporta refinação p/ a ferramenta (inbox global). kind aceita 6: bug (erro) | ajuste (correção de comportamento) | aprimoramento (perf/UX) | sugestao (capacidade nova) | missing (faltou tool/capacidade) | bottleneck (gargalo). OBRIGATÓRIO em vez de improvisar. Ex: {kind:\"missing\", where:\"n_ubrowser_shot\", expected:\"print em aba de fundo\", got:\"só na visível\"}.",
   inputSchema: {
     type: "object",
     properties: {
@@ -46,8 +46,9 @@ reg("n_report", {
       suggestedCapability: String(suggestedCapability || "").slice(0, 500),
     };
     if (dryRun) return out(`dryRun preview (nada escrito):\n${JSON.stringify(entry, null, 2)}`);
+    let p;
     try {
-      const p = inboxPath();
+      p = inboxPath();
       mkdirSync(dirname(p), { recursive: true });
       pruneInbox(p);
       appendFileSync(p, JSON.stringify(entry) + "\n");

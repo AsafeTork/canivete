@@ -1,6 +1,6 @@
 // canivete — tools do navegador LOGADO do dono (ubrowser_*)
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { sleep } from "../core/retry.mjs";
@@ -60,6 +60,32 @@ function ubResolveDisplay() {
   }
   return cands[0] || { display: ":0", auth: "" };
 }
+function ubProfileNames() { // dir → rótulo humano (Local State > profile.info_cache) — report rmvzvi0hy
+  try {
+    const ls = JSON.parse(readFileSync(join(UB_CHROME_DIR, "Local State"), "utf8"));
+    const ic = ls && ls.profile && ls.profile.info_cache;
+    const m = {};
+    if (ic && typeof ic === "object") for (const [d, v] of Object.entries(ic)) m[d] = String((v && v.name) || "").trim();
+    return m;
+  } catch { return {}; }
+}
+const ubConnectedLabels = () => { // rótulos dos perfis conectados agora (p/ saber SE o pedido é o conectado)
+  try {
+    const st = ubStats();
+    const exts = Array.isArray(st.extensions) ? st.extensions : [];
+    return exts.filter((e) => e.connected).map((e) => String(e.profileLabel || "").trim()).filter(Boolean);
+  } catch { return []; }
+};
+const UB_LABELS_FILE = () => join(process.env.CANIVETE_CONFIG_DIR || join(homedir(), ".config", "canivete"), "ub-profile-labels.json");
+function ubLabelMap() { // rótulo do popup → dir, aprendido em wake (popup label não vive no Local State)
+  try { return JSON.parse(readFileSync(UB_LABELS_FILE(), "utf8")) || {}; } catch { return {}; }
+}
+function ubSaveLabel(label, dir) {
+  try {
+    const m = ubLabelMap();
+    if (m[label] !== dir) { m[label] = dir; writeFileSync(UB_LABELS_FILE(), JSON.stringify(m, null, 2) + "\n"); }
+  } catch {}
+}
 function ubNormProfile(p) {
   if (!p) return "Default";
   const s = String(p).trim();
@@ -67,11 +93,16 @@ function ubNormProfile(p) {
   try { dirs = readdirSync(UB_CHROME_DIR).filter((d) => d === "Default" || /^Profile/.test(d)); } catch {}
   if (!dirs.length) return "Default";
   const norm = (x) => x.toLowerCase().replace(/[\s_-]/g, "");
-  return dirs.find((d) => norm(d) === norm(s)) || (/^\d+$/.test(s) ? dirs.find((d) => d === `Profile ${s}`) : null) || null;
+  const nomes = ubProfileNames();
+  const m = ubLabelMap();
+  return dirs.find((d) => norm(d) === norm(s)) || (/^\d+$/.test(s) ? dirs.find((d) => d === `Profile ${s}`) : null) || dirs.find((d) => nomes[d] && norm(nomes[d]) === norm(s)) || Object.entries(m).find(([l, d]) => dirs.includes(d) && norm(l) === norm(s))?.[1] || null;
 }
-async function ubOpenAndWait(profileDir, waitMs) {
+async function ubOpenAndWait(profileDir, waitMs, wake = false, checkOk = null) { // checkOk: esperar O PERFIL pedido, não "qualquer conexão" (report rmvzvlp3r)
   const disp = ubResolveDisplay();
-  if (!UB_OWNER_PIDS().length) { // sem Chrome vivo: Singleton de crash atrapalha o boot limpo
+  if (wake) { // Chrome vivo mas OUTRO perfil conectado (report rmvzvlp3r): janela nova do perfil pedido acorda o SW da extensão dele
+    const env = { ...process.env, DISPLAY: disp.display, ...(disp.auth ? { XAUTHORITY: disp.auth } : {}) };
+    spawn(UB_CHROME_BIN, [`--profile-directory=${profileDir}`], { detached: true, stdio: "ignore", env }).unref();
+  } else if (!UB_OWNER_PIDS().length) { // sem Chrome vivo: Singleton de crash atrapalha o boot limpo
     for (const f of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) { try { unlinkSync(join(UB_CHROME_DIR, f)); } catch {} }
     const env = { ...process.env, DISPLAY: disp.display, ...(disp.auth ? { XAUTHORITY: disp.auth } : {}), ...(process.env.DBUS_SESSION_BUS_ADDRESS ? {} : { DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` }) };
     spawn(UB_CHROME_BIN, ["--renderer-process-limit=3", "--restore-last-session", `--profile-directory=${profileDir}`], { detached: true, stdio: "ignore", env }).unref();
@@ -79,10 +110,10 @@ async function ubOpenAndWait(profileDir, waitMs) {
   const t0 = Date.now();
   while (Date.now() - t0 < waitMs) { // poll com teto (sleep cego proibido)
     ubEnsure();
-    if (ubConnected()) return { ok: true, ms: Date.now() - t0, display: disp.display };
+    if (checkOk ? checkOk() : ubConnected()) return { ok: true, ms: Date.now() - t0, display: disp.display, wake };
     await sleep(700);
   }
-  return { ok: false, ms: Date.now() - t0, display: disp.display };
+  return { ok: false, ms: Date.now() - t0, display: disp.display, wake };
 }
 
 // Roteamento por perfil: SE o caller pediu `profile` e ele não casa com nenhuma extensão,
@@ -101,24 +132,42 @@ function ubTarget(profile) {
 
 reg("n_ubrowser_status", {
   description: "Status da ponte com o Chrome LOGADO do dono (extensão local). SEMPRE o passo 1: offline → open:true (o agente ABRE o Chrome sozinho, em qualquer perfil — sem refém do dono). Fluxo: status→tabs→read|snapshot→act→shot. IDs de aba mudam — nas tools prefira tab:\"trecho do título/URL\".",
-  inputSchema: { type: "object", properties: { open: { type: "boolean", description: "ponte offline? abre o Chrome do dono sozinho (display com WM detectado, perfil abaixo) e espera a ponte conectar (teto 25s)" }, profile: { type: "string", description: "com open: perfil do Chrome — \"Default\", \"Profile 1\"… ou só o número (1, 2…); o perfil precisa ter a extensão UBrowser carregada" }, wait: { type: "number", description: "teto de espera pós-launch em ms (default 25000, teto 60000)" } }, required: [] },
+  inputSchema: { type: "object", properties: { open: { type: "boolean", description: "ponte offline? abre o Chrome do dono sozinho (display com WM detectado, perfil abaixo) e espera a ponte conectar (teto 25s)" }, profile: { type: "string", description: "com open: perfil do Chrome — \"Default\", \"Profile 1\"…, só o número (1, 2…) ou o RÓTULO do perfil (nome em Local State, ex: \"Financia\"); o perfil precisa ter a extensão UBrowser carregada" }, wait: { type: "number", description: "teto de espera pós-launch em ms (default 25000, teto 60000)" } }, required: [] },
   run: async ({ open, profile, wait } = {}) => {
     const t0 = Date.now();
     ubEnsure();
     let c = ubConnected();
     let launchNote = "";
-    if (!c && open) {
+    if (open) { // open:true SEMPRE mira o perfil pedido — ponte conectada a OUTRO perfil não é "ok" (report rmvzvlp3r)
       const pdir = ubNormProfile(profile);
+      const nomes = ubProfileNames();
       if (!pdir) {
         let dirs = [];
         try { dirs = readdirSync(UB_CHROME_DIR).filter((d) => d === "Default" || /^Profile/.test(d)); } catch {}
-        return devOut({ status: "error", summary: `perfil "${profile}" não existe em ${UB_CHROME_DIR} — disponíveis: ${dirs.join(", ") || "nenhum (Chrome nunca rodou?)"}`, data: { open: true, profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+        const rot = dirs.map((d) => (nomes[d] ? `${d} (${nomes[d]})` : d)).join(", ");
+        return devOut({ status: "error", summary: `perfil "${profile}" não existe em ${UB_CHROME_DIR} — disponíveis: ${rot || "nenhum (Chrome nunca rodou?)"}`, data: { open: true, profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
       }
-      const r = await ubOpenAndWait(pdir, Math.min(Number(wait) || 25000, 60000));
-      c = ubConnected();
-      if (!c) return devOut({ status: "error", summary: `Chrome lançado em ${r.display}/${pdir}, ponte não subiu em ${Math.round(r.ms / 1000)}s — perfil tem a extensão UBrowser? ${UB_REC}`, data: { open: true, display: r.display, profile: pdir, connected: false }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_status", reason: "Re-checar: SW da extensão pode acordar 1 ciclo depois" }] });
-      launchNote = ` · Chrome aberto pelo agente (${r.display}, ${pdir}) — ponte em ${r.ms}ms`;
-    } else if (open && c) launchNote = " · open ignorado — ponte já conectada";
+      const rotulo = nomes[pdir] ? ` (${nomes[pdir]})` : "";
+      const normL = (x) => String(x).toLowerCase().replace(/[\s_-]/g, "");
+      const quero = [pdir, nomes[pdir]].filter(Boolean).map(normL);
+      const mLabels = ubLabelMap();
+      const casado = (ls) => ls.some((l) => quero.includes(normL(l)) || mLabels[l] === pdir); // rótulo do popup aprendido também casa (report rmvzvlp3r)
+      const antes = new Set(ubConnectedLabels().map(normL));
+      if (c && casado(ubConnectedLabels())) launchNote = ` · open ok — perfil ${pdir}${rotulo} já conectado`;
+      else {
+        const wake = !!c && !casado([...antes]); // Chrome vivo mas perfil pedido não é o conectado
+        const r = await ubOpenAndWait(pdir, Math.min(Number(wait) || 25000, 60000), wake, () => {
+          const ls = ubConnectedLabels();
+          return ubConnected() && (casado(ls) || ls.some((l) => !antes.has(normL(l)))); // match OU conexão NOVA surgida no nosso wait (é o perfil pedido)
+        });
+        c = ubConnected();
+        const ls = ubConnectedLabels();
+        const novo = ls.find((l) => !antes.has(normL(l))) || null; // conexão que SÓ pode ser o perfil que acordamos
+        if (wake && novo && !casado(ls)) ubSaveLabel(novo, pdir); // aprende rótulo-do-popup → dir (próximas chamadas por rótulo)
+        if (!c || (!casado(ls) && !(wake && novo))) return devOut({ status: "error", summary: `perfil ${pdir}${rotulo} não conectou em ${Math.round(r.ms / 1000)}s (ponte: ${ls.join(", ") || "offline"}) — o perfil tem a extensão UBrowser carregada? ${UB_REC}`, data: { open: true, display: r.display, profile: pdir, connected: c, connectedProfiles: ls }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_status", reason: "Re-checar: SW da extensão pode acordar 1 ciclo depois" }] });
+        launchNote = r.wake ? ` · perfil ${pdir}${rotulo} acordado pelo agente (${r.display})${novo && !casado(ls) ? ` — conectou com o rótulo "${novo}" do popup (aprendido)` : ""} — ponte em ${r.ms}ms` : ` · Chrome aberto pelo agente (${r.display}, ${pdir}) — ponte em ${r.ms}ms`;
+      }
+    }
     const st = ubStats();
     const exts = Array.isArray(st.extensions) ? st.extensions : [];
     const conns = exts.filter((e) => e.connected);
