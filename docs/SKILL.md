@@ -123,7 +123,7 @@ A tabela de cima diz **o que** cada tool faz. Esta diz **quando escolher qual** 
 
 Escadas de escala — escolha o degrau mínimo que resolve:
 - **Ler**: `webfetch` → headless → ubrowser logado.
-- **Agir**: `selector`/`ref` → `evaluate` (corpo com `return …`) → **limitação bateu (CSP, clique/fill sintético ignorado, shadow DOM/iframe, drag)? `cdp` é a resposta, não o fim**: `cdp {method:"Runtime.evaluate"}` (nível debugger — **imune a CSP**, Input trusted). Só diga "não dá" DEPOIS do cdp.
+- **Agir**: `selector`/`ref` → `evaluate` (corpo com `return …`) → **limitação bateu (CSP, clique/fill sintético ignorado, shadow DOM/iframe, drag)? `cdp` é a resposta, não o fim**: `cdp {method:"Runtime.evaluate"}` (nível debugger — **imune a CSP**, Input trusted). Só diga "não dá" DEPOIS do cdp. **EM TESTE de site: fique no clique/fill sintético (usuário real) — cdp só quando o sintético FALHAR de verdade (cite a falha); "só funciona com cdp" É o resultado do teste, não obstáculo a remover.**
 - **Diagnosticar**: push 📬 (chegou sozinho) → `console` (buffer) → `monstate` (v/quiet/count) → painel/API (histórico fundido) → replay (vídeo do erro); erro de **produção** com Sentry MCP configurado → `find_organizations` → `analyze_issue_with_seer` (fora do canivete).
 - **Homolog**: `__ubTags={area,agent}` ANTES de navegar; `__ubReplay=true` só quando o erro é visual; `uierr.js` mostra o erro real na UI.
 
