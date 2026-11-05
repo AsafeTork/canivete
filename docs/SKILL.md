@@ -28,7 +28,7 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | Tool | Uso |
 |---|---|
 | `n_webfetch` | URL **SEM JS** (`<article>/<main>`); PDF → extrai texto LOCAL (pdftotext); SPA → `n_browser_navigate`. |
-| `n_websearch` | 7 backends, cache 10min; `fresh:true` força ao vivo. |
+| `n_websearch` | 10 backends, cache 10min; GitHub-novos = repos ≤90d por stars (novidade); `fresh:true` força ao vivo. |
 | `n_currency` | Câmbio ECB/Frankfurter (cache 1h). |
 | `n_cep` | CEP→endereço ViaCEP (24h). |
 | `n_cnpj` | CNPJ→empresa ReceitaWS (24h, rate-limited). |

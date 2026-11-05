@@ -33,7 +33,7 @@ Toolkit MCP completo (56 tools `n_*`, **zero dependências**, Node 22+) que func
 | Tool | Para que (1 linha) |
 |---|---|
 | `n_webfetch` | Baixa URL **SEM JS** (`<article>/<main>`); **PDF** é detectado e o texto extraído **local** (pdftotext — nenhum byte enviado); SPA shell avisa p/ usar `n_browser_navigate`. |
-| `n_websearch` | Busca em 7 backends públicos (cache 10min, `fresh:true` força ao vivo). |
+| `n_websearch` | Busca em 10 backends públicos (News, DDG×2, Wikipedia×2, HN, **GitHub**, **GitHub-novos** (repos de até 90d por stars — o que acabou de lançar), **Lemmy**, **npm**, **arXiv**; cache 10min, `fresh:true` força ao vivo). |
 
 ### APIs públicas sem chave (7)
 

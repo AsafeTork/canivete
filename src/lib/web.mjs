@@ -3,11 +3,12 @@
 //   - CANIVETE_SEARCH_MAX: NÃO existe (removido após paginação page/perPage; ver n_websearch).
 //   - cache TTLs: n_webfetch 15min (15*60*1000, só ok sem err); n_websearch 10min (10*60*1000); fresh:true pula leitura mas regrava via cacheSet.
 //   - cache cap (core/cache.mjs): size>300 → poda expirados até <=200, senão evict FIFO (keys().next()).
-//   - timeouts: n_webfetch arg timeout default 60000 clamp 5000-120000 (AbortController); httpJson default 30000 (ctx.mjs), overrides: News 12000 / DDG-instant 10000 / WikiExtract 12000 / Wiki 12000 / HN 12000 / GitHub 10000 / DDG-html 12000.
+//   - timeouts: n_webfetch arg timeout default 60000 clamp 5000-120000 (AbortController); httpJson default 30000 (ctx.mjs), overrides: News 12000 / DDG-instant 10000 / WikiExtract 12000 / Wiki 12000 / HN 12000 / GitHub 10000 (+GitHub-novos 10000, auth via gh.mjs: env GITHUB_TOKEN/GH_TOKEN > conta gh ativa, token em memória 30min) / Lemmy 12000 / npm 10000 / arXiv 15000 / DDG-html 12000. Reddit: 403 keyless (Cloudflare) — lacuna declarada, só com OAuth de script.
 //   - retry: n_webfetch 2 tentativas sleep 1000 (429/5xx/rede); fetchRetry(tries=2, delays 1000+2000) p/ status 0/429/5xx, httpJson nunca lança (rede=status 0).
-//   - paginação: numResults POR FONTE default 8 clamp 1-20 (News/HN/GitHub fixos em 4, Wiki/DDG-html usam n); page default 1 clamp 1..totalPages; perPage default 30 clamp 1-200 (pós-dedupe).
+//   - paginação: numResults POR FONTE default 8 clamp 1-20 (News/HN/GitHub/GitHub-novos/Reddit/npm/arXiv fixos em 4, Wiki/DDG-html usam n); page default 1 clamp 1..totalPages; perPage default 30 clamp 1-200 (pós-dedupe).
 //   - caps texto: n_webfetch maxChars default 12000 clamp 500-60000; links máx 40; S()=240 / probeMeta=160 / desc=300 / h1=200; trimOut default MAX_OUT=30000 (ctx.mjs).
 import { reg, out, trimOut, httpJson, escapeRe, UA, exec } from "./ctx.mjs";
+import { ghTok, listAccounts } from "./gh.mjs"; // search autenticado: conta gh ativa = 30 req/min na Search API (anon = 10 compartilhadas)
 import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -219,7 +220,7 @@ reg("n_webfetch", {
   },
 });
 
-// ── websearch: backends (News/DDG-instant/Wiki/HN/GitHub, timeouts 10-12s) ──
+// ── websearch: backends (News/DDG-instant/Wiki/HN/GitHub/GitHub-novos/Lemmy/npm/arXiv, timeouts 10-15s) ──
 async function searchNews(q, n, sinceDate) {
   // since: repassado como operador after:YYYY-MM-DD (suportado pelo Google News RSS).
   const qq = sinceDate ? `${q} after:${sinceDate}` : q;
@@ -297,15 +298,92 @@ async function searchHn(q, n, sinceMs) {
   };
 }
 
-async function searchGithub(q, n, sinceDate) {
+async function searchGithub(q, n, sinceDate, hdr = {}) {
   // since: repassado como qualificador pushed:>YYYY-MM-DD (suportado pela Search API do GitHub).
   const qq = sinceDate ? `${q} pushed:>${sinceDate}` : q;
-  const r = await fetchRetry(() => httpJson(`https://api.github.com/search/repositories?q=${encodeURIComponent(qq)}&per_page=${n}`, { timeout: 10000 }), 2);
+  const r = await fetchRetry(() => httpJson(`https://api.github.com/search/repositories?q=${encodeURIComponent(qq)}&per_page=${n}`, { timeout: 10000, headers: hdr }), 2);
+  if (r.status === 401 || r.status === 403) ghSearchTok = null; // token virou abóbora → próxima busca re-resolve (ou cai p/ anon)
   if (r.status !== 200 || !Array.isArray(r.data?.items)) return null;
   return {
     source: "github",
     items: r.data.items.map((it) => ({ title: it.full_name, url: it.html_url, snippet: `${S(it.description, 180)} | stars: ${it.stargazers_count}${it.pushed_at ? ` · ${String(it.pushed_at).slice(0, 10)}` : ""}`.trimStart() })),
   };
+}
+
+// "vai que lançaram algo bom e eu não sei": repos NOVOS e quentes — created:> (janela: since
+// ou 90d) ordenado por stars desc. Complementa o searchGithub (best-match sem olhinho no tempo).
+async function searchGithubNovos(q, n, sinceDate, hdr = {}) {
+  const since = sinceDate || new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+  const qq = `${q} created:>${since}`;
+  const r = await fetchRetry(() => httpJson(`https://api.github.com/search/repositories?q=${encodeURIComponent(qq)}&sort=stars&order=desc&per_page=${n}`, { timeout: 10000, headers: hdr }), 2);
+  if (r.status === 401 || r.status === 403) ghSearchTok = null;
+  if (r.status !== 200 || !Array.isArray(r.data?.items)) return null;
+  return {
+    source: "github-novos",
+    items: r.data.items.map((it) => ({ title: it.full_name, url: it.html_url, snippet: `${S(it.description, 180)} | stars: ${it.stargazers_count} · criado ${String(it.created_at || "").slice(0, 10)}${it.pushed_at ? ` · push ${String(it.pushed_at).slice(0, 10)}` : ""}`.trimStart() })),
+  };
+}
+
+// discussões vivas (inovação corrente, opinião de quem usa): API pública do Lemmy
+// (lemmy.world, keyless) — espelha MUITO conteúdo de reddit via fediverso (reddit direto
+// responde 403 keyless: lacuna declarada; OAuth de script existir, dá p/ reabrir).
+// Snippet SEMPRE com data (o fallback do filtro since usa).
+async function searchLemmy(q, n) {
+  const r = await fetchRetry(() => httpJson(`https://lemmy.world/api/v3/search?q=${encodeURIComponent(q)}&type_=Posts&limit=${Math.min(n, 20)}`, { timeout: 12000 }), 2);
+  if (r.status !== 200 || !Array.isArray(r.data?.posts)) return null;
+  return {
+    source: "lemmy",
+    items: (r.data.posts || []).map((v) => {
+      const p = (v && v.post) || {}, c = (v && v.counts) || {}, cm = (v && v.community) || {};
+      const url = p.url || (p.id ? `https://lemmy.world/post/${p.id}` : "");
+      return { title: S(p.name), url, snippet: `${cm.name ? `!${cm.name} · ` : ""}${c.score ?? 0} upvotes · ${c.comments ?? 0} comments${p.published ? ` · ${String(p.published).slice(0, 10)}` : ""}`.trim() };
+    }).filter((it) => it.url),
+  };
+}
+
+// pacotes publicados (ferramenta nova costuma nascer aqui antes de ter doc/site)
+async function searchNpm(q, n) {
+  const r = await fetchRetry(() => httpJson(`https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(q)}&size=${Math.min(n, 20)}`, { timeout: 10000 }), 2);
+  if (r.status !== 200 || !Array.isArray(r.data?.objects)) return null;
+  return {
+    source: "npm",
+    items: r.data.objects.map((o) => {
+      const p = (o && o.package) || {};
+      return { title: p.name || "?", url: (p.links && p.links.npm) || `https://www.npmjs.com/package/${p.name}`, snippet: `${S(p.description, 160)} | v${p.version || "?"} · ${(p.publisher && p.publisher.username) || "?"} · ${p.date ? String(p.date).slice(0, 10) : ""}`.trimStart() };
+    }).filter((it) => it.url),
+  };
+}
+
+// papers (inovação científica): Atom do arXiv, sort por submissão desc (o mais novo primeiro).
+// Parse regex do Atom fixo (title/summary/id/published/name) — mesmo estilo do Google News acima.
+async function searchArxiv(q, n) {
+  const r = await fetchRetry(() => httpJson(`https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(q)}&sortBy=submittedDate&sortOrder=descending&max_results=${Math.min(Math.max(n, 1), 20)}`, { timeout: 15000 }), 2);
+  if (r.status !== 200 || !r.text) return null;
+  const items = [];
+  for (const e of r.text.split("<entry>").slice(1)) {
+    const t = e.match(/<title>(.*?)<\/title>/s), s = e.match(/<summary>(.*?)<\/summary>/s), id = e.match(/<id>https?:\/\/arxiv\.org\/abs\/([^<\s]+)<\/id>/), pub = e.match(/<published>(.*?)<\/published>/), au = e.match(/<name>(.*?)<\/name>/);
+    if (!t || !id) continue;
+    items.push({ title: collapseHtml(t[1]), url: `https://arxiv.org/abs/${id[1]}`, snippet: `${au ? `${au[1]} · ` : ""}${pub ? pub[1].slice(0, 10) : ""} · ${S(s && s[1], 200)}`.trim() });
+    if (items.length >= n) break;
+  }
+  return items.length ? { source: "arxiv", items } : null;
+}
+
+// auth do search GitHub: env GITHUB_TOKEN/GH_TOKEN > conta gh ativa do dono (gh.mjs; token
+// em memória 30min, NUNCA ecoado) > anônimo. Falha de credencial nunca derruba a busca.
+let ghSearchTok = null, ghSearchTokAt = 0;
+async function ghSearchAuth() {
+  const env = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (env) return { authorization: `Bearer ${env}` };
+  if (ghSearchTok && Date.now() - ghSearchTokAt < 30 * 60 * 1000) return { authorization: `Bearer ${ghSearchTok}` };
+  try {
+    const { active } = await listAccounts();
+    if (active) {
+      const t = await ghTok(active);
+      if (t) { ghSearchTok = t; ghSearchTokAt = Date.now(); return { authorization: `Bearer ${t}` }; }
+    }
+  } catch {}
+  return {};
 }
 
 // ── helpers search: norm/dedupe/site/since/fetchRetry (puro, sem ENV) ──
@@ -474,7 +552,9 @@ function capByDomain(items, maxPerDomain = 3) {
   const kept = [];
   let omitted = 0;
   for (const it of items || []) {
-    const d = domainOf(it.url) || "-";
+    // github-novos tem cota PRÓPRIA de domínio: a exceção é o objetivo — sem isso o
+    // best-match de github ocupava as vagas de github.com e estrangulava os repos novos.
+    const d = (it.fontes || []).includes("github-novos") ? `novos@${domainOf(it.url) || "-"}` : (domainOf(it.url) || "-");
     const c = per.get(d) || 0;
     if (c < maxPerDomain) { per.set(d, c + 1); kept.push(it); }
     else omitted++;
@@ -541,14 +621,14 @@ function dedupeItems(groups, query = "") {
 
 // ── websearch: n_websearch (cache 10min, numResults/fonte + page/perPage pós-dedupe) ──
 reg("n_websearch", {
-  description: "Busca web multi-backend (News, DDG, Wikipedia, HN, GitHub; cache 10min, dedupe por URL). Quando usar: pesquisar doc/bug/biblioteca. Filtros: site, since (YYYY-MM-DD), fresh (pula cache). Limite: numResults é por fonte; paginação page/perPage sobre o total pós-dedupe; preço pode estar desatualizado — confirme com n_browser_navigate.",
+  description: "Busca web multi-backend (News, DDG, Wikipedia, HN, GitHub, GitHub-novos, Lemmy/fediverso, npm, arXiv; cache 10min, dedupe por URL). GitHub-novos = repos criados nos últimos 90d ordenados por stars — acha o que ACABOU de lançar (sem since usa essa janela; com since, usa a data). Quando usar: pesquisar doc/bug/biblioteca/novidade. Filtros: site, since (YYYY-MM-DD), fresh (pula cache). Limite: numResults é por fonte; paginação page/perPage sobre o total pós-dedupe; preço pode estar desatualizado — confirme com n_browser_navigate.",
   inputSchema: {
     type: "object",
     properties: {
       query: { type: "string", description: "Termos da busca (obrigatório)." },
       numResults: { type: "number", default: 8, description: "Teto de resultados POR FONTE (1-20, padrão 8)." },
       site: { type: "string", description: "Filtra resultados cujo URL contém este domínio. Ex: github.com, pt.wikipedia.org. Vazio = sem filtro." },
-      since: { type: "string", description: "Só resultados desde esta data (YYYY-MM-DD ou ISO). Repassado a News/HN/GitHub; nos demais backends filtra pelo snippet quando houver data, senão mantém. Formato inválido = erro." },
+      since: { type: "string", description: "Só resultados desde esta data (YYYY-MM-DD ou ISO). Repassado a News/HN/GitHub/GitHub-novos nativamente; nos demais filtra pelo snippet quando houver data (todos os snippets de backends novos trazem data), senão mantém. Formato inválido = erro." },
       fresh: { type: "boolean", default: false, description: "Se true, pula o cache de 10min e força re-busca ao vivo." },
       page: { type: "number", default: 1, description: "Página (1-based) sobre os itens pós-dedupe (padrão 1)." },
       perPage: { type: "number", default: 30, description: "Itens por página pós-dedupe (1-200, padrão 30)." },
@@ -570,13 +650,18 @@ reg("n_websearch", {
     const fetchGroups = async () => {
       let had429 = false;
       const attempt = async (qq) => {
+        const ghH = await ghSearchAuth();
         const settled = await Promise.allSettled([
           searchNews(qq, 4, sinceDate),
           searchDdgInstant(qq),
           searchWikiExtract(qq),
           searchWiki(qq, n),
           searchHn(qq, 4, sinceMs),
-          searchGithub(qq, 4, sinceDate),
+          searchGithub(qq, 4, sinceDate, ghH),
+          searchGithubNovos(qq, 4, sinceDate, ghH),
+          searchLemmy(qq, 4),
+          searchNpm(qq, 4),
+          searchArxiv(qq, 4),
           fetchRetry(() => httpJson(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(qq)}`, { timeout: 12000 }), 2).then((r) => {
             if (r.status === 429) had429 = true;
             return r.status === 200 ? { source: "duckduckgo", items: parseDdg(r.text).slice(0, n) } : null;
