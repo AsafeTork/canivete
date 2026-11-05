@@ -7,7 +7,10 @@
 //   - retry: n_webfetch 2 tentativas sleep 1000 (429/5xx/rede); fetchRetry(tries=2, delays 1000+2000) p/ status 0/429/5xx, httpJson nunca lança (rede=status 0).
 //   - paginação: numResults POR FONTE default 8 clamp 1-20 (News/HN/GitHub fixos em 4, Wiki/DDG-html usam n); page default 1 clamp 1..totalPages; perPage default 30 clamp 1-200 (pós-dedupe).
 //   - caps texto: n_webfetch maxChars default 12000 clamp 500-60000; links máx 40; S()=240 / probeMeta=160 / desc=300 / h1=200; trimOut default MAX_OUT=30000 (ctx.mjs).
-import { reg, out, trimOut, httpJson, escapeRe, UA } from "./ctx.mjs";
+import { reg, out, trimOut, httpJson, escapeRe, UA, exec } from "./ctx.mjs";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { cached, cacheSet } from "../core/cache.mjs";
 import { sleep, fetchRetry } from "../core/retry.mjs";
 
@@ -77,8 +80,32 @@ function extractPriceAndJsonld(html) {
 }
 
 // ── webfetch: n_webfetch (cache 15min, timeout 60s, retry 2x) ──
+// PDF (report rmw0tbndj): URL de PDF não vira sopa de bytes — baixa como buffer e extrai
+// o texto LOCAL (pdftotext no disco; nada sai da máquina). Escaneado/sem camada de texto
+// → erro explícito e acionável (não "sucesso vazio").
+async function pdfExtract(res, url) {
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length < 100) return { err: `PDF vazio (${buf.length}B) de ${url}` };
+  const tmp = join(tmpdir(), `canivete-pdf-${Date.now().toString(36)}.pdf`);
+  try {
+    writeFileSync(tmp, buf);
+    const [pt, info] = await Promise.all([
+      exec("pdftotext", ["-layout", tmp, "-"], { timeout: 60000 }),
+      exec("pdfinfo", [tmp], { timeout: 15000 }),
+    ]);
+    const pages = (info.so.match(/Pages:\s+(\d+)/) || [])[1] || null;
+    const txt = pt.code === 0 && pt.so.trim() ? pt.so.replace(/\n{3,}/g, "\n\n").trim() : "";
+    if (!txt) return { err: `PDF baixado (${pages ? `${pages} páginas, ` : ""}${buf.length}B) mas SEM camada de texto (escaneado/imagem?) — alternativa: n_browser_pdf {url:"${url}"} arquia o PDF em /tmp, ou pdftotext manual via n_bash` };
+    return { text: `PDF${pages ? ` ${pages} páginas` : ""} — texto extraído LOCAL (pdftotext; nenhum byte enviado):\n\n${txt}`, title: null, header: "", price: null, currency: null, spa: false, empty: false, pdf: true };
+  } catch (e) {
+    return { err: `PDF baixado mas extração falhou: ${e.message} — alternativa: n_browser_pdf {url:"${url}"}` };
+  } finally {
+    try { unlinkSync(tmp); } catch {}
+  }
+}
+
 reg("n_webfetch", {
-  description: "Baixa URL SEM JS e extrai texto principal + og:price/JSON-LD (tenta <article>/<main>). Retorna título, preço e links. SPA shell/vazio/JS/login-wall/preço dinâmico? NÃO use este — vá de n_browser_navigate (renderiza JS) ou n_ubrowser_* (logado). Erro/DNS vira isError; HTTP>=400 não cacheia.",
+  description: "Baixa URL SEM JS e extrai texto principal + og:price/JSON-LD (tenta <article>/<main>). PDF: detecta e extrai o texto LOCAL (pdftotext). Retorna título, preço e links. SPA shell/vazio/JS/login-wall/preço dinâmico? NÃO use este — vá de n_browser_navigate (renderiza JS) ou n_ubrowser_* (logado). Erro/DNS vira isError; HTTP>=400 não cacheia.",
   inputSchema: {
     type: "object",
     properties: {
@@ -109,11 +136,12 @@ reg("n_webfetch", {
           for (let attempt = 0; attempt < 2; attempt++) {
             try {
               res = await fetch(url, { signal: ac.signal, redirect: "follow", headers: { "user-agent": UA } });
+              const ct0 = (res.headers.get("content-type") || "").toLowerCase();
+              const is429or5xx = res.status === 429 || (res.status >= 500 && res.status < 600);
+              if (is429or5xx && attempt === 0) { await sleep(1000); continue; }
+              // PDF (rmw0tbndj): intercepta ANTES do res.text() (bytes não são texto)
+              if (res.status < 400 && (/pdf/.test(ct0) || (/\.pdf(\?|#|$)/i.test(url) && !/html/.test(ct0)))) return await pdfExtract(res, url);
               raw = await res.text();
-              if ((res.status === 429 || (res.status >= 500 && res.status < 600)) && attempt === 0) {
-                await sleep(1000);
-                continue;
-              }
               break;
             } catch (e) {
               lastErr = e?.message || "fetch error";
