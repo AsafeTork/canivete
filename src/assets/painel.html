@@ -173,6 +173,14 @@ input[type="range"] { flex: 1 1 120px; accent-color: var(--acento); }
 .stbtn[aria-pressed="true"] { color: var(--texto); background: #1f1f1f; border-color: var(--muted); }
 .fb { font: 450 11px/16px 'Geist Mono', ui-monospace, monospace; color: var(--ok); }
 .fb.err { color: var(--erro); }
+/* thumb do report GRÁFICO (elem): a marcação visível na própria linha, não escondida no texto */
+.thumb { height: 40px; width: auto; max-width: 96px; border-radius: 4px; border: 1px solid var(--hairline); object-fit: cover; flex: none; background: var(--card); }
+.shotlink { display: block; justify-self: start; }
+.bigshot { display: block; max-width: 420px; width: 100%; border: 1px solid var(--hairline); border-radius: var(--raio); }
+.bigshot:hover { border-color: var(--muted); }
+/* dot de estado que faltava: "aberto" no card Reports ficava transparente */
+.dt-erro { background: var(--erro); }
+.aguard { color: var(--aviso); font-weight: 450; }
 .dt-erro { background: var(--erro); }
 .nota { display: flex; gap: var(--s8); }
 .nota input { flex: 1; min-width: 0; background: var(--fundo); color: var(--texto); border: 1px solid var(--hairline); border-radius: var(--raio); padding: var(--s8); font: inherit; }
@@ -313,6 +321,14 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
               <option value="js-error">js-error</option><option value="promise">promise</option><option value="net">net</option><option value="console">console</option>
             </select>
           </label>
+          <label>estado
+            <select id="festado">
+              <option value="">tudo</option>
+              <option value="aberto">aberto</option><option value="em_resolução">em resolução</option><option value="resolvido">resolvido</option>
+              <option value="wontfix">wontfix</option><option value="externo">externo</option><option value="ruido">ruído</option>
+              <option value="__sem">sem estado (auto)</option>
+            </select>
+          </label>
           <label>área
             <select id="farea"><option value="">tudo</option></select>
           </label>
@@ -323,7 +339,7 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
         </div>
       </div>
       <div class="card">
-        <div class="cardh">Itens <output class="mono" id="contador" aria-live="polite">…</output></div>
+        <div class="cardh">Itens <span><output class="mono aguard" id="aguardando" aria-live="polite"></output> <output class="mono" id="contador" aria-live="polite">…</output></span></div>
         <div id="lista"></div>
         <div class="vazio" id="vazio" hidden>Nada capturado ainda. Ou nada quebrou — ou abra a página alvo e o mon-hook passa a registrar.</div>
         <div class="vazio" id="semfiltro" hidden>Nada bate com esses filtros. Limpe a busca.</div>
@@ -591,10 +607,12 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
       acc += (el["em_resolução"] || 0) / eTot;
       set("elemdone", acc + (el.resolvido || 0) / eTot);
     } else { set("elemopen", 0); set("elemproc", 0); set("elemdone", 0); }
+    var eAguard = (el.aberto || 0) + (el["em_resolução"] || 0);
     $("elemlegend").innerHTML =
       '<span><i class="dt dt-aviso"></i>aberto <b class="mono">' + (el.aberto || 0) + "</b></span>" +
       '<span><i class="dt dt-mut"></i>em resolução <b class="mono">' + (el["em_resolução"] || 0) + "</b></span>" +
-      '<span><i class="dt dt-ok"></i>resolvido <b class="mono">' + (el.resolvido || 0) + "</b></span>";
+      '<span><i class="dt dt-ok"></i>resolvido <b class="mono">' + (el.resolvido || 0) + "</b></span>" +
+      (eAguard ? '<span class="aguard">' + eAguard + " aguardando você</span>" : "");
 
     var rs = j.captura.report || {}, rord = ["aberto", "em_resolução", "resolvido", "wontfix", "externo", "ruido"];
     var rtot = rord.reduce(function (a, k) { return a + (rs[k] || 0); }, 0);
@@ -603,9 +621,10 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
     $("repstack").innerHTML = rord.filter(function (k) { return rs[k]; }).map(function (k) {
       return '<i class="' + rcls[k][0] + '" style="width:' + (rtot ? Math.round((rs[k] / rtot) * 100) : 0) + '%"></i>';
     }).join("");
+    var rAguard = (rs.aberto || 0) + (rs["em_resolução"] || 0);
     $("replegend").innerHTML = rord.map(function (k) {
       return '<span><i class="dt ' + rcls[k][1] + '"></i>' + k.replace("_", " ") + ' <b class="mono">' + (rs[k] || 0) + "</b></span>";
-    }).join("");
+    }).join("") + (rAguard ? '<span class="aguard">' + rAguard + " aguardando você</span>" : "");
 
     var a = j.arquivos;
     var f = function (o, nome) {
@@ -750,11 +769,14 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
   function aplicarFiltro(itens) {
     var q = $("q").value.trim().toLowerCase();
     var fo = { source: $("fsource").value, kind: $("fkind").value, area: $("farea").value, agent: $("fagent").value };
+    var fst = $("festado").value;
     var filtrados = itens.filter(function (o) {
       if (fo.source && (o.source || "") !== fo.source) return false;
       if (fo.kind && String(o.kind || "") !== fo.kind) return false;
       if (fo.area && String(o.area || "") !== fo.area) return false;
       if (fo.agent && String(o.agent || "") !== fo.agent) return false;
+      if (fst === "__sem") { if (o.status) return false; }
+      else if (fst && String(o.status || "") !== fst) return false;
       if (q) {
         var hay = [o.text, o.got, o.where, o.url].map(function (v) { return String(v || "").toLowerCase(); }).join("\n");
         if (hay.indexOf(q) < 0) return false;
@@ -768,27 +790,35 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
     var kind = String(o.kind || "—");
     var chips = [];
     if (o.area) chips.push(esc(o.area));
+    if (o.grupo) chips.push(esc(o.grupo));
     if (o.agent) chips.push(esc(o.agent));
     var meta = [];
     if (o.status !== null && o.status !== undefined) meta.push(esc(o.status));
     if (o.bytes) meta.push(esc(bytesFmt(o.bytes)));
     if (o.replay) meta.push('<span class="idxnota">replay</span>');
     else if (o.source === "report") meta.push("report");
+    else if (o.source === "elem") meta.push("marcação");
+    // report GRÁFICO: captura da marcação na linha (o dono vê o problema sem abrir nada)
+    var thumb = o.source === "elem" && o.shot ? '<img class="thumb" loading="lazy" src="/elemshots/' + encodeURIComponent(o.id) + '" alt="captura da marcação">' : "";
+    var bigshot = o.source === "elem" && o.shot ? '<a class="shotlink" href="/elemshots/' + encodeURIComponent(o.id) + '" target="_blank" rel="noopener" title="abrir captura em tamanho maior"><img class="bigshot" loading="lazy" src="/elemshots/' + encodeURIComponent(o.id) + '" alt="captura da marcação em tamanho maior"></a>' : "";
     return [
       '<details class="linha"' + (state.abertos[o.id] ? " open" : "") + ' data-id="' + esc(o.id) + '">',
       "<summary>",
       '<span class="pill ' + pillCls(kind) + '">' + esc(kind) + "</span>",
       '<span class="mono quando">' + hhmmss(o.ts) + "</span>",
+      thumb,
       chips.length ? '<span class="chip mono">' + chips.join(" · ") + "</span>" : "",
       '<span class="resumo">' + esc(String(o.got || o.text || o.url || "—").slice(0, 220)) + "</span>",
       '<span class="mono ldireta">' + (meta.length ? meta.join(" · ") : "") + "</span>",
       "</summary>",
       '<div class="aberto">',
+      bigshot,
       '<dl class="meta">',
       "<dt>ts</dt><dd>" + esc(o.ts || "—") + "</dd>",
       "<dt>source</dt><dd>" + esc(o.source || "—") + "</dd>",
       "<dt>id</dt><dd>" + esc(o.id || "—") + "</dd>",
       "<dt>url</dt><dd>" + esc(o.url || "—") + "</dd>",
+      o.grupo ? "<dt>grupo</dt><dd>" + esc(o.grupo) + "</dd>" : "",
       "<dt>área</dt><dd>" + esc(o.area || "—") + "</dd>",
       "<dt>agente</dt><dd>" + esc(o.agent || "—") + "</dd>",
       "<dt>app</dt><dd>" + esc(o.app || "—") + "</dd>",
@@ -815,10 +845,25 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
     $("semfiltro").hidden = vazia || filtrados.length > 0 || state.healthDown;
     $("falanet").hidden = !state.healthDown;
     $("contador").textContent = filtrados.length + " de " + state.raw.length;
+    var nAguard = filtrados.filter(function (o) { return o.status === "aberto" || o.status === "em_resolução"; }).length;
+    $("aguardando").textContent = nAguard ? nAguard + " aguardando você ·" : "";
     if (vazia && !state.healthDown) { $("lista").innerHTML = ""; return; }
     var grupos = {};
     filtrados.forEach(function (o) { var k = String(o.kind || "?"); (grupos[k] = grupos[k] || []).push(o); });
-    var ordem = Object.keys(grupos).sort(function (a, b) { return grupos[b].length - grupos[a].length; });
+    // triagem: dentro do grupo aberto → em resolução → resto; empate = mais recente primeiro
+    var peso = function (o) { return o.status === "aberto" ? 0 : (o.status === "em_resolução" ? 1 : 2); };
+    var aguard = function (arr) { return arr.filter(function (o) { return o.status === "aberto" || o.status === "em_resolução"; }).length; };
+    Object.keys(grupos).forEach(function (k) {
+      grupos[k].sort(function (a, b) {
+        var d = peso(a) - peso(b);
+        return d !== 0 ? d : String(b.ts || "").localeCompare(String(a.ts || ""));
+      });
+    });
+    // grupos com mais coisas aguardando você vêm primeiro; empate = grupo maior primeiro
+    var ordem = Object.keys(grupos).sort(function (a, b) {
+      var d = aguard(grupos[b]) - aguard(grupos[a]);
+      return d !== 0 ? d : grupos[b].length - grupos[a].length;
+    });
     var maxG = Math.max.apply(null, ordem.map(function (k) { return grupos[k].length; }).concat([1]));
     $("lista").innerHTML = ordem.map(function (k) {
       return '<div class="grupo"><span class="pill ' + pillCls(k) + '">' + esc(k) + "</span>" +

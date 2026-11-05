@@ -33,9 +33,10 @@ const RECONNECT_BACKOFF_MS = 1000;
 
 // TEXT-FIRST: navegador em background só texto; render full só no print (screenshot/pdf).
 // Desativa com CANIVETE_BROWSER_FULLRENDER=1 (retorna ao comportamento anterior, sem bloqueio).
-// NOTA: --blink-settings=imagesEnabled=false (launch) já corta imagens no renderer;
-// o bloqueio via Network.setBlockedURLs abaixo é reversível por aba (full render via urls:[]),
-// sem tocar em Stylesheet (que quebraria layout p/ print).
+// NOTA: imagens são cortadas SÓ via Network.setBlockedURLs (reversível por aba, full render
+// via urls:[]) — NÃO usar --blink-settings=imagesEnabled=false no launch: ele corta no
+// renderer e é irreversível, ou seja, o "full render" do screenshot saía sem imagens
+// (página mentida na evidência visual). Sem tocar em Stylesheet (que quebraria layout p/ print).
 const TEXT_BLOCK_URLS = [
   "*.png*", "*.jpg*", "*.jpeg*", "*.gif*", "*.webp*", "*.svg*", "*.ico*", "*.avif*", "*.bmp*", "*.tif*", "*.tiff*",
   "*.mp4*", "*.webm*", "*.mp3*", "*.wav*", "*.ogg*", "*.oga*", "*.ogv*", "*.flac*", "*.avi*", "*.mov*", "*.m4v*", "*.m4a*", "*.opus*",
@@ -136,7 +137,6 @@ async function ensureBrowser() {
       chromeChild = spawn(CHROME_BIN, [
         "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
         "--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking",
-        "--blink-settings=imagesEnabled=false",
         ...(isLowMemEnabled() ? LOWMEM_FLAGS : []),
         `--remote-debugging-port=${port}`,
         `--user-data-dir=${CHROME_PROFILE}`, "about:blank",

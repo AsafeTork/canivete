@@ -331,6 +331,7 @@ export function erForPainel() {
           where: `${r.base_url}${r.page && r.page.url ? " · " + String(r.page.url).slice(0, 120) : ""}`,
           url: String((r.page && r.page.url) || r.base_url || "").slice(0, 300),
           area: r.area || null, agent: (r.resolucao && r.resolucao.por) || null, elem: r.id,
+          shot: erShotPath(r.id) ? true : false, // painel mostra a captura da marcação (report gráfico)
         });
       } catch {}
     }
