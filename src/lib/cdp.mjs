@@ -410,6 +410,105 @@ const PAGE_SNAPSHOT_JS = `(() => {
   });
 })()`;
 
+// EXTRACT: 1 evaluate = TODA a info da página estruturada (meta/OG/JSON-LD, texto principal
+// readability-lite, títulos hierárquicos, TABELAS como rows+md, listas, links dedupe, imagens
+// com alt, formulários com campos/labels/opções). Caps embutidos na expressão — zero 2º RTT.
+// Seletor opcional escopa tudo a um container; sem seletor, escolhe <article>/<main> quando
+// tem corpo (fallback body). innerText já ignora display:none (nav/rodapé fora do escopo).
+function pageExtractJs(caps) {
+  const k = caps || {};
+  const maxChars = Math.min(Math.max(Number(k.maxChars) || 12000, 500), 40000);
+  const maxTables = Math.min(Math.max(Number(k.maxTables) || 10, 0), 30);
+  const maxLists = Math.min(Math.max(Number(k.maxLists) || 8, 0), 20);
+  const maxLinks = Math.min(Math.max(Number(k.maxLinks) || 50, 0), 200);
+  const maxImages = Math.min(Math.max(Number(k.maxImages) || 20, 0), 100);
+  const maxForms = Math.min(Math.max(Number(k.maxForms) || 10, 0), 30);
+  const sel = k.selector ? String(k.selector).slice(0, 300) : "";
+  const scopeJs = sel
+    ? `try { var se = document.querySelector(${JSON.stringify(sel)}); if (se) { root = se; scope = 'seletor:' + ${JSON.stringify(sel)}; } } catch (e) {}`
+    : `try { var cand = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role=main]'); if (cand && (cand.innerText || '').trim().length > 300) { root = cand; scope = 'principal:' + cand.tagName.toLowerCase(); } } catch (e) {}`;
+  return `(() => {
+  var CAPT = ${maxChars}, CAPTAB = ${maxTables}, CAPLST = ${maxLists}, CAPLNK = ${maxLinks}, CAPIMG = ${maxImages}, CAPFRM = ${maxForms};
+  var root = document.body, scope = 'body';
+  ${scopeJs}
+  var q = (s, e) => Array.from((e || root).querySelectorAll(s));
+  var txt = (e) => ((e && (e.innerText || e.textContent)) || '').replace(/\\s+/g, ' ').trim();
+  var cs = (s, n) => String(s || '').slice(0, n);
+  var meta = (n) => { var m = document.querySelector('meta[name="' + n + '"],meta[property="' + n + '"]'); return m ? cs(m.content, 300) : ''; };
+  var jsonld = [];
+  Array.from(document.querySelectorAll('script[type="application/ld+json"]')).slice(0, 5).forEach(function (s) { try { jsonld.push(JSON.stringify(JSON.parse(s.textContent)).slice(0, 2500)); } catch (e) {} });
+  var headings = q('h1,h2,h3,h4,h5,h6').slice(0, 60).map(function (h) { return { l: Number(h.tagName[1]), t: cs(txt(h), 160) }; }).filter(function (h) { return h.t; });
+  var text = cs(root.innerText || '', CAPT);
+  var tables = q('table').slice(0, CAPTAB).map(function (t) {
+    var rows = q('tr', t).slice(0, 30).map(function (tr) { return q('th,td', tr).slice(0, 10).map(function (td) { return cs(txt(td), 100); }); });
+    if (!rows.length || !rows[0].length) return null;
+    var prev = t.previousElementSibling;
+    var md = rows.slice(0, 12).map(function (r, i) { return '| ' + r.join(' | ') + ' |' + (i === 0 ? '\\n|' + r.map(function () { return '---'; }).join('|') + '|' : ''); }).join('\\n');
+    return { caption: cs((t.caption && txt(t.caption)) || (prev && /^h[1-6]$/.test(prev.tagName) ? txt(prev) : '') || '', 120), rows: rows, md: md };
+  }).filter(Boolean);
+  var lists = q('ul,ol').slice(0, CAPLST).map(function (l) { return { items: q('li', l).slice(0, 15).map(function (li) { return cs(txt(li), 160); }).filter(Boolean) }; }).filter(function (x) { return x.items.length > 1; });
+  var seen = new Set(); var links = [];
+  for (var i = 0; i < q('a[href]').length && links.length < CAPLNK; i++) {
+    var a = q('a[href]')[i], h = a.href, t2 = cs(txt(a), 80);
+    if (!h || h.indexOf('javascript:') === 0 || seen.has(h) || !t2) continue;
+    seen.add(h); links.push({ t: t2, h: h });
+  }
+  var images = q('img[src]').slice(0, CAPIMG).map(function (im) { return { s: cs(im.currentSrc || im.src, 300), a: cs(im.alt, 120) }; }).filter(function (im) { return im.s && im.s.indexOf('data:') !== 0; });
+  var forms = q('form').slice(0, CAPFRM).map(function (f) {
+    return {
+      name: cs(f.name || f.id || '', 80),
+      fields: q('input,select,textarea', f).slice(0, 25).map(function (el) {
+        var tg = el.tagName.toLowerCase(), ty = tg === 'input' ? (el.type || 'text') : tg;
+        var lbl = '';
+        if (el.id) { var L = document.querySelector('label[for="' + el.id + '"]'); if (L) lbl = cs(txt(L), 100); }
+        if (!lbl) { var w = el.closest('label'); if (w) lbl = cs(txt(w), 100); }
+        if (!lbl) lbl = cs(el.placeholder || el.name || '', 100);
+        var fl = { n: cs(el.name || el.id || '', 60), t: ty, lbl: lbl, v: cs(el.value || '', 120) };
+        if (el.required || el.getAttribute('aria-required') === 'true') fl.req = 1;
+        if (tg === 'select') fl.o = Array.from(el.options || []).slice(0, 8).map(function (op) { return cs(op.text, 60); });
+        return fl;
+      }),
+    };
+  });
+  // GRÁFICOS/elementos visuais: svg (labels/texto = valores de gráfico SVG), canvas (gráfico
+  // raster — dataURL salvo em arquivo p/ o agente VER), figcaption, background-image, mídia.
+  var svg = q('svg').slice(0, 10).map(function (s) {
+    var tt = s.querySelector('title,text');
+    return {
+      vb: s.getAttribute('viewBox') || '',
+      nome: cs(s.getAttribute('aria-label') || (tt && txt(tt)) || '', 120),
+      textos: q('text,tspan', s).slice(0, 20).map(function (x) { return cs(txt(x), 60); }).filter(Boolean),
+      paths: s.querySelectorAll('path,rect,circle,polyline,polygon,line').length,
+      fills: Array.from(new Set(Array.from(s.querySelectorAll('[fill]')).map(function (p) { return p.getAttribute('fill'); }).filter(function (f) { return f && f !== 'none'; }))).slice(0, 8),
+    };
+  }).filter(function (s) { return s.nome || s.textos.length || s.paths; });
+  var canvas = q('canvas').slice(0, 10).map(function (cn) {
+    var d = null;
+    try { d = cn.width && cn.height ? cn.toDataURL('image/png') : null; } catch (e) { d = 'tainted'; }
+    return { n: cs(cn.id || cn.className || '', 80), w: cn.width, h: cn.height, png: d && d !== 'tainted' ? d : null, tainted: d === 'tainted' ? 1 : undefined };
+  });
+  var figs = q('figure').slice(0, 10).map(function (fg) {
+    var im = fg.querySelector('img'), fc = fg.querySelector('figcaption');
+    return { img: im ? cs(im.currentSrc || im.src || '', 300) : '', caption: fc ? cs(txt(fc), 200) : '' };
+  }).filter(function (f) { return f.img || f.caption; });
+  var bgs = q('[style*="background"]').slice(0, 15).map(function (e) {
+    var m = (e.getAttribute('style') || '').match(/url\\((['"]?)([^)'"]+)\\1\\)/);
+    return m ? { s: cs(m[2], 300), el: e.tagName.toLowerCase() } : null;
+  }).filter(Boolean);
+  var midia = {
+    video: q('video source,video[src]').slice(0, 6).map(function (v) { return cs(v.getAttribute('src') || v.src || v.getAttribute('poster') || '', 300); }).filter(Boolean),
+    iframe: q('iframe[src]').slice(0, 6).map(function (f) { return cs(f.src, 300); }),
+  };
+  return {
+    url: location.href, title: document.title, lang: document.documentElement.lang || '', scope: scope,
+    desc: cs(meta('description') || meta('og:description'), 300), ogTitle: meta('og:title'), ogImage: meta('og:image'),
+    canonical: (document.querySelector('link[rel=canonical]') || {}).href || '',
+    jsonld: jsonld, headings: headings, text: text, tables: tables, lists: lists, links: links, images: images, forms: forms,
+    graficos: { svg: svg, canvas: canvas, figuras: figs, backgrounds: bgs, midia: midia },
+  };
+})()`;
+}
+
 const RESOLVE_JS = (sel) => `(() => {
   const sel = ${JSON.stringify(sel)};
   if (sel.startsWith('text=')) {
@@ -620,4 +719,4 @@ async function ownerCdpSend(match, method, params = {}) {
 }
 function ownerCdpAvailable() { return !!ownerActivePort(); }
 
-export { ensureBrowser, withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, cdpSetViewport, cdpClearViewport, isTextFirstEnabled, TEXT_BLOCK_URLS, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN, CDP_PORT, ownerCdpSend, ownerCdpAvailable };
+export { ensureBrowser, withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, cdpSetViewport, cdpClearViewport, isTextFirstEnabled, TEXT_BLOCK_URLS, PAGE_SNAPSHOT_JS, RESOLVE_JS, pageExtractJs, CHROME_BIN, CDP_PORT, ownerCdpSend, ownerCdpAvailable };

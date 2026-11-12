@@ -58,7 +58,8 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 
 | Tool | Uso |
 |---|---|
-| `n_browser_navigate` | SPA com JS (título+texto+links; `waitMs`, `cookies`). |
+| `n_browser_navigate` | SPA com JS (título+texto+links; `waitMs`, `cookies`; `extract:true` = extração completa). |
+| `n_browser_extract` | **1 call = página inteira estruturada**: texto principal + títulos + tabelas (md) + listas + links + imagens + formulários (campos/labels/opções) + GRÁFICOS (canvas→PNG no disco p/ ver, svg com labels/valores/fills, figcaption, bg-image, mídia) + meta/OG/JSON-LD. `selector` CSS escopa. |
 | `n_browser_snapshot` | Interativos (`compact:true` −60% tokens). |
 | `n_browser_act` | goto/click/fill/press/scroll/wait/`evaluate` (`console:true` = 30 logs). |
 | `n_browser_screenshot` | PNG página/elemento (`selector`, `fullPage`). |

@@ -74,7 +74,7 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 
 | Tool | Para que (1 linha) |
 |---|---|
-| `n_browser_navigate` | Navega renderizando JS/SPA; retorna título+texto+links (`waitMs`, `cookies`). |
+| `n_browser_navigate` | Navega renderizando JS/SPA; título+texto+links (`waitMs`, `cookies`) — `extract:true` = extração completa (tabelas/forms/gráficos) na mesma call. |
 | `n_browser_snapshot` | Elementos interativos da página (`compact:true` economiza ~60% tokens). |
 | `n_browser_act` | Interage via CDP: goto/click/fill/press/scroll/wait/`evaluate` (+ `console:true` p/ logs). |
 | `n_browser_screenshot` | PNG da página ou de um elemento (`selector`, `fullPage`, `scale`). |

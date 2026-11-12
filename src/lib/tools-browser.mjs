@@ -6,10 +6,28 @@ import { tmpdir, homedir } from "node:os";
 import { reg, devOut, trimOut, fpath, humanSize, exec } from "./ctx.mjs";
 import { sleep } from "../core/retry.mjs";
 import { probeMeta, mainContent } from "./web.mjs";
-import { withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, cdpSetViewport, cdpClearViewport, PAGE_SNAPSHOT_JS, RESOLVE_JS, CHROME_BIN as CHROME_BIN_CDP } from "./cdp.mjs";
+import { withCdp, cdpGoto, cdpState, shotFile, cdpDrainConsole, cdpElementClip, cdpCookies, cdpSetTextFirst, cdpSetFullRender, cdpSetViewport, cdpClearViewport, PAGE_SNAPSHOT_JS, RESOLVE_JS, pageExtractJs, CHROME_BIN as CHROME_BIN_CDP } from "./cdp.mjs";
 
-// --- Otimizações locais (sem tocar cdp.mjs) ---
-// 1) CHROME_BIN autodetect: env > candidatos comuns > export do cdp.mjs > PATH.
+// canvas do extract: dataURL (gráfico raster) → arquivo PNG no /tmp; o agente LÊ a imagem
+// (view de imagem) em vez de receber MB de base64 no contexto. Tainted canvas segue como nota.
+async function salvaCanvasPng(ex) {
+  const g = ex && ex.graficos;
+  if (!g || !Array.isArray(g.canvas)) return ex;
+  for (let i = 0; i < g.canvas.length; i++) {
+    const c = g.canvas[i];
+    if (c && typeof c.png === "string" && c.png.startsWith("data:image/png;base64,")) {
+      try {
+        const f = join(tmpdir(), `opencode-canvas-${Date.now().toString(36)}-${i}.png`);
+        const b = Buffer.from(c.png.slice(22), "base64");
+        await writeFile(f, b);
+        g.canvas[i] = { n: c.n, w: c.w, h: c.h, file: f, bytes: b.length };
+      } catch {}
+    }
+  }
+  return ex;
+}
+
+// --- Otimizações locais (sem tocar cdp.mjs) ---// 1) CHROME_BIN autodetect: env > candidatos comuns > export do cdp.mjs > PATH.
 const CHROME_BIN = (() => {
   const fromEnv = (process.env.CANIVETE_CHROME_BIN || process.env.CHROME_BIN || "").trim();
   if (fromEnv) return fromEnv;
@@ -129,17 +147,51 @@ async function withCdpRetry(fn, opts, label = "CDP") {
   }
 }
 
+reg("n_browser_extract", {
+  description: "EXTRAÇÃO COMPLETA em 1 call: texto principal (escolhe <article>/<main> sozinho) + títulos hierárquicos + TABELAS estruturadas (rows + markdown) + listas + links dedupe + imagens com alt + FORMULÁRIOS (campos/label/tipo/valor/opções de select) + GRÁFICOS/visuais: canvas de gráfico salvo em PNG no disco (leia o arquivo p/ VER o gráfico), svg com labels/textos/fills (valores de gráfico SVG), figcaption, background-image, video/iframe + meta/OG + JSON-LD. Fim da era de 3-5 calls + evaluate ad-hoc pra achar dado estruturado. url opcional (navega na mesma call); selector CSS escopa tudo (ex: \"#app\", \"table.turmas\"); caps por arg. SPA renderiza (Chrome headless). Quer ver a página inteira? n_browser_screenshot; quer clicar? n_browser_act; estática sem JS? n_webfetch.",
+  inputSchema: { type: "object", properties: { url: { type: "string", description: "opcional: navega antes de extrair — 1 call = goto + extract completo" }, selector: { type: "string", description: "CSS p/ escopar a extração a um container (ex: \"#app\", \"table.turmas\", \"main .produtos\"); sem seletor = <article>/<main> automático (fallback body)" }, maxChars: { type: "number", default: 12000, description: "cap do texto principal (500-40000)" }, maxTables: { type: "number", default: 10 }, maxLinks: { type: "number", default: 50 }, maxImages: { type: "number", default: 20 }, maxForms: { type: "number", default: 10 } }, required: [] },
+  run: async ({ url, selector, maxChars, maxTables, maxLinks, maxImages, maxForms }) => {
+    const t0 = Date.now();
+    if (url) { try { assertSafeUrl(url); } catch (e) { return devOut({ status: "error", summary: e.message, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } }); } }
+    try {
+      const ex = await withCdpRetry(async ({ send }) => {
+        await cdpSetTextFirst(send); // imagens bloqueadas na rede = carrega MAIS rápido (src segue no DOM)
+        if (url) await cdpGoto(send, url, 4000);
+        const r = await send("Runtime.evaluate", { expression: pageExtractJs({ selector, maxChars, maxTables, maxLinks, maxImages, maxForms }), returnByValue: true }, 20000);
+        return r.result?.value || null;
+      }, { url: url || "aba atual" }, "n_browser_extract");
+      if (!ex || !ex.url) return devOut({ status: "error", summary: "extract sem resultado: aba vazia (about:blank)? passe {url:...}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+      await salvaCanvasPng(ex);
+      const cnv = (ex.graficos?.canvas || []).filter((c) => c.file);
+      return devOut({ summary: `${ex.title || "(sem título)"} — ${ex.url} · texto ${(ex.text || "").length} chars${ex.tables?.length ? ` · ${ex.tables.length} tabela(s)` : ""}${ex.forms?.length ? ` · ${ex.forms.length} form(s)` : ""}${ex.jsonld?.length ? ` · JSON-LD` : ""}${cnv.length ? ` · ${cnv.length} canvas→PNG (${cnv.map((c) => c.file).join(", ")})` : ""}${ex.graficos?.svg?.length ? ` · ${ex.graficos.svg.length} svg` : ""} [escopo: ${ex.scope}]`, data: ex, telemetry: { execution_time_ms: Date.now() - t0 }, next: ex.tables?.length || ex.forms?.length ? [] : [{ tool: "n_browser_snapshot", reason: "Sem tabelas/forms — mapear elementos interativos" }] });
+    } catch (e) {
+      return devOut({ status: "error", summary: `extract falhou: ${e.message} — confira CHROME_BIN/porta CDP ou use n_webfetch (estático)`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    }
+  },
+});
+
 reg("n_browser_navigate", {
-  description: "Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. cookies:true inclui cookies da página. Sem JS? n_webfetch é mais barato. Página logada do dono? n_ubrowser_read (headless não tem sessão). Ex: {url:\"http://localhost:5173\", waitMs:5000, cookies:true}.",
-  inputSchema: { type: "object", properties: { url: { type: "string" }, waitMs: { type: "number", default: 4000 }, cookies: { type: "boolean", description: "Retorna cookies da página via CDP" } }, required: ["url"] },
-  run: async ({ url, waitMs, cookies }) => {
+  description: "Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. extract:true TROCA o blob por extração completa (tabelas md/forms/meta/JSON-LD — igual n_browser_extract; 1 call total). cookies:true inclui cookies da página. Sem JS? n_webfetch é mais barato. Página logada do dono? n_ubrowser_read (headless não tem sessão). Ex: {url:\"http://localhost:5173\", waitMs:5000, cookies:true} · {url, extract:true}.",
+  inputSchema: { type: "object", properties: { url: { type: "string" }, waitMs: { type: "number", default: 4000 }, cookies: { type: "boolean", description: "Retorna cookies da página via CDP" }, extract: { type: "boolean", description: "true = extração completa no lugar do blob de texto (tabelas/listas/forms/meta/JSON-LD — 1 call total)" } }, required: ["url"] },
+  run: async ({ url, waitMs, cookies, extract }) => {
     const t0 = Date.now();
     if (!url) return devOut({ status: "error", summary: "url obrigatória — chame n_browser_navigate com {url:\"https://exemplo.com\", waitMs:5000}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     try { assertSafeUrl(url); } catch (e) { return devOut({ status: "error", summary: e.message, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } }); }
     try {
-      const state = await withCdpRetry(async ({ send }) => { await cdpSetTextFirst(send); await cdpGoto(send, url, waitMs); const st = await cdpState(send); if (cookies) { try { st.cookies = await cdpCookies(send); } catch (e) { st.cookiesError = e.message; } } return st; }, { url }, "n_browser_navigate");
+      const state = await withCdpRetry(async ({ send }) => {
+        await cdpSetTextFirst(send); await cdpGoto(send, url, waitMs);
+        const st = await cdpState(send);
+        if (cookies) { try { st.cookies = await cdpCookies(send); } catch (e) { st.cookiesError = e.message; } }
+        if (extract) { try { const er = await send("Runtime.evaluate", { expression: pageExtractJs({}), returnByValue: true }, 20000); st.extract = er.result?.value || null; await salvaCanvasPng(st.extract); } catch (e) { st.extractError = e.message; } }
+        return st;
+      }, { url }, "n_browser_navigate");
       const ms = Date.now() - t0;
-      return devOut({ summary: `${state.title || "(sem título)"} — ${state.url || url} (${(state.text || "").length} chars)`, data: { ...state, text: trimOut(state.text || "", 6000), ms }, telemetry: { execution_time_ms: ms }, next: [{ tool: "n_browser_snapshot", reason: "Mapear elementos clicáveis" }, { tool: "n_browser_screenshot", reason: "Evidência visual" }], refs: [] });
+      const ex = state.extract;
+      if (ex && ex.url) {
+        return devOut({ summary: `${ex.title || "(sem título)"} — ${ex.url} · texto ${(ex.text || "").length} chars${ex.tables?.length ? ` · ${ex.tables.length} tabela(s)` : ""}${ex.forms?.length ? ` · ${ex.forms.length} form(s)` : ""}${ex.jsonld?.length ? ` · JSON-LD` : ""} [extração completa]`, data: { extract: ex, ms }, telemetry: { execution_time_ms: ms }, next: ex.tables?.length || ex.forms?.length ? [] : [{ tool: "n_browser_snapshot", reason: "Sem tabelas/forms — mapear elementos interativos" }], refs: [] });
+      }
+      const { extract: _ex, ...stRest } = state;
+      return devOut({ summary: `${state.title || "(sem título)"} — ${state.url || url} (${(state.text || "").length} chars)${state.extractError ? ` | extract falhou: ${state.extractError}` : ""}`, data: { ...stRest, text: trimOut(state.text || "", 6000), ms }, telemetry: { execution_time_ms: ms }, next: [{ tool: "n_browser_snapshot", reason: "Mapear elementos clicáveis" }, { tool: "n_browser_screenshot", reason: "Evidência visual" }], refs: [] });
     } catch (e) {
       // fallback: dump-dom single-shot (sem CDP)
       const r = await exec(CHROME_BIN, ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--virtual-time-budget=5000", "--dump-dom", url], { timeout: BROWSER_TIMEOUT_MS });
