@@ -1,0 +1,12 @@
+# Resumo Observabilidade Universal — 28/10/2026 11:09
+extension/mon-hook.js               185 linhas
+extension/background.js            1309 linhas
+extension/content.js               2605 linhas
+extension/manifest.json              13 linhas
+src/lib/ubridge.mjs                 407 linhas
+src/assets/painel.html              618 linhas
+src/assets/uierr.js                 150 linhas
+src/assets/rrweb.umd.min.js         173 linhas
+src/lib/tools-owner.mjs             709 linhas
+README.md                           308 linhas
+docs/SKILL.md                       170 linhas

@@ -82,7 +82,7 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 | `n_audio_analyze` | Análise de áudio LOCAL (ffprobe/ffmpeg no disco): duração, codec, loudness LUFS (ebur128) e mapa de silêncios = pontos de corte pra montagem de vídeo — zero upload. |
 | `n_browser_pdf` | PDF da página em `/tmp` (exportar relatório/evidência). |
 
-### Chrome LOGADO do dono via extensão (6)
+### Chrome LOGADO do dono via extensão (7)
 
 | Tool | Para que (1 linha) |
 |---|---|
@@ -92,6 +92,7 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 | `n_ubrowser_snapshot` | Clicáveis (`max`+`offset`; `find` localiza ±3 contexto; `layer:"modal\|menu\|popover\|tooltip"` foca só a camada; `scan` antes p/ virtualizada; `shadow:` p/ web components; refs morrem na navegação). |
 | `n_ubrowser_act` | Automação no Chrome logado (mira: selector, `ref` do snapshot ou `text:"trecho"`; `fill` substitui, `type` anexa; `wait`=waitMs; `console` lê erros+rede — erros chegam sozinhos via push; `tooltip`/`catchup`/`aesthetic` sem clique; `expectUrl/Text/Gone` afirma sem reler; `snap:true` pós-navegação economiza 1 call; clique retorna `verified`; `elem_pick` abre o modo de marcação do dono na página; **limitação (CSP, clique/fill sintético ignorado, shadow DOM/iframe) → `cdp` dentro do act** (Runtime.evaluate imune a CSP, Input trusted; em TESTE fique no clique sintético de usuário real — cdp é escalada pós-falha, não atalho); alto risco exige `confirm`). |
 | `n_ubrowser_shot` | Print só da aba **VISÍVEL** (fundo não imprime — use `n_browser_screenshot` p/ fundo; confirme ação via `verified`/`delta` antes de printar). |
+| `n_ubrowser_alerts` | **Vigia de avisos**: drena erros de console/rede que a extensão empurrou sozinha (o hint 📬 nas respostas aponta pra cá; `since`=ISO/ms traz só o novo; persistido no painel — não perde no reboot). |
 
 ### Reports de elemento (2) — o dono marca na página, o agente resolve
 
@@ -99,6 +100,16 @@ Reative com `CANIVETE_TASK_ENABLE=1` no ambiente do serviço.
 |---|---|
 | `n_elemreports_list` | Reports de um site por `base_url` (origem normalizada; default = pendentes) com snapshot estático por elemento (seletor estável, fingerprint texto/papel, role/data-testid, outerHTML, rect). |
 | `n_elemreports_resolve` | Ciclo de vida com prova: `em_resolução` → `resolvido` (`proof` = antes/depois; some do highlight e vira histórico; `aberto` reabre). |
+
+### Android (ADB) (5) — WiFi rápido + a tela do celular em 1 call
+
+| Tool | Para que (1 linha) |
+|---|---|
+| `n_adb_status` | Devices ADB (USB/WiFi), versão, perfil WiFi salvo — reconecta sozinho se o perfil existir. Sem device → o erro traz os passos de pareamento. |
+| `n_adb_connect` | WiFi com perfil persistente: `{}` sem args (device em cabo → `tcpip 5555` → conecta pelo wlan0 e **salva o perfil** — pode tirar o cabo), `{ip,port}` direto, `{ip,pairPort,code}` pareamento por código (portas ≠: a do diálogo de PAREAMENTO não é a de conexão). Dali em diante toda tool reconecta sozinha. |
+| `n_adb_extract` | **1 RTT = tela inteira** (o `n_browser_extract` do celular): hierarquia de UI (texto/content-desc/coords/**centro pronto p/ tap**/clickable/scrollable), app em foco, resolução, bateria, apps de usuário, notificações; extras por `fields`: `media` (galeria), `files` (Downloads), `logcat` (erros recentes), `clipboard`. |
+| `n_adb_act` | Age no Android: tap por **texto** (acha o rótulo na tela e toca o centro — 1 call) ou x/y, digitar texto, `key` (BACK/HOME/ENTER/…), `swipe`, `open` app, `pull`/`push`, `wake`; `install`/`uninstall`/`clear` = **destrutivo, exige `confirm:"<frase ≥4>"`**. O input do adb É o toque do usuário real. |
+| `n_adb_screen` | Screenshot → PNG no disco (leia o arquivo p/ VER a tela — o extract dá a estrutura, a imagem dá o visual). |
 
 Fluxo: *"no nosso site https://exemplo.com tem erros que reportei"* → `n_elemreports_list {base_url}` (filtro `grupo` = escopo que o dono digitou) → resolva um a um com prova. Marcação: popup → "Marcar o que está quebrado" (ou `act {action:"elem_pick"}`) — hit-test por camadas com **Tab ciclando** (alcança sob modal/banner e `pointer-events:none`), 1..N elementos por pack, ✕ no canto de cada seleção, caixa acoplada ao contorno com **grupo + prompt**, Enter salva / Cancelar aborta; chip numerado clicável abre o editor do pack (nota, grupo, ±elementos, apagar). Store: `~/.config/canivete/reports-elementos.jsonl` (append-only + dedupe por seletor+nota+grupo; nunca cookie/header/senha).
 

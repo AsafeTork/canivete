@@ -1,0 +1,34 @@
+# E2E bridge standalone (UB_PORT=19424) — 28/10/2026 11:07:55
+[native-mcp] ubrowser bridge em http://127.0.0.1:19424
+== 1. GET /health (sem token) ==
+{"ok":true,"queue":0,"connected":0}
+== 2. POST /replay SEM token (espera 401) ==
+[native-mcp] ubrowser 401 /replay token=...
+HTTP 401
+== 3. POST /replay COM token (espera ok:true+id) ==
+{"ok":true,"id":"rpmvs6vtb0jxyo"}
+== 4. GET /replays/rpmvs6vtb0jxyo (espera JSON gravado) ==
+{"clientId":"e2e","t":1793196477000,"url":"http://demo.local/autenticacao","tags":{"area":"autenticacao","agent":"agente-demo"},"err":{"kind":"js-error","text":"[demo] [401] ERR_INVALID_CREDENTIALS","status":401},"rrweb":[{"type":4,"data":{"href":"http://demo.local/autenticacao","width":1280,"height
+== 5. GET /api/issues?limit=10 (espera item sintético) ==
+ok: true count: 10
+ - auto js-error | [demo] [401] ERR_INVALID_CREDENTIALS | area: autenticacao | replay: rpmvs6vtb0jxyo
+ - report bug |  | area: undefined | replay: -
+ - report bottleneck |  | area: undefined | replay: -
+== 6. GET /painel (espera 200 html) ==
+HTTP 200 text/html; charset=utf-8 27633B
+== 7. GET /assets/rrweb.umd.min.js (espera 200 ~265KB) ==
+HTTP 200 265269B
+== 8. GET /uierr.js (espera 200 js) ==
+HTTP 200 text/javascript; charset=utf-8
+== 9. GET públicos sem token (espera 200) ==
+/painel → HTTP 200
+/uierr.js → HTTP 200
+/api/issues → HTTP 200
+/health → HTTP 200
+== 10. painel.html sem porta hard-coded (espera vazio) ==
+OK — nenhuma porta no HTML (paths relativos)
+== 11. rotas usadas no JS do painel ==
+      1 "/api/issues?limit=500"
+      2 "/assets/
+      1 "/health"
+      1 "/replays/

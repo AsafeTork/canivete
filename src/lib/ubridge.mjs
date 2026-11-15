@@ -72,19 +72,38 @@ function ubNextIdx(extId) {
 // Ring global (cap 30) + contador não-lidos; `console` marca lido; hint nas respostas.
 const ubAlerts = [];
 let ubAlertsUnread = 0;
+// dedupe de persistência: mesmo kind|text|url dentro de 10min grava 1× só no mon-log
+// (páginas que erram em loop não lotam o painel; o ring em memória segue completo)
+const ubAlertsSeen = new Map();
 function ubAlertsPush(tabId, title, url, entries) {
   try {
+    const now = Date.now();
     for (const e of (Array.isArray(entries) ? entries : []).slice(0, 3)) {
-      ubAlerts.push({ at: new Date().toISOString(), tabId, title: String(title || "").slice(0, 80), url: String(url || "").slice(0, 120), kind: e.kind, level: e.level, text: String(e.text || e.url || "").slice(0, 220), status: e.status ?? null });
+      const alert = { at: new Date().toISOString(), tabId, title: String(title || "").slice(0, 80), url: String(url || "").slice(0, 120), kind: e.kind, level: e.level, text: String(e.text || e.url || "").slice(0, 220), status: e.status ?? null };
+      ubAlerts.push(alert);
+      // vigia persiste no mon-log (source:"auto") — painel lê junto do inbox n_report
+      const key = `${e.kind}|${alert.text}|${alert.url}`;
+      if (!(ubAlertsSeen.get(key) > now - 600000)) {
+        ubAlertsSeen.set(key, now);
+        ubMonLogAppend({ id: "ub" + now.toString(36) + Math.random().toString(36).slice(2, 6), ts: alert.at, source: "auto", kind: String(e.kind || "console").slice(0, 20), text: alert.text, status: e.status ?? null, url: alert.url, area: null, agent: null, app: null });
+      }
     }
+    if (ubAlertsSeen.size > 200) for (const [k, ts] of ubAlertsSeen) if (ts <= now - 600000) ubAlertsSeen.delete(k);
     while (ubAlerts.length > 30) ubAlerts.shift();
     ubAlertsUnread++;
   } catch {}
 }
 function ubAlertsPending() { return ubAlertsUnread; }
 function ubAlertsRead() { const n = ubAlertsUnread; ubAlertsUnread = 0; return n; }
+// drena o ring p/ o agente (tool n_ubrowser_alerts): `since` (ms ou ISO) filtra; lida = drena
+function ubAlertsList(since) {
+  const ms = typeof since === "number" ? since : since ? Date.parse(String(since)) : 0;
+  const list = (Number.isFinite(ms) && ms > 0 ? ubAlerts.filter((a) => Date.parse(a.at) >= ms) : ubAlerts.slice()).slice(-30);
+  ubAlertsUnread = 0;
+  return list;
+}
 function ubAlertsHint() {
-  return ubAlertsUnread > 0 ? ` 📬 ${ubAlertsUnread} alerta(s) novo(s) do console — leia com n_ubrowser_act {action:"console", filter:"errors"}` : "";
+  return ubAlertsUnread > 0 ? ` 📬 ${ubAlertsUnread} alerta(s) novo(s) do console — leia com n_ubrowser_alerts` : "";
 }
 
 // rotação do mon-log (source:"auto"): cap UB_MONLOG_MAX, mantém as mais novas —
@@ -489,7 +508,7 @@ function ubEnsure() {
           try { p = JSON.parse(body); } catch {}
           ubAlertsPush(p.tabId, p.title, p.url, p.entries);
           try {
-            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "warning", logger: "canivete", data: `📬 console: erro novo em ${String(p.title || p.url || "aba").slice(0, 60)} — leia com n_ubrowser_act {action:"console", filter:"errors"}` } }) + "\n");
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "warning", logger: "canivete", data: `📬 console: erro novo em ${String(p.title || p.url || "aba").slice(0, 60)} — leia com n_ubrowser_alerts` } }) + "\n");
           } catch {}
           res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true}');
           return;
@@ -640,7 +659,7 @@ export function ubListExtensions() {
 
 import { riskOf as ubRisk } from "./risk.mjs";
 
-export { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubAlertsPush, ubAlertsPending, ubAlertsRead, ubAlertsHint };
+export { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubAlertsPush, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint };
 export function ubStats() {
   // reutiliza ubListExtensions (fonte única): id/idade/connected/profileLabel/queued/info por cliente
   const extensions = ubListExtensions();

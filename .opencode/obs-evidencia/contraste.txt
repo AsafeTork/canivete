@@ -1,0 +1,12 @@
+ 16.01:1  PASSA-4.5  texto/fundo (corpo)  #e8eaed sobre #0d0e11
+ 15.03:1  PASSA-4.5  texto/card (corpo)  #e8eaed sobre #14161a
+  6.95:1  PASSA-4.5  muted/card (corpo secundário)  #9aa1ab sobre #14161a
+  7.41:1  PASSA-4.5  muted/fundo  #9aa1ab sobre #0d0e11
+  7.91:1  PASSA-4.5  erro/card (status/pill erro)  #ff8a7a sobre #14161a
+  8.43:1  PASSA-4.5  erro/fundo  #ff8a7a sobre #0d0e11
+ 10.61:1  PASSA-4.5  aviso/card (status/pill aviso)  #e7c266 sobre #14161a
+ 11.31:1  PASSA-4.5  aviso/fundo  #e7c266 sobre #0d0e11
+ 10.48:1  PASSA-4.5  ok/card (dot ok)  #8fd4a8 sobre #14161a
+ 11.17:1  PASSA-4.5  ok/fundo  #8fd4a8 sobre #0d0e11
+ 12.24:1  PASSA-4.5  acento/card (botão acento)  #5eead4 sobre #14161a
+ 13.05:1  PASSA-4.5  acento/fundo (botão acento)  #5eead4 sobre #0d0e11

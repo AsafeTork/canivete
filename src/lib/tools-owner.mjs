@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { sleep } from "../core/retry.mjs";
 import { reg, devOut, trimOut } from "./ctx.mjs";
-import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsHint, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
+import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
 import { ownerCdpSend } from "./cdp.mjs";
 import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks } from "../core/snapshot.mjs";
 // recovery sem mudar protocolo: só texto de erro acionável (janela NORMAL, popup, token) + fallback headless
@@ -182,6 +182,20 @@ reg("n_ubrowser_status", {
     if (conns.length === 1) hints.push("1 perfil só — omita profile (ou passe o clientId exato)");
     if (noLabel) hints.push("profileLabel ausente — configure o nome do perfil no popup da extensão p/ alvo por nome legível");
     return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${conns.length} perfil(es) conectado(s)${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: n_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), ...st }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "n_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [{ tool: "n_ubrowser_tabs", reason: conns.length > 1 ? "Abas vêm consolidadas dos perfis — aponte profile ao agir" : "Listar abas do dono" }] });
+  },
+});
+
+// vigia de avisos: drena o ring de erros de console/rede empurrados pela extensão (/ubpush)
+// — o piggyback 📬 nas respostas aponta pra cá. since = ISO ou ms; drain marca lido.
+reg("n_ubrowser_alerts", {
+  description: "AVISOS do Chrome do dono (vigia): erros de console/rede que a extensão empurrou desde a última leitura (ring 30, persistido no painel). Chame quando vir o hint 📬 ou periodicamente após agir numa aba; since=ISO/ms traz só o novo. Não toca no Chrome — só lê o buffer da ponte. Console COMPLETO da aba: n_ubrowser_act {action:\"console\"}.",
+  inputSchema: { type: "object", properties: { since: { type: "string", description: "só alertas a partir de: ISO (\"2026-11-15T10:00:00Z\") ou epoch ms — p/ drenar apenas o novo entre duas leituras" } }, required: [] },
+  run: async ({ since } = {}) => {
+    const t0 = Date.now();
+    const list = ubAlertsList(since);
+    if (!list.length) return devOut({ summary: `sem alertas${since ? " desde " + String(since) : " desde o boot do daemon"} — aba(s) sem erros de console/rede empurrados`, data: { alerts: [], drained: true }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const err = list.filter((a) => a.kind !== "net").length, net = list.length - err;
+    return devOut({ summary: `${list.length} alerta(s)${since ? " desde " + String(since) : ""} (${err} console · ${net} rede) — mais novo: ${list[list.length - 1].text.slice(0, 90)}`, data: { alerts: list, drained: true }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_ubrowser_read", reason: "Ver a aba que errou (tab = trecho do url dos alertas)" }] });
   },
 });
 

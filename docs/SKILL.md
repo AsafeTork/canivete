@@ -73,6 +73,17 @@ MCP universal sem spawn: filesystem, web, browser do dono, DevEngine, meta.
 | `n_ubrowser_snapshot` | Clicáveis (`max` ≤120 + `offset`; `find` ±3 contexto; `layer:"modal\|menu\|popover\|tooltip"` foca a camada; `scan` antes p/ virtualizada). |
 | `n_ubrowser_act` | goto/click(`ref`/selector/`text=`)/fill(type anexa)/select/scroll/highlight/waittext(`wait`=waitMs)/evaluate(retry+nota)/`monstate`(estado do mon-hook: v/quiet/count — func, imune a CSP)/`cdp`(CDP cru na aba — **qualquer limitação sobe pra ele**: CSP, clique/fill sintético ignorado, shadow DOM/iframe, drag; Runtime.evaluate **imune a CSP**, DOM edit, Input trusted; padrão = chrome.debugger da extensão, **zero cliques**, banner fica, só http(s)/file; dono armou o toggle do chrome://inspect? a porta 9222 dele assume — sem banner, alcança chrome://, 1 "Permitir" por sessão; `off:true` desanexa)/cursor(trusted)/tooltip/catchup/aesthetic/new/`activate` (eleva aba sem roubar foco; `focused:true` + `confirm` = foco de SO p/ device-flow)/scan/count/attr/html/flow/`console`(erros+rede; chegam sozinhos via push)/`expectUrl/Text/Gone`/`snap:true` (alto risco exige `confirm`; `close` só fecha aba `about:blank` do agente — aba do dono em http(s) exige `confirm`, e `mode:"close_by_prefix"` limpa todas as `about:blank`). |
 | `n_ubrowser_shot` | Print da aba VISÍVEL; aba em **FUNDO** fotografa via CDP sozinho (banner de debug pisca na 1ª vez — attach fica preso). |
+| `n_ubrowser_alerts` | **Vigia**: drena erros de console/rede empurrados sozinhos pela extensão (hint 📬 nas respostas aponta pra cá; `since`=ISO/ms; persistido no painel). Console completo da aba: `n_ubrowser_act {action:"console"}`. |
+
+### Android (ADB) — WiFi rápido + a tela do celular em 1 call
+
+| Tool | Uso |
+|---|---|
+| `n_adb_status` | Devices (USB/WiFi) + perfil WiFi salvo; reconecta sozinho. Sem device → erro traz os passos de pareamento. |
+| `n_adb_connect` | `{}` sem args: cabo → WiFi (tcpip 5555 + IP do wlan0, **perfil salvo** = reconexão automática em toda call); `{ip,pairPort,code}` pareamento por código (portas ≠). |
+| `n_adb_extract` | **1 RTT = tela inteira**: elementos (texto/desc/coords/centro/clickable), app em foco, resolução, bateria, apps, notificações; extras `fields:"media,files,logcat,clipboard"`. |
+| `n_adb_act` | Tap por **texto** (1 call) ou x/y, digitar, key, swipe, open, pull/push, wake; install/uninstall/clear = destrutivo (**confirm ≥4**). Input do adb = toque de usuário real. |
+| `n_adb_screen` | Screenshot → PNG no disco (leia p/ VER; extract dá a estrutura). |
 
 ### Reports de elemento (2) — o dono marca na página, o agente resolve
 
@@ -116,14 +127,15 @@ A tabela de cima diz **o que** cada tool faz. Esta diz **quando escolher qual** 
 | Página com JS/SPA pública | `n_browser_navigate` + snapshot/act headless | renderiza sem tocar no Chrome do dono |
 | Página logada / aba real do dono | `n_ubrowser_status` → `tabs` → `read/snapshot/act` | sessão viva do dono; login JAMAIS por iniciativa própria; Chrome fechado? `status {open:true}` abre sozinho |
 | Evidência visual | headless `n_browser_screenshot` · dono `n_ubrowser_shot` (visível ou fundo via CDP) | screenshot custa tokens — texto/`verified`/`delta` primeiro |
-| Erro na aba do dono (console/rede) | chega sozinho (push 📬) → `act console {filter:"errors"}` → `monstate` → painel `/painel` | escada: evento → buffer → estado do hook → histórico |
+| Erro na aba do dono (console/rede) | chega sozinho (push 📬) → `n_ubrowser_alerts` (drena o buffer) → `act console {filter:"errors"}` → painel `/painel` | escada: evento → buffer → console da aba → histórico |
+| Tarefa no celular Android | `n_adb_status` (reconecta WiFi sozinho) → `n_adb_extract` (tela inteira em 1 call) → `n_adb_act` (tap por **texto**) → `n_adb_screen` (visual) | 1 extract substitui 5+ shell ad-hoc; centro do elemento já vem pronto p/ tap; destrutivo exige `confirm` |
 | Dono marcou problema visual na página | `n_elemreports_list {base_url}` → um a um → `n_elemreports_resolve` com prova antes/depois | fila humana priorizada; NÃO confunda com `n_report` |
 | Bug/falta da própria ferramenta | `n_report` (+ `status` de triagem existe no inbox) | nunca improvise em silêncio |
 | Rodar código fora do host (ambiente limpo/isolado) | `n_codespace_create` → `exec` → `stop`/`delete` | deps pesadas, risco de sujar, cota gh grátis |
 | Comando longo | escada: `n_bash` ≤600s → `n_manage_background_process` → `n_orchestrate_task` (DAG multi-passos) | nunca sleep; polling com teto |
 
 Escadas de escala — escolha o degrau mínimo que resolve:
-- **Ler**: `webfetch` → headless → ubrowser logado.
+- **Ler**: `webfetch` → headless → ubrowser logado. **Tela do Android**: `n_adb_extract` (1 call) → `n_adb_screen` (só se precisar do visual).
 - **Agir**: `selector`/`ref` → `evaluate` (corpo com `return …`) → **limitação bateu (CSP, clique/fill sintético ignorado, shadow DOM/iframe, drag)? `cdp` é a resposta, não o fim**: `cdp {method:"Runtime.evaluate"}` (nível debugger — **imune a CSP**, Input trusted). Só diga "não dá" DEPOIS do cdp. **EM TESTE de site: fique no clique/fill sintético (usuário real) — cdp só quando o sintético FALHAR de verdade (cite a falha); "só funciona com cdp" É o resultado do teste, não obstáculo a remover.**
 - **Diagnosticar**: push 📬 (chegou sozinho) → `console` (buffer) → `monstate` (v/quiet/count) → painel/API (histórico fundido) → replay (vídeo do erro); erro de **produção** com Sentry MCP configurado → `find_organizations` → `analyze_issue_with_seer` (fora do canivete).
 - **Homolog**: `__ubTags={area,agent}` ANTES de navegar; `__ubReplay=true` só quando o erro é visual; `uierr.js` mostra o erro real na UI.
