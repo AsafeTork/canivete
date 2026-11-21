@@ -4,7 +4,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync, sta
 import { randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TOOLS, CTX, CTX_BUDGET } from "./ctx.mjs"; // aba Ferramentas do painel (mesmo processo do MCP)
+import { TOOLS, CTX, CTX_BUDGET, visibleTools, toolCount } from "./ctx.mjs"; // aba Ferramentas do painel (mesmo processo do MCP)
 import { TOOL_GROUPS, firstSentence } from "../core/taxonomy.mjs";
 import { homedir } from "node:os";
 import { pruneJsonl } from "./ctx.mjs";
@@ -81,7 +81,7 @@ function ubAlertsPush(tabId, title, url, entries) {
     for (const e of (Array.isArray(entries) ? entries : []).slice(0, 3)) {
       const alert = { at: new Date().toISOString(), tabId, title: String(title || "").slice(0, 80), url: String(url || "").slice(0, 120), kind: e.kind, level: e.level, text: String(e.text || e.url || "").slice(0, 220), status: e.status ?? null };
       ubAlerts.push(alert);
-      // vigia persiste no mon-log (source:"auto") — painel lê junto do inbox n_report
+      // vigia persiste no mon-log (source:"auto") — painel lê junto do inbox cv_report
       const key = `${e.kind}|${alert.text}|${alert.url}`;
       if (!(ubAlertsSeen.get(key) > now - 600000)) {
         ubAlertsSeen.set(key, now);
@@ -95,7 +95,7 @@ function ubAlertsPush(tabId, title, url, entries) {
 }
 function ubAlertsPending() { return ubAlertsUnread; }
 function ubAlertsRead() { const n = ubAlertsUnread; ubAlertsUnread = 0; return n; }
-// drena o ring p/ o agente (tool n_ubrowser_alerts): `since` (ms ou ISO) filtra; lida = drena
+// drena o ring p/ o agente (tool cv_ubrowser_alerts): `since` (ms ou ISO) filtra; lida = drena
 function ubAlertsList(since) {
   const ms = typeof since === "number" ? since : since ? Date.parse(String(since)) : 0;
   const list = (Number.isFinite(ms) && ms > 0 ? ubAlerts.filter((a) => Date.parse(a.at) >= ms) : ubAlerts.slice()).slice(-30);
@@ -103,7 +103,7 @@ function ubAlertsList(since) {
   return list;
 }
 function ubAlertsHint() {
-  return ubAlertsUnread > 0 ? ` 📬 ${ubAlertsUnread} alerta(s) novo(s) do console — leia com n_ubrowser_alerts` : "";
+  return ubAlertsUnread > 0 ? ` 📬 ${ubAlertsUnread} alerta(s) novo(s) do console — leia com cv_ubrowser_alerts` : "";
 }
 
 // rotação do mon-log (source:"auto"): cap UB_MONLOG_MAX, mantém as mais novas —
@@ -123,7 +123,7 @@ function ubMime(name) {
   return "application/octet-stream";
 }
 // log de erro automático (mon-hook v4 via /replay): 1 linha JSON em mon-log.jsonl
-// com metadados + referência ao arquivo do replay — o painel lê junto do inbox n_report.
+// com metadados + referência ao arquivo do replay — o painel lê junto do inbox cv_report.
 function ubMonLogAppend(entry) {
   try {
     const p = join(UB_CONFIG_DIR(), "mon-log.jsonl");
@@ -132,9 +132,9 @@ function ubMonLogAppend(entry) {
     appendFileSync(p, JSON.stringify(entry) + "\n");
   } catch {}
 }
-// /api/issues funde os dois canais: inbox n_report (source:"report") + mon-log (source:"auto").
+// /api/issues funde os dois canais: inbox cv_report (source:"report") + mon-log (source:"auto").
 // Linha inválida pula sem quebrar a leitura; filtro q/area/agent/kind/source; ts desc.
-// ---- gestão de reports do inbox n_report (append-only) — overlay do dono por cima ----
+// ---- gestão de reports do inbox cv_report (append-only) — overlay do dono por cima ----
 // issues.jsonl nunca é reescrito; estado/edições vivem em issues-state.json por id.
 const UB_ISS_STATUS = ["aberto", "em_resolução", "resolvido", "wontfix", "externo", "ruido"];
 const ubIssStatePath = () => join(UB_CONFIG_DIR(), "issues-state.json");
@@ -335,17 +335,17 @@ function ubEnsure() {
           }));
           return;
         }
-        // aba Ferramentas do painel: catálogo agrupado (mesma taxonomia do n_tools_info) +
+        // aba Ferramentas do painel: catálogo agrupado (mesma taxonomia do cv_tools_info) +
         // uso do contexto (CTX vivo) + configuração do processo — números, não prosa.
         if (pth === "/api/tools") {
           const slim = (n) => { const t = TOOLS.get(n); return { name: n, on: !!t, desc: t ? firstSentence(t.description).slice(0, 110) : "", calls: CTX.byTool.get(n) || 0 }; };
           const listed = new Set(TOOL_GROUPS.flatMap((gr) => gr.names));
           const groups = TOOL_GROUPS.map((gr) => ({
-            title: gr.dynamicTitle && !TOOLS.has("n_task") ? "Todos (subagentes desativados)" : gr.title,
+            title: gr.dynamicTitle && !TOOLS.has("cv_task_start") ? "Tarefas e contexto" : gr.title,
             hint: gr.hint,
             tools: gr.names.map(slim),
           }));
-          const outras = [...new Set([...TOOLS.keys(), ...UB_TOOLS_OFF.keys()])].filter((n) => !listed.has(n)).map(slim);
+          const outras = [...new Set([...visibleTools().map((t) => t.name), ...UB_TOOLS_OFF.keys()])].filter((n) => !listed.has(n)).map(slim);
           const top = [...CTX.byTool.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([name, calls]) => ({ name, calls }));
           const ai = process.argv.indexOf("--http");
           res.writeHead(200, { "content-type": "application/json" });
@@ -355,14 +355,14 @@ function ubEnsure() {
               bridgePort: UB_PORT,
               mcpPort: ai >= 0 ? Number(process.argv[ai + 1]) || null : null,
               runner: process.env.CANIVETE_RUNNER || "opencode",
-              task: TOOLS.has("n_task"),
+              task: TOOLS.has("cv_task"),
               node: process.version,
               dir: UB_CONFIG_DIR(),
               rede: "127.0.0.1",
             },
             groups, outras,
             ctx: { calls: CTX.calls, chars: CTX.chars, budget: CTX_BUDGET, top },
-            total: TOOLS.size + UB_TOOLS_OFF.size,
+            total: toolCount(),
           }));
           return;
         }
@@ -392,8 +392,8 @@ function ubEnsure() {
         }
       }
       // ---- gestão pelo painel (127.0.0.1, mesmo nível das rotas GET de leitura) ----
-      // update = overlay do dono p/ reports do n_report · locate = leva o dono até a página
-      // numa aba NOVA em fundo (tab.new) elevada sem roubar foco de SO (tab.activate) ·
+      // update = overlay do dono p/ reports do cv_report · locate = leva o dono até a página
+      // numa nova guia agrupada do Canivete e traz a janela do Chrome à frente ·
       // toggle = liga/desliga tool do catálogo (persiste em tools-off.json).
       const pth = u.pathname;
       if (req.method === "POST" && (pth === "/api/tools/toggle" || /^\/api\/issues\/[A-Za-z0-9_-]+\/(update|locate)$/.test(pth))) {
@@ -411,7 +411,7 @@ function ubEnsure() {
           if (on) { TOOLS.set(name, def); UB_TOOLS_OFF.delete(name); } else { UB_TOOLS_OFF.set(name, def); TOOLS.delete(name); }
           ubToolsOffPersist();
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, name, on, total: TOOLS.size, off: UB_TOOLS_OFF.size }));
+          res.end(JSON.stringify({ ok: true, name, on, total: toolCount(), off: UB_TOOLS_OFF.size }));
           return;
         }
 
@@ -444,7 +444,7 @@ function ubEnsure() {
           return;
         }
 
-        // locate: leva até a página p/ revisar — aba nova em fundo + eleva (sem foco de SO)
+        // locate: abre a página em nova guia do Canivete e foca a janela do Chrome
         if (!item.url || !/^https?:\/\//i.test(String(item.url))) return j422("este item não tem url p/ abrir");
         const nova = await ubSend("tab.new", { url: String(item.url) }, 15000);
         if (nova && nova.__offline) { res.writeHead(409, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: UB_OFF })); return; }
@@ -456,7 +456,7 @@ function ubEnsure() {
       }
       const token = u.searchParams.get("token") || req.headers["x-token"];
       const good = ubToken();
-      if (!good || token !== good) { process.stderr.write(`[native-mcp] ubrowser 401 ${u.pathname} token=${String(token || "").slice(0, 8)}...\n`); res.writeHead(401); res.end("bad token"); return; }
+      if (!good || token !== good) { process.stderr.write(`[canivete] ubrowser 401 ${u.pathname} token=${String(token || "").slice(0, 8)}...\n`); res.writeHead(401); res.end("bad token"); return; }
       if (req.method === "GET" && u.pathname === "/poll") {
         const extId = u.searchParams.get("ext") || "anon";
         const ext = ubExtensions.get(extId) || { lastPoll: 0, info: null };
@@ -508,7 +508,7 @@ function ubEnsure() {
           try { p = JSON.parse(body); } catch {}
           ubAlertsPush(p.tabId, p.title, p.url, p.entries);
           try {
-            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "warning", logger: "canivete", data: `📬 console: erro novo em ${String(p.title || p.url || "aba").slice(0, 60)} — leia com n_ubrowser_alerts` } }) + "\n");
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "warning", logger: "canivete", data: `📬 console: erro novo em ${String(p.title || p.url || "aba").slice(0, 60)} — leia com cv_ubrowser_alerts` } }) + "\n");
           } catch {}
           res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true}');
           return;
@@ -563,9 +563,12 @@ function ubEnsure() {
           // fallthrough: qualquer tab.* futuro encaminha cru (a extensão valida e responde)
           const bridged = map[p.cmd] || (String(p.cmd || "").startsWith("tab.") ? p.cmd : null);
           if (p.cmd === "status") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, data: { connected: ubConnected(), lastPollAgoMs: ubLastPoll ? Date.now() - ubLastPoll : -1, queued: ubQueue.length, ext: ubExtInfo } })); return; }
-          if (!bridged && p.cmd !== "wait") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "cmd: status|diag|tabs|read|snapshot|scan|shot|goto|back|forward|reload|click|fill|press|scroll|wait|evaluate|cursor|select|highlight|waittext|type|new|close|flow (close só aba about:blank do agente; roubar foco: PROIBIDO pelo dono)" })); return; }
-          if (p.cmd === "wait") { await new Promise((r) => setTimeout(r, Math.min(Number(a.waitMs ?? a.ms) || 2000, 15000))); res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"data":{"waited":true}}'); return; }
-          const r2 = await ubSend(bridged, { ...a }, Math.min(Number(p.timeoutMs) || UB_TIMEOUT_MS, 120000));
+          if (!bridged && p.cmd !== "wait") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "cmd: status|diag|tabs|read|snapshot|scan|shot|goto|back|forward|reload|click|fill|press|scroll|wait|evaluate|cursor|select|highlight|waittext|type|new|close|flow" })); return; }
+          if (p.cmd === "wait") { const requested = Number(a.waitMs ?? a.ms); const waitMs = Number.isFinite(requested) && requested >= 0 ? requested : 2000; await new Promise((r) => setTimeout(r, waitMs)); res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, data: { waited: true, waitedMs: waitMs } })); return; }
+          const requestedTimeout = Number(p.timeoutMs) || UB_TIMEOUT_MS;
+          const actionDuration = Number(a.durationMs || 0) + Number(a.hoverMs || 0) + 15000;
+          const timeoutMs = Number.isFinite(actionDuration) ? Math.max(requestedTimeout, actionDuration) : requestedTimeout;
+          const r2 = await ubSend(bridged, { ...a }, timeoutMs);
           if (r2.__offline || r2.__timeout) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: r2.__offline ? "EXTENSAO_OFFLINE" : "TIMEOUT_EXTENSAO" })); return; }
           res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: !!r2.ok, data: r2.data, error: r2.error, ...(r2.chunks ? { chunks: r2.chunks, chunked: true, bytes: r2.bytes, note: r2.note } : {}) }));
           return;
@@ -575,12 +578,12 @@ function ubEnsure() {
       }
       res.writeHead(404); res.end("not found");
     } catch (e) { try { res.writeHead(500); res.end(String(e.message)); } catch (e2) { process.stderr.write(`[canivete] ub 500 falhou (${e2?.message || e2}) causa: ${e?.message || e}\n`); } }
-  }).listen(UB_PORT, "127.0.0.1", () => process.stderr.write(`[native-mcp] ubrowser bridge em http://127.0.0.1:${UB_PORT}\n`));
-  ubHttpSrv.on("error", (e) => { ubHttp = false; process.stderr.write(`[native-mcp] ubrowser porta ${UB_PORT} ocupada (${e.code}) — tentando de novo no primeiro uso\n`); });
+  }).listen(UB_PORT, "127.0.0.1", () => process.stderr.write(`[canivete] ubrowser bridge em http://127.0.0.1:${UB_PORT}\n`));
+  ubHttpSrv.on("error", (e) => { ubHttp = false; process.stderr.write(`[canivete] ubrowser porta ${UB_PORT} ocupada (${e.code}) — tentando de novo no primeiro uso\n`); });
 }
 
 ubToken(); // warm: lê/gera 1x no startup (fora do hot-path HTTP)
-try { ubEnsure(); } catch (e) { process.stderr.write(`[native-mcp] ubrowser adiado: ${e.message}\n`); }
+try { ubEnsure(); } catch (e) { process.stderr.write(`[canivete] ubrowser adiado: ${e.message}\n`); }
 
 // Reports de elemento mudaram (humano marcou / agente resolveu): avisa AS extensões
 // conectadas p/ re-sincronizar o cache da origin e re-aplicar os highlights — job curto

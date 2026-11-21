@@ -6,8 +6,8 @@
 // (Trocar CONFIG exige 1 restart: opencode lê config só no boot.)
 import { createServer } from "node:http";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
-import { TOOLS } from "./lib/ctx.mjs";
+import { randomBytes, randomUUID } from "node:crypto";
+import { TOOLS, toolCount } from "./lib/ctx.mjs";
 import { dispatchHttpItem } from "./core/rpc.mjs";
 import "./lib/fs.mjs";
 import "./lib/web.mjs";
@@ -45,7 +45,7 @@ export async function serveHttp(port, token) {
       const u = new URL(req.url || "/", "http://127.0.0.1");
       if (u.pathname === "/health" && req.method === "GET") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, tools: TOOLS.size }));
+        res.end(JSON.stringify({ ok: true, tools: toolCount() }));
         return;
       }
       if (u.pathname !== "/mcp") { res.writeHead(404); res.end("not found"); return; }
@@ -66,11 +66,14 @@ export async function serveHttp(port, token) {
       let msg;
       try { msg = JSON.parse(body); } catch { res.writeHead(400); res.end("bad json"); return; }
       const batch = Array.isArray(msg) ? msg : [msg];
+      const init = batch.some((item) => item?.method === "initialize");
+      const agentSessionId = String(req.headers["x-canivete-agent-session"] || req.headers["mcp-session-id"] || (init ? `http:${randomUUID()}` : `http-legacy:${req.headers["user-agent"] || req.socket.remoteAddress || "anonymous"}`)).slice(0, 120);
+      if (init) res.setHeader("Mcp-Session-Id", agentSessionId);
       const out = [];
       // Dispatch compartilhado (ver core/rpc.mjs) — mesma semântica do stdio,
       // formato remoto (ordem de registro, descrição em 120 chars, sem annotations).
       for (const m of batch) {
-        const r = await dispatchHttpItem(m, TOOLS);
+        const r = await dispatchHttpItem(m, TOOLS, agentSessionId);
         if (r) out.push(r);
       }
       res.writeHead(200, { "content-type": "application/json" });
@@ -83,6 +86,6 @@ export async function serveHttp(port, token) {
     srv.on("error", rej);
     srv.listen(port, "127.0.0.1", res);
   });
-  process.stderr.write(`[canivete] remoto em http://127.0.0.1:${port}/mcp (${TOOLS.size} tools)\n`);
+  process.stderr.write(`[canivete] remoto em http://127.0.0.1:${port}/mcp (${toolCount()} tools)\n`);
   return srv;
 }

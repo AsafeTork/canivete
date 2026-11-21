@@ -1,114 +1,174 @@
-// canivete bench: tempo de TODAS as tools no deployment real (http 19423).
-// Uso: CANIVETE_TOKEN=$(cat ~/.config/canivete/token.txt) node test/bench.mjs
-// Gera docs/BENCH.md. Sem nada destrutivo; sandbox /tmp/bench-canivete-<pid>.
-//
-// CI-safe:
-// - Sem servidor (127.0.0.1:19423 inalcancavel) ou sem CANIVETE_TOKEN => skip
-//   elegante: imprime "bench pulado — sem deploy" e sai com exit 0 (nao falha o CI).
-// - Flag --local => modo offline com mocks (sem rede real, sem TOKEN, sem deploy):
-//   `node test/bench.mjs --local`. Nao escreve docs/BENCH.md nesse modo.
-// - Sandbox restrita a /tmp/bench-canivete-*: nunca apaga fora desse prefixo
-//   (guard assertSandbox + rmSync final). Nao usa mais /tmp/bench fixo.
-// Metricas existentes (CASES, limite 1500ms, formato BENCH.md) inalteradas.
-import { writeFileSync, mkdirSync, rmSync, chmodSync } from "node:fs";
+// Benchmark das tools ativas no daemon Canivete.
+// Mede MCP + execução real, sem iniciar subagentes, alterar resources externos,
+// acessar o Chrome logado ou enviar comandos ao Android.
+// Uso: CANIVETE_TOKEN_FILE=~/.config/canivete/token.txt node test/bench.mjs
+import { writeFileSync, rmSync, unlinkSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-const LOCAL = process.argv.includes("--local");
 const BASE = process.env.CANIVETE_URL || "http://127.0.0.1:19423/mcp";
-const TOKEN = process.env.CANIVETE_TOKEN || "";
-const H = { "content-type": "application/json", "X-Token": TOKEN };
-const SANDBOX = process.env.BENCH_TMP || `/tmp/bench-canivete-${process.pid}`;
-function assertSandbox(p) {
-  if (!p.startsWith("/tmp/bench-canivete-")) throw new Error(`refusa apagar fora de /tmp/bench-canivete-*: ${p}`);
-}
-const realCall = (id, name, args, ms = 120000) => {
-  const t0 = Date.now();
-  return fetch(BASE, { method: "POST", headers: H, body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }) })
-    .then(async (r) => ({ ms: Date.now() - t0, j: await r.json() }))
-    .catch((e) => ({ ms: Date.now() - t0, err: String(e.message || e).slice(0, 100) }));
-};
-// Modo offline: mocks sem rede (ms=0, resultado sintetico). Metricas/limites inalterados.
-const mockCall = async (id, name, args, ms = 120000) => ({ ms: 0, j: { result: { content: [{ type: "text", text: `mock ${name}` }] } } });
-const call = LOCAL ? mockCall : realCall;
-const txt = (m) => (m?.result?.content || []).map((c) => c.text || `[${c.type}]`).join("\n");
-
-if (!LOCAL) {
-  if (!TOKEN) {
-    console.log("bench pulado — sem deploy");
-    process.exit(0);
-  }
+const TOKEN = process.env.CANIVETE_TOKEN || (() => {
   try {
-    const ctl = new AbortController();
-    const to = setTimeout(() => ctl.abort(), 3000);
-    await fetch(BASE, { method: "POST", headers: H, body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list", params: {} }), signal: ctl.signal });
-    clearTimeout(to);
-  } catch {
-    console.log("bench pulado — sem deploy");
-    process.exit(0);
-  }
+    const path = process.env.CANIVETE_TOKEN_FILE || `${process.env.HOME || "/root"}/.config/canivete/token.txt`;
+    return readFileSync(path, "utf8").trim();
+  } catch { return ""; }
+})();
+
+const BENCH_PREFIX = `.canivete-bench-${process.pid}`;
+const SANDBOX = process.cwd();
+const benchFile = (name) => join(SANDBOX, `${BENCH_PREFIX}-${name}`);
+const PAGE = "https://example.com";
+const headers = { "content-type": "application/json", "x-token": TOKEN };
+const call = async (id, name, args, timeoutMs = 90000) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = performance.now();
+  try {
+    const response = await fetch(BASE, {
+      method: "POST", headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
+      signal: controller.signal,
+    });
+    const json = await response.json().catch(() => null);
+    return { ms: Math.round(performance.now() - started), httpStatus: response.status, json };
+  } catch (error) {
+    return { ms: Math.round(performance.now() - started), error: String(error?.message || error).slice(0, 100) };
+  } finally { clearTimeout(timer); }
+};
+
+function resultStats(json) {
+  const result = json?.result;
+  const content = Array.isArray(result?.content) ? result.content : [];
+  const text = content.filter((item) => item.type === "text").map((item) => item.text || "").join("\n");
+  let status = result?.isError ? "error" : /^ERRO\s/m.test(text) ? "error" : "ok";
+  const match = text.match(/\{"status":"(success|error|warn)"/);
+  if (match) status = match[1];
+  return { status, chars: text.length, bytes: Buffer.byteLength(text), items: content.length };
 }
 
-assertSandbox(SANDBOX);
-mkdirSync(SANDBOX, { recursive: true });
-chmodSync(SANDBOX, 0o777);
-writeFileSync(`${SANDBOX}/a.txt`, "linha um\nlinha dois\n");
-writeFileSync(`${SANDBOX}/s.js`, "function soma(a,b){return a+b}\nmodule.exports={soma}\n");
-chmodSync(`${SANDBOX}/a.txt`, 0o666);
-chmodSync(`${SANDBOX}/s.js`, 0o666);
+function collectTempArtifacts(value, out = new Set()) {
+  if (!value || typeof value !== "object") return out;
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string" && ["file", "dir", "video"].includes(key) && item.startsWith("/tmp/")) out.add(item);
+    else collectTempArtifacts(item, out);
+  }
+  return out;
+}
 
-const CASES = [
-  ["n_tools_info", {}], ["n_read", { filePath: `${SANDBOX}/a.txt` }], ["n_list", { path: SANDBOX, depth: 1 }],
-  ["n_write", { filePath: `${SANDBOX}/b.txt`, content: "x" }], ["n_edit", { filePath: `${SANDBOX}/b.txt`, oldString: "x", newString: "y" }],
-  ["n_bash", { command: "echo ok" }], ["n_glob", { pattern: "*.txt", cwd: SANDBOX }], ["n_grep", { pattern: "linha", path: SANDBOX }],
-  ["n_apply_patch", { patch: "invalido" }],
-  ["n_webfetch", { url: "https://example.com", maxChars: 500 }], ["n_websearch", { query: "vite pwa", numResults: 3 }],
-  ["n_currency", { from: "BRL", to: "USD", amount: 10 }], ["n_cep", { cep: "01001000" }], ["n_cnpj", { cnpj: "11444777000161" }],
-  ["n_ipinfo", {}], ["n_weather", { latitude: -23.55, longitude: -46.63, days: 2 }], ["n_github", { owner: "vitejs", repo: "vite", kind: "repo" }], ["n_npm", { package: "vite" }],
-  ["n_todowrite", { todos: [{ content: "b", priority: "low", status: "pending" }] }], ["n_todo", {}], ["n_list_models", {}],
-  ["n_question", { question: "q?" }], ["n_skill", { name: "zz-inexistente" }], ["n_plan", {}],
-  ["n_get_architecture_summary", { depth: 1 }], ["n_investigate_issue", { symptom: "bench soma" }],
-  ["n_analyze_change_impact", { symbol_id: "soma" }],   ["n_apply_semantic_patch", { file_path: `${SANDBOX}/s.js`, edits: [{ oldString: "a+b", new_code: "a + b" }] }],
-  ["n_execute_targeted_tests", { scope: "diff_only" }],
-  ["n_manage_background_process", { action: "start", command: "node -e \"setInterval(()=>{},60000)\"" }], // sleep proibido (regra global): espera longa sem sleep — mede custo de spawn igual
-  ["n_inspect_ui_state", {}], ["n_orchestrate_task", { action: "init", plan: { title: "bench" } }],
-  ["n_browser_navigate", { url: "https://example.com", waitMs: 4000 }], ["n_browser_snapshot", {}],
-  ["n_browser_act", { action: "evaluate", js: "document.title" }], ["n_browser_screenshot", { width: 800, height: 600 }],
-  ["n_browser_pdf", { url: "https://example.com" }],
-  ["n_ubrowser_status", {}], ["n_ubrowser_tabs", {}], ["n_ubrowser_read", {}], ["n_ubrowser_snapshot", {}],
-  ["n_ubrowser_act", { action: "click", selector: "text=excluir conta" }], ["n_ubrowser_shot", {}],
-  ["n_report", { kind: "zzz", where: "bench", expected: "x", got: "y" }],
-  ["n_task", { description: "bench", prompt: "Responda BENCH-OK", model: "opencode/big-pickle", background: true, ephemeral: true, subagent_type: "quick" }],
-];
+const safeArgs = new Map([
+  ["cv_file_read", { action: "read", path: "README.md", maxChars: 120 }],
+  ["cv_file_write", { action: "write", path: benchFile("write.txt"), content: "benchmark canivete\n" }],
+  ["cv_bash", { command: "node -e \"process.stdout.write('bench-ok')\"" }],
+  ["cv_webfetch", { url: PAGE, maxChars: 700 }],
+  ["cv_lookup", { source: "currency", from: "BRL", to: "USD", amount: 10 }],
+  ["cv_code_inspect", { action: "architecture", depth: 1 }],
+  ["cv_code_edit", { action: "diff", patch: "patch inválido do benchmark", check: true }],
+  ["cv_code_verify", { action: "ui", url: PAGE, expect: "Example Domain", retries: 0 }],
+  ["cv_manage_background_process", { action: "status" }],
+  ["cv_orchestrate_task", { action: "__benchmark_invalid__" }],
+  ["cv_browser_read", { detail: "summary", url: PAGE, waitMs: 1000 }],
+  ["cv_browser_snapshot", {}],
+  ["cv_browser_act", { action: "evaluate", js: "document.title" }],
+  ["cv_browser_capture", { action: "screenshot", url: PAGE, width: 640, height: 480, scale: 0.5 }],
+  ["cv_browser_screencast", { url: PAGE, width: 640, height: 480, scale: 0.5, actions: [{ wait: 10 }] }],
+  ["cv_codespace_lifecycle", { action: "create", repo: "benchmark invalido" }],
+  ["cv_codespace_exec", {}],
+  ["cv_whatsapp", { action: "__benchmark_invalid__" }],
+  ["cv_audio_analyze", { path: join(SANDBOX, "nao-existe.wav") }],
+  ["cv_report", { kind: "aprimoramento", where: "benchmark", expected: "medir sem persistir", got: "dry-run", dryRun: true }],
+  ["cv_help", { query: "browser", limit: 5 }],
+  ["cv_ctx_status", {}],
+  ["cv_elemreports_resolve", { id: "bench-nao-existe", proof: "benchmark: nenhum report foi alterado" }],
+]);
+
+// Ferramentas stateful, que expõem dados privados ou exigem recurso do dono:
+// não são executadas; entram no relatório com motivo explícito.
+const skipped = new Map([
+  ["cv_todo", "lê conteúdo privado do usuário"],
+  ["cv_todowrite", "altera a lista de tarefas em memória do daemon"],
+  ["cv_skill", "refresh altera arquivos de configuração do usuário"],
+  ["cv_elemreports_list", "lê reports privados persistidos pelo usuário"],
+  ["cv_websearch", "consulta provedores externos e consome cota"],
+  ["cv_codespace_status", "lê estado privado de autenticação e recursos GitHub"],
+  ["cv_codespace_lifecycle", "pode criar/alterar recursos da conta GitHub"],
+  ["cv_codespace_exec", "executa comandos em um recurso privado da conta"],
+  ["cv_codespace_login", "inicia um fluxo OAuth externo"],
+  ["cv_owner_inspect", "lê estado ou dados da sessão Chrome do dono"],
+  ["cv_owner_act", "pode agir em uma sessão Chrome privada"],
+  ["cv_owner_alerts", "drena alertas da sessão Chrome do dono"],
+  ["cv_android_inspect", "pode ler/reconectar ao aparelho privado do dono"],
+  ["cv_android_connect", "pode parear ou reconectar um aparelho do dono"],
+  ["cv_android_act", "pode enviar toque/tecla ao aparelho conectado"],
+]);
+
+if (!TOKEN) throw new Error("token ausente; defina CANIVETE_TOKEN ou CANIVETE_TOKEN_FILE");
+
+const ctl = new AbortController();
+const healthTimer = setTimeout(() => ctl.abort(), 3000);
+let list;
+try {
+  const response = await fetch(BASE, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list", params: {} }), signal: ctl.signal });
+  const json = await response.json();
+  if (!response.ok || !Array.isArray(json.result?.tools)) throw new Error(`tools/list HTTP ${response.status}`);
+  list = json.result.tools;
+} finally { clearTimeout(healthTimer); }
+
 const rows = [];
-let id = 1, taskId = null;
-for (const [name, args] of CASES) {
-  const t = name === "n_task" ? 200000 : 120000;
-  const { ms, j, err } = await call(id++, name, args, t).catch((e) => ({ ms: -1, err: String(e).slice(0, 80) }));
-  let out = err || "";
-  if (j) {
-    const r = j.result;
-    out = r?.isError ? "isError: " + txt({ result: r }).slice(0, 100) : txt({ result: r }).slice(0, 100);
-    const m = txt({ result: r }).match(/task (\w+) spawned/);
-    if (m) taskId = m[1];
+const artifacts = new Set();
+let id = 1;
+for (const tool of list) {
+  const name = tool.name;
+  if (skipped.has(name)) {
+    rows.push({ tool: name, ms: null, status: "SKIP", chars: 0, reason: skipped.get(name) });
+    console.log(`${name}: SKIP — ${skipped.get(name)}`);
+    continue;
   }
-  rows.push({ tool: name, ms, out: out.replace(/\n/g, " ") });
-  console.log(`${name}: ${ms}ms :: ${rows[rows.length - 1].out.slice(0, 80)}`);
+  if (!safeArgs.has(name)) {
+    rows.push({ tool: name, ms: null, status: "SEM CASO", chars: 0, reason: "sem fixture segura" });
+    console.log(`${name}: SEM CASO`);
+    continue;
+  }
+  const timeout = name.startsWith("cv_browser_") ? 60000 : 90000;
+  const measured = await call(id++, name, safeArgs.get(name), timeout);
+  const stats = resultStats(measured.json);
+  collectTempArtifacts(measured.json?.result, artifacts);
+  const row = { tool: name, ms: measured.ms, status: measured.error ? "transport-error" : stats.status, chars: stats.chars, bytes: stats.bytes, items: stats.items, ...(measured.httpStatus ? { httpStatus: measured.httpStatus } : {}), ...(measured.error ? { reason: measured.error } : {}) };
+  rows.push(row);
+  console.log(`${name}: ${row.ms}ms ${row.status} ${row.bytes}B`);
 }
-if (taskId) {
-  const t0 = Date.now();
-  const w = await call(999, "n_task_wait", { task_ids: [taskId], wait: "all", timeout: 150000 }, 170000).catch((e) => ({ ms: -1 }));
-  rows.push({ tool: "n_task_wait", ms: w.ms ?? -1, out: "task bench" });
-  console.log(`n_task_wait: ${w.ms}ms`);
+
+// Limpa somente artefatos de benchmark ou arquivos temporários que as tools geraram.
+for (const file of artifacts) {
+  const base = file.split("/").pop() || "";
+  if (/^(page\.pdf|screencast\.(webm|mp4)|frame-\d+\.(png|jpg|jpeg)|meta\.json|opencode-(shot|page|screencast|adb)-)/.test(base)) {
+    try { rmSync(file, { recursive: true, force: true }); } catch {}
+  }
 }
-const slow = rows.filter((r) => r.ms > 1500);
-const md = `# BENCH canivete — ${new Date().toISOString()}\n\nGerado por \`node test/bench.mjs\` no deployment real (http 19423).\nLimite razoável: 1500ms. Acima disso = rede/página/modelo (física) ou código (culpa do dev).\n\n| tool | ms | resultado |\n|---|---|---|\n` +
-  rows.map((r) => `| ${r.tool} | ${r.ms} | ${r.out.slice(0, 90)} |`).join("\n") +
-  `\n\n## Lentas (>1500ms): ${slow.length}\n` + slow.map((r) => `- ${r.tool}: ${r.ms}ms`.slice(0, 120)).join("\n") + "\n";
-if (LOCAL) {
-  console.log(`\nBENCH-DONE (mock local) ${rows.length} tools, ${slow.length} lentas. docs/BENCH.md nao escrito (--local).`);
-} else {
-  writeFileSync(new URL("../docs/BENCH.md", import.meta.url).pathname, md);
-  console.log(`\nBENCH-DONE ${rows.length} tools, ${slow.length} lentas. docs/BENCH.md escrito.`);
+// O daemon MCP pode estar em outro namespace de filesystem que o processo Node.
+// Remove pelo próprio daemon apenas os nomes exclusivos que este benchmark criou.
+await call(id++, "cv_bash", { command: `node -e 'try{require("node:fs").unlinkSync("${BENCH_PREFIX}-write.txt")}catch{}'` }, 5000);
+for (const file of [benchFile("a.txt"), benchFile("s.js"), benchFile("write.txt"), benchFile("page.pdf")]) {
+  try { unlinkSync(file); } catch {}
 }
-assertSandbox(SANDBOX);
-rmSync(SANDBOX, { recursive: true, force: true });
-process.exit(0);
+
+const measuredRows = rows.filter((row) => Number.isFinite(row.ms));
+const sorted = [...measuredRows].sort((a, b) => b.ms - a.ms);
+const ascending = [...measuredRows].sort((a, b) => a.ms - b.ms);
+const report = {
+  generatedAt: new Date().toISOString(),
+  endpoint: BASE.replace(/:\/\/[^/]+/, "://<local>"),
+  availableTools: list.length,
+  measuredTools: measuredRows.length,
+  skippedTools: rows.length - measuredRows.length,
+  catalogBytes: Buffer.byteLength(JSON.stringify(list)),
+  p50Ms: measuredRows.length ? ascending[Math.floor((measuredRows.length - 1) * 0.5)].ms : 0,
+  p95Ms: measuredRows.length ? ascending[Math.ceil(measuredRows.length * 0.95) - 1].ms : 0,
+  rows,
+};
+const md = `# Benchmark Canivete — ${report.generatedAt}\n\n` +
+  `Medição do endpoint MCP ativo. Tools disponíveis: ${report.availableTools}; medidas: ${report.measuredTools}; ignoradas com motivo: ${report.skippedTools}. Catálogo: ${report.catalogBytes} bytes. Latência p50: ${report.p50Ms} ms; p95: ${report.p95Ms} ms.\n\n` +
+  `O tempo inclui rede/serviços externos quando a tool os usa. Respostas são descartadas; o relatório guarda apenas estado, tamanho e tempo. Tools que poderiam alterar dados externos, consumir cota ou ler tela privada ficam de fora.\n\n` +
+  `| Tool | ms | estado | resposta (bytes) | nota |\n|---|---:|---|---:|---|\n` +
+  rows.map((row) => `| ${row.tool} | ${row.ms ?? "—"} | ${row.status} | ${row.bytes ?? 0} | ${row.reason || ""} |`).join("\n") +
+  `\n\n## Mais lentas\n\n` + (sorted.slice(0, 10).map((row) => `- ${row.tool}: ${row.ms} ms (${row.bytes} bytes, ${row.status})`).join("\n") || "- Nenhuma medida") + "\n";
+writeFileSync(new URL("../docs/BENCH.md", import.meta.url), md);
+console.log(`\nBENCH-DONE ${report.measuredTools}/${report.availableTools} medidas; ${report.skippedTools} omitidas. p50=${report.p50Ms}ms p95=${report.p95Ms}ms. docs/BENCH.md atualizado.`);

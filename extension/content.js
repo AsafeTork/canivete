@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "15"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "23"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -497,12 +497,15 @@ function ubShowCursor() {
   document.documentElement.appendChild(ubCursor);
   return ubCursor;
 }
-function ubGlide(x, y) {
+function ubGlide(x, y, durationMs) {
   const c = ubShowCursor();
   ubCX = Math.max(0, Math.round(x)); ubCY = Math.max(0, Math.round(y));
-  c.style.left = ubCX - 4 + "px"; c.style.top = ubCY - 2 + "px"; // ponta da seta no alvo
+  const requested = durationMs === undefined || durationMs === null ? 220 : Number(durationMs);
+  const duration = Number.isFinite(requested) ? Math.max(0, requested) : 220;
+  c.style.transition = duration ? `left ${duration}ms cubic-bezier(.2,.8,.2,1),top ${duration}ms cubic-bezier(.2,.8,.2,1)` : "none";
+  c.style.left = ubCX - 4 + "px"; c.style.top = ubCY - 2 + "px";
   try { chrome.storage.session.set({ ubCursor: { x: ubCX, y: ubCY } }).catch(() => {}); } catch {}
-  return Promise.resolve(); // TELEPORTE: transition none — seta apenas APARECE no alvo, sem trajetória
+  return duration ? new Promise((resolve) => setTimeout(resolve, duration)) : Promise.resolve();
 }
 // recria o cursor no load, na última posição salva (constante entre páginas)
 try {
@@ -623,7 +626,8 @@ function ubTopmostCover(target, x, y) {
 function ubHoverBeforeClick(el, x, y, ms) {
   try {
     if (!el) return Promise.resolve(false);
-    const wait = Math.min(Math.max(Number(ms) || 300, 0), 1500);
+    const requested = ms === undefined || ms === null ? 300 : Number(ms);
+    const wait = Number.isFinite(requested) ? Math.max(0, requested) : 300;
     const cx = Math.round(Number(x) || 0), cy = Math.round(Number(y) || 0);
     const init = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 0 };
     try { el.dispatchEvent(new MouseEvent("mouseover", init)); } catch {}
@@ -793,13 +797,14 @@ function ubEphemScanLive() {
   } catch {}
   return out;
 }
-// Pesca transientes: fast-poll (~200ms, até ~3s, teto 15 iterações) observando nós
+// Pesca transientes: fast-poll (~200ms) observando nós
 // de vida curta. Retorna {appeared, disappeared, samples, durationMs} com texto
 // curto (teto 10+10). Nunca lança exceção.
 async function ubCatchup({ intervalMs = 200, durationMs = 3000 } = {}) {
   try {
-    const iv = Math.min(Math.max(Number(intervalMs) || 200, 100), 1000);
-    const du = Math.min(Math.max(Number(durationMs) || 3000, 500), 5000);
+    const requestedInterval = Number(intervalMs), requestedDuration = Number(durationMs);
+    const iv = Number.isFinite(requestedInterval) && requestedInterval > 0 ? requestedInterval : 200;
+    const du = Number.isFinite(requestedDuration) && requestedDuration >= 0 ? requestedDuration : 3000;
     const seen = new Map();
     let first = [];
     try {
@@ -808,7 +813,7 @@ async function ubCatchup({ intervalMs = 200, durationMs = 3000 } = {}) {
     } catch {}
     const base = new Set(first.map((nd) => { try { return String(nd.key); } catch { return ""; } }).filter(Boolean));
     const t0 = Date.now();
-    const steps = Math.min(Math.ceil(du / iv), 15);
+    const steps = Math.ceil(du / iv);
     let last = first;
     for (let i = 0; i < steps; i++) {
       try { await ubSleep(iv); } catch {}
@@ -1753,7 +1758,7 @@ function ubShortWarn(chars, raw) {
     let domLen = 0;
     try { domLen = (((document.body && document.body.textContent) || "").replace(/\s+/g, " ").trim()).length; } catch {}
     if (chars >= 200 || domLen <= 2000) return "";
-    return `texto curto (${chars} chars) p/ pagina grande — tente ${raw ? "n_ubrowser_snapshot" : 'mode:"raw" ou n_ubrowser_snapshot'}`;
+    return `texto curto (${chars} chars) p/ pagina grande — tente ${raw ? "cv_ubrowser_snapshot" : 'mode:"raw" ou cv_ubrowser_snapshot'}`;
   } catch { return ""; }
 }
 // ---- read principal: container principal sem nav/footer/ads/scripts + links com texto (máx 15) ----
@@ -2626,6 +2631,128 @@ function ubElemPickStart(opts) {
     return { picker: false, error: String(e && e.message || e).slice(0, 120) };
   }
 }
+function ubPageOverview(max = 35, offset = 0) {
+  const visible = (el) => { try { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden" && Number(s.opacity) !== 0; } catch { return false; } };
+  const textOf = (el, n = 100) => String(el?.innerText || el?.value || el?.getAttribute?.("aria-label") || el?.getAttribute?.("title") || "").replace(/\s+/g, " ").trim().slice(0, n);
+  const headings = [...document.querySelectorAll("h1,h2,h3,[role=heading]")].filter(visible).map((el) => ({ level: Number(el.getAttribute("aria-level")) || Number(el.tagName.slice(1)) || 0, text: textOf(el, 140), selector: cssPath(el) }));
+  const controls = ubShadowQueryAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[contenteditable="true"]').filter(visible).map((el) => {
+    const r = el.getBoundingClientRect(), name = ubAccessibleName(el, textOf(el, 100));
+    return { tag: el.tagName.toLowerCase(), role: ubAriaRole(el), name: String(name || textOf(el, 100)).slice(0, 100), type: el.type || "", state: ubElementState(el), selector: cssPath(el), inViewport: r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth, ...(el.href ? { href: String(el.href).slice(0, 240) } : {}) };
+  });
+  const cap = Number.isFinite(Number(max)) && Number(max) > 0 ? Math.floor(Number(max)) : 35;
+  const start = Number.isFinite(Number(offset)) ? Math.max(0, Math.floor(Number(offset))) : 0;
+  const landmarks = [...document.querySelectorAll("main,nav,header,footer,aside,[role=main],[role=navigation],[role=search],[role=dialog]")].filter(visible).map((el) => ({ role: ubAriaRole(el) || el.tagName.toLowerCase(), name: textOf(el, 80), selector: cssPath(el) }));
+  const pageControls = controls.slice(start, start + cap);
+  return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: controls.length, controlsOffset: start, controlsOmitted: Math.max(0, controls.length - start - pageControls.length), nextOffset: start + pageControls.length < controls.length ? start + pageControls.length : null, overlays: ubOverlayState(), hint: "Use os selectors para agir. Leia só a região relevante; snapshot/find serve para mapear detalhes." };
+}
+
+var ubProgressPanelState = globalThis.__ubProgressPanelState || { active: false, collapsed: false, steps: [], annotations: [], title: "Canivete", message: "" };
+delete ubProgressPanelState.messages; delete ubProgressPanelState.delivery; delete ubProgressPanelState.agentSessionId;
+globalThis.__ubProgressPanelState = ubProgressPanelState;
+// Remove a chat panel left by an older extension build on an already-open page.
+try { document.getElementById("ubrowser-companion")?.remove(); } catch {}
+try { delete globalThis.__ubCompanionState; } catch {}
+var ubProgressPanelTouched = false;
+function ubProgressPanelPersist() {
+  try {
+    ubProgressPanelTouched = true;
+    const state = { active: ubProgressPanelState.active, collapsed: ubProgressPanelState.collapsed, title: ubProgressPanelState.title, message: ubProgressPanelState.message, steps: ubProgressPanelState.steps };
+    chrome.runtime.sendMessage({ __ubProgressPanelStateSet: state }).catch(() => {});
+  } catch {}
+}
+function ubProgressPanelRestore() {
+  try {
+    chrome.runtime.sendMessage({ __ubProgressPanelStateGet: true }).then((result) => {
+      if (ubProgressPanelTouched || !result?.ok || !result.state) return;
+      Object.assign(ubProgressPanelState, result.state);
+      delete ubProgressPanelState.messages; delete ubProgressPanelState.delivery; delete ubProgressPanelState.agentSessionId;
+      ubProgressPanelState.annotations = [];
+      ubProgressPanelPersist(); // overwrites any session storage left by the old chat panel
+      if (ubProgressPanelState.active) ubProgressPanelRender();
+    }).catch(() => {});
+  } catch {}
+}
+function ubProgressPanelRefreshMarks() {
+  try {
+    const root = document.getElementById("ubrowser-progress-panel")?.shadowRoot;
+    const marks = root?.querySelector(".marks"); if (!marks) return;
+    marks.replaceChildren();
+    for (const item of (ubProgressPanelState.annotations || [])) {
+      try {
+        const el = item.selector ? findEl(String(item.selector)) : null; if (!el) continue;
+        const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue;
+        const box = document.createElement("div"); box.className = "mark";
+        if (item.color) box.style.borderColor = String(item.color).slice(0, 30);
+        Object.assign(box.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+        const tag = document.createElement("span"); tag.textContent = item.label || "Alvo"; box.appendChild(tag); marks.appendChild(box);
+      } catch {}
+    }
+  } catch {}
+}
+if (!globalThis.__ubProgressPanelListeners) {
+  globalThis.__ubProgressPanelListeners = true;
+  try { document.addEventListener("scroll", ubProgressPanelRefreshMarks, { capture: true, passive: true }); window.addEventListener("resize", ubProgressPanelRefreshMarks, { passive: true }); } catch {}
+}
+function ubProgressPanelRender() {
+  try {
+    let host = document.getElementById("ubrowser-progress-panel");
+    if (!ubProgressPanelState.active) { host?.remove(); return { ok: true, active: false }; }
+    if (!host) { host = document.createElement("div"); host.id = "ubrowser-progress-panel"; document.documentElement.appendChild(host); }
+    const root = host.shadowRoot || host.attachShadow({ mode: "open" });
+    const make = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    const style = make("style");
+    style.textContent = `
+      :host{all:initial;color-scheme:dark}*,*::before,*::after{box-sizing:border-box}.stage{position:fixed;inset:0;z-index:2147483646;pointer-events:none;font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f3f4ef;isolation:isolate}.scrim{position:fixed;inset:0;z-index:0;pointer-events:none;background:rgba(7,9,8,.18);backdrop-filter:brightness(.72) saturate(.72) blur(1px)}.panel{pointer-events:auto;position:fixed;z-index:1;right:0;top:0;bottom:0;width:min(420px,100vw);height:100dvh;display:flex;flex-direction:column;background:rgba(14,17,15,.96);border-left:1px solid #3a4037;box-shadow:-24px 0 72px #0007;overflow:hidden;backdrop-filter:blur(20px)}header{height:56px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid #30352e}header strong{flex:1;font-size:14px;font-weight:600;letter-spacing:-.2px;color:#f6f7f2}.live{width:7px;height:7px;border-radius:50%;background:#c7f36b;box-shadow:0 0 10px #c7f36688}button{font:inherit;cursor:pointer;color:#eef0e8;background:transparent;border:0;border-radius:6px;padding:8px 10px}button:hover{background:#272c25}button:focus-visible{outline:2px solid #c7f36b;outline-offset:2px}.body{min-height:0;flex:1;display:flex;flex-direction:column;gap:0}.status{padding:12px 16px;color:#c9cec4;font-size:12px;white-space:pre-wrap;border-bottom:1px solid #252a24}.plan{max-height:150px;overflow:auto;padding:12px 16px;border-bottom:1px solid #252a24}.plan[hidden]{display:none}.plan-label{margin-bottom:8px;color:#929a8c;font-size:10px;letter-spacing:.08em;text-transform:uppercase}.steps{list-style:none;margin:0;padding:0;display:grid;gap:4px}.steps li{display:flex;align-items:center;gap:8px;color:#aab0a4;font-size:12px}.steps li.active{color:#f1f3eb}.steps li.done{color:#aebe99}.steps li.error{color:#ff9b89}.badge{width:16px;height:16px;flex:none;display:grid;place-items:center;color:#aab0a4;font-size:11px}.steps li.active .badge{color:#c7f36b}.collapsed .body{display:none}.stage.is-collapsed .scrim{opacity:0}.stage.is-collapsed .panel{top:10px;right:10px;bottom:auto;width:min(250px,calc(100vw - 20px));height:56px;border:1px solid #434a3d;border-radius:10px}.mark{position:fixed;border:2px solid #c7f36b;border-radius:3px;background:#c7f36b18;box-shadow:0 0 0 2px #1118;pointer-events:none}.mark span{position:absolute;left:-2px;top:-24px;white-space:nowrap;background:#c7f36b;color:#12160d;border-radius:3px;padding:3px 7px;font-size:11px;font-weight:650;max-width:240px;overflow:hidden;text-overflow:ellipsis}@media(max-width:560px){.panel{width:100vw}.stage.is-collapsed .panel{width:min(250px,calc(100vw - 20px))}}
+    `;
+    const stage = make("div", "stage"), scrim = make("div", "scrim"), panel = make("section", "panel");
+    if (ubProgressPanelState.collapsed) stage.classList.add("is-collapsed");
+    if (ubProgressPanelState.collapsed) panel.classList.add("collapsed");
+    const header = make("header"), live = make("span", "live"), title = make("strong", "", ubProgressPanelState.title || "Canivete");
+    live.setAttribute("aria-hidden", "true");
+    const minimize = make("button", "min", "−"); minimize.type = "button"; minimize.setAttribute("aria-label", "Minimizar painel");
+    const close = make("button", "close", "×"); close.type = "button"; close.setAttribute("aria-label", "Fechar painel");
+    header.append(live, title, minimize, close);
+    const body = make("div", "body"), status = make("div", "status", ubProgressPanelState.message || "Canivete em ação");
+    status.setAttribute("aria-live", "polite");
+    const plan = make("section", "plan"); plan.hidden = !(ubProgressPanelState.steps || []).length;
+    const planLabel = make("div", "plan-label", "Em andamento"), list = make("ol", "steps");
+    plan.append(planLabel, list);
+    for (const [i, step] of (ubProgressPanelState.steps || []).entries()) {
+      const li = make("li", step.status || "pending"), badge = make("span", "badge"), label = make("span", "", step.label || `Passo ${i + 1}`);
+      badge.textContent = step.status === "done" ? "✓" : step.status === "active" ? "•" : step.status === "error" ? "!" : step.status === "skipped" ? "–" : String(i + 1);
+      li.append(badge, label); list.appendChild(li);
+    }
+    body.append(status, plan);
+    const marks = make("div", "marks");
+    stage.append(scrim, panel, marks); panel.append(header, body);
+    root.replaceChildren(style, stage);
+    ubProgressPanelRefreshMarks();
+    minimize.onclick = () => { ubProgressPanelState.collapsed = !ubProgressPanelState.collapsed; ubProgressPanelPersist(); ubProgressPanelRender(); };
+    close.onclick = () => { ubProgressPanelState.active = false; ubProgressPanelPersist(); host.remove(); };
+    return { ok: true, active: true };
+  } catch (error) { return { ok: false, error: String(error?.message || error).slice(0, 240) }; }
+}
+function ubProgressPanelCommand(args = {}) {
+  const mode = String(args.mode || "open"); if (mode === "close") { ubProgressPanelState.active = false; ubProgressPanelPersist(); ubProgressPanelRender(); return { open: false }; }
+  ubProgressPanelState.active = true; if (args.title) ubProgressPanelState.title = String(args.title).slice(0, 100);
+  if (args.message !== undefined) ubProgressPanelState.message = String(args.message).slice(0, 1000);
+  if (Array.isArray(args.steps)) ubProgressPanelState.steps = args.steps.map((step) => ({ label: String(step.label || "Passo").slice(0, 120), status: ["pending", "active", "done", "error", "skipped"].includes(step.status) ? step.status : "pending" }));
+  if (args.stepIndex != null && ubProgressPanelState.steps[Number(args.stepIndex)]) {
+    const current = ubProgressPanelState.steps[Number(args.stepIndex)];
+    if (!(mode === "complete" && current.status === "error")) current.status = mode === "complete" ? "done" : "active";
+  }
+  if (Array.isArray(args.annotations)) ubProgressPanelState.annotations = args.annotations.slice(0, 30).map((item) => ({ selector: String(item.selector || "").slice(0, 500), label: String(item.label || "Alvo").slice(0, 100), color: String(item.color || "").slice(0, 30) }));
+  ubProgressPanelPersist();
+  const rendered = ubProgressPanelRender();
+  return { open: true, steps: ubProgressPanelState.steps.length, annotations: ubProgressPanelState.annotations.length, rendered: rendered?.ok === true, ...(rendered?.error ? { renderError: rendered.error } : {}) };
+}
+ubProgressPanelRestore();
+
 // boot: re-aplica os highlights dos reports abertos deste site (cache do background, TTL 60s)
 try {
   chrome.runtime.sendMessage({ __ubElemGet: { origin: location.origin } }).then((r) => {
@@ -2638,6 +2765,8 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
     const a = msg.args || {};
     if (msg.cmd === "ping") { reply({ ok: true, data: { v: UB_V } }); return; }
     if (msg.cmd === "state") { reply({ ok: true, data: { title: document.title, url: location.href } }); return; }
+    if (msg.cmd === "overview") { reply({ ok: true, data: ubPageOverview(a.max, a.offset) }); return; }
+    if (msg.cmd === "panel") { reply({ ok: true, data: ubProgressPanelCommand(a) }); return; }
     if (msg.cmd === "read") {
       // settle antes de coletar: SPA hidrata depois do idle; sem isso lê esqueleto (BulkMD: 60%→95%).
       try { await ubSettle({ timeout: 1500, quiet: 250 }); } catch {}
@@ -2646,7 +2775,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         reply({ ok: true, data: o });
         return;
       }
-      // #64b: selector escopa a leitura a um container (paridade com n_browser_screenshot).
+      // #64b: selector escopa a leitura a um container (paridade com cv_browser_screenshot).
       let scopeEl = null;
       if (a.selector) {
         scopeEl = findEl(String(a.selector));
@@ -2829,7 +2958,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         }
         // (c) hover opt-in p/ menus e linhas que exigem estado :hover.
         if (a.hover) { try { await ubHoverBeforeClick(tgt, fresh.p.x, fresh.p.y, a.hoverMs); } catch {} }
-        await ubGlide(fresh.p.x, fresh.p.y); // cursor desliza até o alvo antes de clicar
+        await ubGlide(fresh.p.x, fresh.p.y, a.durationMs); // cursor desliza até o alvo antes de clicar
         ubPulse();
         // (b) sintético + verificação + duplo-clique; trusted é escalado no background.
         const r = await ubClickWithVerify(tgt, fresh.p.x, fresh.p.y, { noEscalate: a.noEscalate });
@@ -2893,7 +3022,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
     } else if (msg.cmd === "cursor") {
       // cursor independente: move (x,y da viewport) e opcionalmente clica no ponto
       try {
-        await ubGlide(Number(a.x) || 0, Number(a.y) || 0);
+        await ubGlide(Number(a.x) || 0, Number(a.y) || 0, a.durationMs);
         let clicked = null;
         if (a.click) {
           ubPulse();
@@ -2930,7 +3059,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         if (a.click && coverCs && coverCs.covered && !a.force) {
           return reply({ ok: false, error: "COVERED por " + (coverCs.cover || "?") + " em (" + freshCs.p.x + "," + freshCs.p.y + ") — alvo: " + a.selector + " (force:true p/ clicar mesmo assim)" });
         }
-        await ubGlide(freshCs.p.x, freshCs.p.y);
+        await ubGlide(freshCs.p.x, freshCs.p.y, a.durationMs);
         let clicked = null;
         if (a.click) {
           ubPulse();
@@ -2975,7 +3104,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         }
         let before = [];
         try { before = ubTooltipNodes().map((n) => n.text); } catch { before = []; }
-        try { await ubGlide(Number(px) || 0, Number(py) || 0); } catch {}
+        try { await ubGlide(Number(px) || 0, Number(py) || 0, a.durationMs); } catch {}
         try { await ubHoverBeforeClick(el, px, py, a.hoverMs); } catch {}
         try { if (el && el.focus) el.focus(); } catch {}
         try { await ubSettle({ timeout: 1200, quiet: 200 }); } catch {}

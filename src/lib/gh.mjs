@@ -1,6 +1,6 @@
 // canivete — infra gh (CLI autenticado do dono, multi-conta): single source of truth,
 // extraído 1:1 de tools-codespace.mjs (git cf2715c) p/ ser compartilhado também pelo
-// n_github (src/lib/apis.mjs) — conta gh logada = 5000 req/h na API do GitHub.
+// cv_github (src/lib/apis.mjs) — conta gh logada = 5000 req/h na API do GitHub.
 // Assinaturas e mensagens idênticas às da extração (compat garantida). NUNCA ecoa token
 // (stdout de gh auth token só vive em memória). Zero deps novas: só `exec` do ctx.mjs.
 import { exec } from "./ctx.mjs";
@@ -39,7 +39,7 @@ export function csScopeIssue(text) {
 export const accLine = (a) => `${a.user}${a.active ? " [ativa]" : a.valid ? " (válida)" : " (token inválido)"}`;
 export function accFail(want, accounts, kind) {
   const why = kind === "unknown" ? "não está logada no gh" : kind === "invalid" ? "token inválido/expirado" : "token não obtido";
-  const e = new Error(`conta gh "${want}": ${why} — contas: ${accounts.map(accLine).join(", ") || "(nenhuma)"} | logar/religar: n_codespace_login (link de 1 clique)`);
+  const e = new Error(`conta gh "${want}": ${why} — contas: ${accounts.map(accLine).join(", ") || "(nenhuma)"} | logar/religar: cv_codespace_login (link de 1 clique)`);
   e.accounts = accounts;
   return e;
 }

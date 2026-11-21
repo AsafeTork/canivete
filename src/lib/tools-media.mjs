@@ -17,7 +17,7 @@ function parseLoudness(se) {
   return { integrado_lufs: integrado, limiar_lufs: limiar, pico_true_dbtp: pico };
 }
 
-reg("n_audio_analyze", {
+reg("cv_audio_analyze", {
   description: "Analisa áudio LOCAL p/ montagem de vídeo (ffprobe+ffmpeg no disco — NADA sai da máquina): duração, codec/canais, loudness LUFS (ebur128) e mapa de silêncios = pontos de corte naturais. Aceita mp3/wav/m4a/ogg/flac ou vídeo (usa a trilha). Ex: {path:\"narração.mp3\", silenceDb:-35}.",
   inputSchema: {
     type: "object",
@@ -88,7 +88,7 @@ reg("n_audio_analyze", {
       summary: `áudio ${dur.toFixed(1)}s — ${silencios.length} silêncio(s) >= ${mind}s @ ${db}dB, ${loud.integrado_lufs ?? "?"} LUFS, ${formato.codec} ${formato.sample_rate || "?"}Hz ${formato.canais || "?"}ch — processado LOCAL (nada enviado) → ${file}`,
       data: { file, duracao_s: Number(dur.toFixed(2)), formato, loudness: loud, total_silencio_s: Number(totalSil.toFixed(2)), fala_s: Number((dur - totalSil).toFixed(2)), silencios: silencios.slice(0, 60), silencios_ocultos: Math.max(0, silencios.length - 60), sugestoes, processamento: "local (ffprobe+ffmpeg) — proveniência: nenhum byte saiu da máquina" },
       telemetry: { execution_time_ms: Date.now() - t0 },
-      next: [{ tool: "n_bash", reason: "Cortar nos pontos sugeridos (ffmpeg -ss/-to) ou normalizar (loudnorm)" }, { tool: "n_browser_screencast", reason: "Gravar a tela da demo pra juntar com o áudio na montagem" }],
+      next: [{ tool: "cv_bash", reason: "Cortar nos pontos sugeridos (ffmpeg -ss/-to) ou normalizar (loudnorm)" }, { tool: "cv_browser_screencast", reason: "Gravar a tela da demo pra juntar com o áudio na montagem" }],
     });
   },
 });

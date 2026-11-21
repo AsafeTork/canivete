@@ -2,7 +2,7 @@
 import { reg, out, httpJson, trimOut } from "./ctx.mjs";
 import { cached, createTtlCache, memoTtl } from "../core/cache.mjs";
 import { sleep, fetchRetry } from "../core/retry.mjs";
-import { ghTokenFor } from "./gh.mjs"; // n_github autenticado: conta gh logada do dono = 5000 req/h
+import { ghTokenFor } from "./gh.mjs"; // cv_github autenticado: conta gh logada do dono = 5000 req/h
 
 // CACHE INTELLIGENCE (só apis.mjs, sem mudar resultados):
 // - normaliza chaves (moeda upper/trim, CEP/CNPJ só dígitos, ip trim, lat/lon 2 casas)
@@ -18,7 +18,7 @@ function memoGet(key) { return memo.get(key); }
 function memoSet(key, val, ttlMs) { memo.set(key, val, ttlMs); }
 // memoTtl vem do core (negative-cache curto p/ falhas). TTL_NEG_MS mantido p/ compat.
 
-reg("n_currency", {
+reg("cv_currency", {
   description: "Taxa de câmbio/conversão (ECB/Frankfurter, diário, cache 1h). Converte valores e precifica. Ex: {from:\"BRL\", to:\"USD,EUR\" ou [\"USD\",\"EUR\"], amount:100, invert:false}. Retorna tabela: 1 origem = X destino + valor convertido. Com invert:true inverte (1 USD = N BRL).",
   inputSchema: {
     type: "object",
@@ -84,7 +84,7 @@ reg("n_currency", {
   },
 });
 
-reg("n_cep", {
+reg("cv_cep", {
   description: "Busca CEP brasileiro (ViaCEP, cache 7 dias, com retry). Quando usar: endereço de cliente/entrega. Ex: {cep:\"01001000\"}. Retorna logradouro, bairro, cidade, UF. CEP inválido (≠8 dígitos) falha.",
   inputSchema: {
     type: "object",
@@ -123,7 +123,7 @@ reg("n_cep", {
   },
 });
 
-reg("n_cnpj", {
+reg("cv_cnpj", {
   description: "Consulta CNPJ (ReceitaWS, cache 7 dias, rate-limited, com retry). Quando usar: validar empresa/cliente. Ex: {cnpj:\"11444777000161\"}. Retorna razão, fantasia, status, atividade, endereço, sócios. Inválido (≠14 dígitos) falha.",
   inputSchema: {
     type: "object",
@@ -158,7 +158,7 @@ reg("n_cnpj", {
   },
 });
 
-reg("n_ipinfo", {
+reg("cv_ipinfo", {
   description: "Geolocalização de IP (ip-api.com, 45 req/min, cache 10min, com retry). Omitir IP = seu IP. Quando usar: debug de rede/região. Ex: {ip:\"8.8.8.8\"} ou {}. Retorna país, região, cidade, ISP, lat/lon.",
   inputSchema: {
     type: "object",
@@ -200,7 +200,7 @@ reg("n_ipinfo", {
   },
 });
 
-reg("n_weather", {
+reg("cv_weather", {
   description: "Previsão do tempo (Open-Meteo, cache 30min, lat/lon, 1-7 dias, com retry). Quando usar: planejamento e logística. Ex: {latitude:-23.55, longitude:-46.63, days:3, alert:true}. Retorna máx/mín °C, chuva %, tempo em pt-BR; com alert:true avisa no resumo se chuva>70% ou máx>35°C.",
   inputSchema: {
     type: "object",
@@ -266,8 +266,8 @@ reg("n_weather", {
   },
 });
 
-reg("n_github", {
-  description: "API do GitHub (REST, somente leitura). Kinds: repo|releases|commits|issues|branches|user|file|search. Auth: account:\"<conta gh logada>\" (case-insensitive) = 5000 req/h; sem account usa env GITHUB_TOKEN/GH_TOKEN (5000 req/h); sem nada anônimo (60 req/h — rate limit cedo). kind=file lê arquivo cru no branch default (cap 12k; path de diretório lista arquivos). kind=search usa a sintaxe do GitHub Search (scope repos|issues|users). Contas gh: n_codespace_list. Última linha \"json:{...}\" é parseável (extras + auth). Cache 10min (search 3min). Ex: {owner:\"vitejs\", repo:\"vite\", kind:\"issues\", limit:3} · {user:\"AsafeTork\"} · {owner:\"AsafeTork\", repo:\"canivete\", kind:\"file\", path:\"package.json\"} · {q:\"canivete in:name\", scope:\"repos\"} · {owner:\"vitejs\", repo:\"vite\", account:\"Financia-Brasil\"}",
+reg("cv_github", {
+  description: "API do GitHub (REST, somente leitura). Kinds: repo|releases|commits|issues|branches|user|file|search. Auth: account:\"<conta gh logada>\" (case-insensitive) = 5000 req/h; sem account usa env GITHUB_TOKEN/GH_TOKEN (5000 req/h); sem nada anônimo (60 req/h — rate limit cedo). kind=file lê arquivo cru no branch default (cap 12k; path de diretório lista arquivos). kind=search usa a sintaxe do GitHub Search (scope repos|issues|users). Contas gh: cv_codespace_list. Última linha \"json:{...}\" é parseável (extras + auth). Cache 10min (search 3min). Ex: {owner:\"vitejs\", repo:\"vite\", kind:\"issues\", limit:3} · {user:\"AsafeTork\"} · {owner:\"AsafeTork\", repo:\"canivete\", kind:\"file\", path:\"package.json\"} · {q:\"canivete in:name\", scope:\"repos\"} · {owner:\"vitejs\", repo:\"vite\", account:\"Financia-Brasil\"}",
   inputSchema: {
     type: "object",
     properties: {
@@ -279,7 +279,7 @@ reg("n_github", {
       path: { type: "string", description: "kind:\"file\" — caminho relativo no branch default (ex: package.json ou src/lib/ctx.mjs); diretório lista o conteúdo" },
       q: { type: "string", description: "kind:\"search\" — query na sintaxe GitHub Search (ex: \"canivete in:name\", \"mcp stars:>100\"; issues: \"repo:vitejs/vite is:issue\")" },
       scope: { type: "string", enum: ["repos", "issues", "users"], description: "kind:\"search\" — scope da busca: repos|issues|users (padrão repos)", default: "repos" },
-      account: { type: "string", description: "conta gh logada (case-insensitive; ex: \"Financia-Brasil\") p/ autenticar = 5000 req/h — anônimo só 60 req/h. Vazio = env GITHUB_TOKEN/GH_TOKEN. Conferir contas: n_codespace_list" },
+      account: { type: "string", description: "conta gh logada (case-insensitive; ex: \"Financia-Brasil\") p/ autenticar = 5000 req/h — anônimo só 60 req/h. Vazio = env GITHUB_TOKEN/GH_TOKEN. Conferir contas: cv_codespace_list" },
     },
     required: [],
   },
@@ -300,7 +300,7 @@ reg("n_github", {
       let auth = null;
       try { auth = await ghTokenFor(String(account)); }
       catch (e) {
-        return out(`n_github falhou p/ account:"${String(account).trim()}" — ${String(e && e.message || e)}. O n_github usa a MESMA credencial gh do n_codespace_list (confira as contas lá)`, true);
+        return out(`cv_github falhou p/ account:"${String(account).trim()}" — ${String(e && e.message || e)}. O cv_github usa a MESMA credencial gh do cv_codespace_list (confira as contas lá)`, true);
       }
       if (!auth) return out('account vazio pós-trim: passe o nome da conta gh (ex: account:"Financia-Brasil") ou omita o param', true);
       headers = { authorization: `Bearer ${auth.token}` };
@@ -360,13 +360,13 @@ reg("n_github", {
     if (mHit) return mHit;
     const r = await cached(`gh:${authTag}:${k}:${owner}/${repo}:${n}${tail}`, ttl, () => fetchRetry(() => httpJson(url, { headers }), 3), (x) => x.status === 200);
     if (r.status === 401) {
-      const err = out(`GitHub HTTP 401 — token inválido/expirado${authTag.startsWith("acct:") ? ` da conta "${authTag.slice(5)}"` : authTag === "env" ? " em env GITHUB_TOKEN/GH_TOKEN" : ""} — cura: religar/logar a conta com n_codespace_login (link de 1 clique) e conferir n_codespace_list${authTag === "env" ? '; ou passe account:"<conta gh logada>"' : ""}`, true);
+      const err = out(`GitHub HTTP 401 — token inválido/expirado${authTag.startsWith("acct:") ? ` da conta "${authTag.slice(5)}"` : authTag === "env" ? " em env GITHUB_TOKEN/GH_TOKEN" : ""} — cura: religar/logar a conta com cv_codespace_login (link de 1 clique) e conferir cv_codespace_list${authTag === "env" ? '; ou passe account:"<conta gh logada>"' : ""}`, true);
       memoSet(mKey, err, memoTtl(ttl, err));
       return err;
     }
     if (r.status === 403) {
       const err = out(authTag === "anon"
-        ? `GitHub rate limit anônimo (HTTP 403, 60 req/h) — cura: account:"<conta gh logada>" (ex: account:"Financia-Brasil") = 5000 req/h — conferir contas: n_codespace_list; não tem conta: n_codespace_login gera o link de 1 clique (esperar ~1min também resolve)`
+        ? `GitHub rate limit anônimo (HTTP 403, 60 req/h) — cura: account:"<conta gh logada>" (ex: account:"Financia-Brasil") = 5000 req/h — conferir contas: cv_codespace_list; não tem conta: cv_codespace_login gera o link de 1 clique (esperar ~1min também resolve)`
         : `GitHub HTTP 403 mesmo autenticado (${authLabel}) — limite secundário/detecção de abuso: espere ~1min, limite p/ limit menor e não repita em loop; se persistir, troque de conta (account:"<outra>")`, true);
       memoSet(mKey, err, memoTtl(ttl, err));
       return err;
@@ -377,7 +377,7 @@ reg("n_github", {
         file: `GitHub 404 — path "${tail.slice(1)}" não existe em ${owner}/${repo} (branch default) — confira o path; listar DIRETÓRIO p/ achar o nome: {"kind":"file","path":"src"}`,
         search: `GitHub 404 em search — scope "${(scope || "").toLowerCase()}" inexistente (use repos|issues|users)`,
       };
-      const err = out(d404[k] || `GitHub 404 — "${owner}/${repo}" inexistente OU privado (anônimo vê repos privados como 404): confira owner/repo; se for privado, passe account:"<conta com acesso>" (contas: n_codespace_list)`, true);
+      const err = out(d404[k] || `GitHub 404 — "${owner}/${repo}" inexistente OU privado (anônimo vê repos privados como 404): confira owner/repo; se for privado, passe account:"<conta com acesso>" (contas: cv_codespace_list)`, true);
       memoSet(mKey, err, memoTtl(ttl, err));
       return err;
     }
@@ -416,7 +416,7 @@ reg("n_github", {
         return res;
       }
       if (d.encoding === "none" || (!d.content && (d.size ?? 0) > 0)) { // contents API só devolve blobs até 1MB (vazio size=0 desce pro decode)
-        const err = out(`${owner}/${repo}:${tail.slice(1)} — conteúdo não veio (arquivo >1MB: contents API corta). Alternativa: curl cru via n_bash — curl -s https://raw.githubusercontent.com/${owner}/${repo}/HEAD/${tail.slice(1)} (ou gh api git/blobs pelo sha)`, true);
+        const err = out(`${owner}/${repo}:${tail.slice(1)} — conteúdo não veio (arquivo >1MB: contents API corta). Alternativa: curl cru via cv_bash — curl -s https://raw.githubusercontent.com/${owner}/${repo}/HEAD/${tail.slice(1)} (ou gh api git/blobs pelo sha)`, true);
         memoSet(mKey, err, memoTtl(ttl, err));
         return err;
       }
@@ -467,7 +467,7 @@ reg("n_github", {
   },
 });
 
-reg("n_npm", {
+reg("cv_npm", {
   description: "Info do pacote npm (cache 1h, com retry). Quando usar: checar lib antes de instalar. Ex: {package:\"vite\"}. Retorna versão, descrição, licença, deps e downloads do ÚLTIMO MÊS.",
   inputSchema: {
     type: "object",

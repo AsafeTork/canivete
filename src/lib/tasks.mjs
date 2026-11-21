@@ -20,7 +20,7 @@ const todo = [];
 // ENV: CANIVETE_MAX_POLLS=8=teto de polls ativos (acima começa em POLL_MAX_MS)
 // ENV: CANIVETE_AGENTS=mcp-only,explore,quick,general,reviewer=lista de subagent_type válidos
 // ENV: CANIVETE_MODELS_FILE=../../config/models.json=arquivo JSON com allowlist de modelos free
-// ENV: CANIVETE_SERVER_NAME=canivete=prefixo exibido das tools (n_* vs <prefixo>_n_*) no orchestrationNote
+// ENV: CANIVETE_SERVER_NAME=canivete=prefixo exibido das tools (cv_* vs <prefixo>_cv_*) no orchestrationNote
 // ENV: CANIVETE_WATCH_MAIN=(unset, só "1" ativa)=observa caixa "main" p/ push 📬 (modo stdio/local)
 // ENV: CANIVETE_WATCH=""=caixas extras p/ push 📬 (CSV, ex: "box1,box2")
 // ENV: CANIVETE_TASK_ENABLE=(unset, só "1" ativa)=kill-switch da família task (spawn consome RAM;
@@ -268,7 +268,7 @@ function safeTaskIds() {
 }
 
 const tasks = new Map();
-const TASKS_MEM_CAP = 20; // teto do índice em memória (era 60: cada n_task ficava p/ sempre com tailRaw de 8KB)
+const TASKS_MEM_CAP = 20; // teto do índice em memória (era 60: cada cv_task ficava p/ sempre com tailRaw de 8KB)
 function evictTasks() {
   if (tasks.size <= TASKS_MEM_CAP) return;
   for (const [id, t] of tasks) {
@@ -278,6 +278,15 @@ function evictTasks() {
 }
 let taskSeq = 0;
 const taskId = () => `t${Date.now().toString(36)}${(++taskSeq).toString(36)}`;
+
+function bareCaniveteToolName(name) {
+  const raw = String(name || "");
+  const prefixes = [...new Set(["native", "canivete", process.env.CANIVETE_SERVER_NAME || "canivete"])]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const prefix = prefixes.find((p) => raw.startsWith(`${p}_`));
+  return prefix ? raw.slice(prefix.length + 1) : raw;
+}
 
 function parseAgentOutput(so) {
   const chunks = [];
@@ -300,8 +309,8 @@ function parseAgentOutput(so) {
         if (p.type === "text" && p.text) chunks.push(p.text);
         const toolName = p.tool || p.name;
         if ((p.type === "tool" || p.type === "tool_use" || p.type === "tool-call" || p.type === "tool_call" || p.type === "function") && toolName) {
-          const t = String(toolName).startsWith("native_") ? String(toolName).slice(7) : String(toolName);
-          toolCalls.push(t.startsWith("n_") ? t : `NÃO-MCP:${t}`);
+          const t = bareCaniveteToolName(toolName);
+          toolCalls.push(t.startsWith("cv_") ? t : `NÃO-MCP:${t}`);
         }
       }
     }
@@ -312,17 +321,10 @@ function parseAgentOutput(so) {
 }
 
 function orchestrationNote(id) {
-  const pfx = process.env.CANIVETE_SERVER_NAME || "canivete";
-  return `[ORCHESTRATION] Você é o agente ${id}. OBEDIÊNCIA TOTAL às tools — o principal AUDITA n_task_status e RECUSA entrega sem tools certas.
-- Nomes: tools aparecem como ${pfx}_n_* (prefixo); "n_*" é o mesmo nome. Prefira sempre n_*.
-- PROIBIDO fazer na mão o que tem tool: ler=n_read (nunca cat/head), buscar=n_grep/n_glob (nunca grep/find), web=n_webfetch/n_websearch, patch=n_apply_patch/n_apply_semantic_patch. Bash SÓ p/ o que não tem tool.
-- ROTEAMENTO OBRIGATÓRIO: entender projeto→n_get_architecture_summary; bug/erro→n_investigate_issue; antes de editar→n_analyze_change_impact; editar JS→n_apply_semantic_patch; depois→validar (n_execute_targeted_tests ou n_bash); página com JS→n_browser_navigate; Chrome do dono→n_ubrowser_status→tabs→read(distill)|snapshot(compact; find p/ localizar; scan antes se lista virtualizada; shadow: p/ web components)→act(selector; fill substitui, type anexa; wait=waitMs)→shot(visível). Refs do snapshot morrem na navegação: re-snapshot após goto/click.
-- PROIBIDO chutar path/API/versão/comportamento: VERIFIQUE com tool e cite arquivo:linha como evidência.
-- Modelos: o principal escolheu este explicitamente via n_list_models. opencode-go/*, hy3-free e desconhecidos são BLOQUEADOS (isError).
-- Comunicação (confie no MCP, SEM polling manual): dispare background (id em mãos = abort-safe) → UMA chamada n_task_wait com timeout longo → leia. NUNCA sleep/status em loop. Subagente: ao concluir, SEMPRE n_task_send({task_id:"main", message:"done <id> + resumo 1 linha"}) — o principal acorda pela notificação. Peers: handshake + recv com timeout. Mailbox tem teto; recv esvazia (destrutivo); delete em running mata. REGRA DE OURO: nunca termine com mailbox própria cheia — recv({timeout:30000}) até 2x vazio. Respostas trazem 📬 — leia n_task_notifications.
-- Dono: acesso total QUANDO ELE PEDIR; NUNCA destrutivo sem pedido explícito; alto risco exige confirm; FECHAR ABAS e ROUBAR FOCO PROIBIDOS.
-- ENTREGA = resultado + n_task_send main ("done <id>") + ## Tools usados (toda n_* invocada). Zero tools, tool improvisada ou sem evidência = RECUSADA.
-- REFINE A FERRAMENTA: travou, faltou tool/capacidade ou gargalo? NUNCA improvise — registre n_report({kind,where,expected,got}) e siga pelo alternativo.\n\n`;
+  return `[CANIVETE · ${id}] Use cv_help quando precisar descobrir uma operação ou campo. Faça chamadas curtas e diretas; prefira a tool pública mais específica e leia só o necessário. Para arquivos use cv_file_read/write; para shell, cv_bash; para código, cv_code_inspect/edit/verify; para páginas públicas, cv_websearch/webfetch ou cv_browser_* conforme precisar de JavaScript.
+Chrome autenticado: cv_owner_inspect consulta; cv_owner_act opera. Acesse qualquer guia escolhida por tab/tabId, inclusive guias que já existiam. Guias criadas pelo agente entram no grupo “Canivete · agente”. Ativar/interagir traz a janela à frente por padrão; focus:false preserva o foco atual. CDP pode ser usado quando a página exigir; cursor aceita coordenadas/selector, durationMs e hoverMs. Não invente limitações: respeite apenas limites reais do Chrome e confirmações de alto risco.
+Para entender página rapidamente, cv_owner_inspect {action:"overview"} retorna controles e seletores. cv_owner_act {action:"panel"} exibe status, etapas e marcações visuais; flow atualiza o painel a cada etapa e devolve o resultado da sequência.
+Para código, verifique paths e comportamento com tools e cite evidências. Faça o trabalho pedido e valide de forma proporcional. Se faltar capacidade, use o caminho alternativo disponível e registre cv_report quando houver uma lacuna real. Se tarefa estiver habilitada, siga o contrato cv_task_* e entregue resumo + ferramentas usadas.\n\n`;
 }
 
 const NOTIF_DIR = join(BROKER_DIR, "notifications");
@@ -354,7 +356,7 @@ if (WATCH_BOXES.length) {
           known.set(id, sig);
           const last = box.msgs[box.msgs.length - 1];
           try {
-            sendToHost({ method: "notifications/message", params: { level: "info", logger: "canivete", data: `📬 ${box.msgs.length} nova(s) p/ ${id} de ${last.from}: ${String(last.message).slice(0, 200)} — leia com n_task_recv` } });
+            sendToHost({ method: "notifications/message", params: { level: "info", logger: "canivete", data: `📬 ${box.msgs.length} nova(s) p/ ${id} de ${last.from}: ${String(last.message).slice(0, 200)} — leia com cv_task_recv` } });
           } catch {}
         } else if (!sig) known.set(id, "");
       }
@@ -371,7 +373,7 @@ async function notifyMain(taskId, status, description, model, summary) {
   try {
     await writeJson(join(NOTIF_DIR, `${taskId}.json`), payload);
   } catch (e) { logWarn(`notifyMain write notif falhou ${taskId}: ${e?.message || e}`); }
-  try { // poda: notificações nunca lidas cresciam sem teto no broker-shared (n_task_notifications esvazia ao ler)
+  try { // poda: notificações nunca lidas cresciam sem teto no broker-shared (cv_task_notifications esvazia ao ler)
     const fs2 = readdirSync(NOTIF_DIR).filter((f) => f.endsWith(".json"));
     if (fs2.length > 50) {
       const withMt = fs2.map((f) => { try { return { f, mt: statSync(join(NOTIF_DIR, f)).mtimeMs }; } catch { return { f, mt: 0 }; } });
@@ -421,7 +423,7 @@ function tryKill(t) {
 
 async function sweepTask(t) {
   if (!t || t.status !== "running") return t;
-  // devengine tasks (n_orchestrate_task) usam pollDb próprio — finalizar normalmente
+  // devengine tasks (cv_orchestrate_task) usam pollDb próprio — finalizar normalmente
   const age = Date.now() - new Date(t.startedAt).getTime();
   const deadPid = t.pid && !procAlive(t.pid);
   const staleNoPid = !t.pid && t.runner !== "serve" && age > 60000;
@@ -467,20 +469,20 @@ function pushCapped(box, from, message, ttlMs) {
 function pendingHints() {
   try {
     const n = readdirSync(NOTIF_DIR).length;
-    if (n) return `\n📬 ${n} notificação(ões) pendente(s) — leia n_task_notifications`;
+    if (n) return `\n📬 ${n} notificação(ões) pendente(s) — leia cv_task_notifications`;
   } catch {}
   return "";
 }
 
-regTask("n_task", {
-   description: "Subagente isolado. Modo LLM direto (default sem RUN_TEMPLATE): POST HTTPS direto ao provedor OpenAI-compatível (Groq/Cerebras/Gemini/DeepSeek/Ollama/etc.), zero opencode. Modo opencode: CANIVETE_RUNNER=opencode + serve HTTP persistente (CANIVETE_TASK_MODE=auto|attach|serve|spawn, CANIVETE_SERVE_URL, CANIVETE_SERVE_PORT=19425) ou spawn clássico (CANIVETE_RUN_TEMPLATE). model OBRIGATÓRIO (id do provedor; n_list_models lista presets). Tipos: mcp-only|explore|quick|general|reviewer. WORKFLOW: fan-out N× background:true → n_task_wait any/all → n_task_send. Sync bloqueia; fim notifica. Ao vivo: n_task_tail. Env: CANIVETE_TASK_MODE, CANIVETE_SERVE_URL, CANIVETE_SERVE_PORT, CANIVETE_LLM_BASE_URL, CANIVETE_LLM_API_KEY, CANIVETE_LLM_MODEL, CANIVETE_LLM_PROVIDER (groq|cerebras|gemini|openrouter|deepseek|openai|ollama) + fallbacks _2_..._5_.",
+regTask("cv_task", {
+   description: "Subagente isolado. Modo LLM direto (default sem RUN_TEMPLATE): POST HTTPS direto ao provedor OpenAI-compatível (Groq/Cerebras/Gemini/DeepSeek/Ollama/etc.), zero opencode. Modo opencode: CANIVETE_RUNNER=opencode + serve HTTP persistente (CANIVETE_TASK_MODE=auto|attach|serve|spawn, CANIVETE_SERVE_URL, CANIVETE_SERVE_PORT=19425) ou spawn clássico (CANIVETE_RUN_TEMPLATE). model OBRIGATÓRIO (id do provedor; cv_list_models lista presets). Tipos: mcp-only|explore|quick|general|reviewer. WORKFLOW: fan-out N× background:true → cv_task_wait any/all → cv_task_send. Sync bloqueia; fim notifica. Ao vivo: cv_task_tail. Env: CANIVETE_TASK_MODE, CANIVETE_SERVE_URL, CANIVETE_SERVE_PORT, CANIVETE_LLM_BASE_URL, CANIVETE_LLM_API_KEY, CANIVETE_LLM_MODEL, CANIVETE_LLM_PROVIDER (groq|cerebras|gemini|openrouter|deepseek|openai|ollama) + fallbacks _2_..._5_.",
   inputSchema: {
     type: "object",
     properties: {
       description: { type: "string" },
       subagent_type: { type: "string", description: "Agent: mcp-only (default), quick, explore, general ou reviewer", default: "mcp-only" },
       prompt: { type: "string", description: "Self-contained instructions" },
-      model: { type: "string", description: "OBRIGATÓRIO — escolha explícita do modelo. Descubra os disponíveis com n_list_models antes de chamar." },
+      model: { type: "string", description: "OBRIGATÓRIO — escolha explícita do modelo. Descubra os disponíveis com cv_list_models antes de chamar." },
       timeout: { type: "number", default: 600000 },
       background: { type: "boolean", description: "Spawn without waiting (default false). Returns task_id immediately." },
       ephemeral: { type: "boolean", description: "Se true, auto-exclui task/mailbox após done (para coletores só de info)" },
@@ -530,7 +532,7 @@ regTask("n_task", {
       prompt = _buildBatchPrompt(prompt, _batchItems);
     }
 if (!model && isOpencode) {
-       return out(`model é OBRIGATÓRIO — escolha explícita. Chame n_list_models para ver os disponíveis e passe um deles em n_task({model}).`, true);
+       return out(`model é OBRIGATÓRIO — escolha explícita. Chame cv_list_models para ver os disponíveis e passe um deles em cv_task({model}).`, true);
      }
      if (!model && !isOpencode) model = "default";
      // LLM direto: model é o id do provedor — sem validação de free list, sem opencode-go/hy3
@@ -538,17 +540,17 @@ if (!model && isOpencode) {
        const providers = llmModels();
        if (!providers.length) return out(llmMissing(), true);
        if (!providers.some((p) => p.model === String(model))) {
-         return out(`model "${model}" não encontrado nos provedores configurados (${providers.map((p) => `${p.provider}:${p.model}`).join(", ")}). Use n_list_models para ver os disponíveis.`, true);
+         return out(`model "${model}" não encontrado nos provedores configurados (${providers.map((p) => `${p.provider}:${p.model}`).join(", ")}). Use cv_list_models para ver os disponíveis.`, true);
        }
      } else {
        if (isOpencode && String(model).startsWith("opencode-go/")) {
-         return out(`modelo bloqueado: "${model}" é opencode-go (pago/instável). Chame n_list_models e escolha um free zen: ${FREE_MODELS.join(", ")}`, true);
+         return out(`modelo bloqueado: "${model}" é opencode-go (pago/instável). Chame cv_list_models e escolha um free zen: ${FREE_MODELS.join(", ")}`, true);
        }
        if (isOpencode && String(model) === "opencode/hy3-free") {
-         return out(`modelo "${model}" quebrado (não listado em opencode models). Chame n_list_models e escolha um free zen: ${FREE_MODELS.join(", ")}`, true);
+         return out(`modelo "${model}" quebrado (não listado em opencode models). Chame cv_list_models e escolha um free zen: ${FREE_MODELS.join(", ")}`, true);
        }
        if (isOpencode && !FREE_MODELS.includes(String(model))) {
-         return out(`modelo desconhecido: "${model}". Chame n_list_models e escolha um da lista: ${FREE_MODELS.join(", ")}`, true);
+         return out(`modelo desconhecido: "${model}". Chame cv_list_models e escolha um da lista: ${FREE_MODELS.join(", ")}`, true);
        }
      }
     const agent = subagent_type || "mcp-only";
@@ -653,7 +655,7 @@ if (!model && isOpencode) {
       try {
         const box = readJson(join(MB_DIR, `${fin.id}.json`), null);
         const n = box && Array.isArray(box.msgs) ? box.msgs.length : 0;
-        if (n) ownMb = `\n📬 ${n} notificação(ões) pendente(s) p/ ${fin.label || shortLabel || fin.id} — leia com n_task_recv({task_id:"${fin.id}"})`;
+        if (n) ownMb = `\n📬 ${n} notificação(ões) pendente(s) p/ ${fin.label || shortLabel || fin.id} — leia com cv_task_recv({task_id:"${fin.id}"})`;
       } catch {}
       if (_isBatch || fin.batch) {
         const total = (fin.batch && fin.batch.total) || _batchTotal;
@@ -692,7 +694,7 @@ if (!model && isOpencode) {
             entry.status = "failed"; entry.error = String(e?.message || e).slice(0, 200); entry.finishedAt = new Date().toISOString(); entry.exitCode = 1;
             await persistTask(entry); await notifyMain(id, "failed", description, chosenModel, entry.error).catch(() => {});
           });
-        return { bgMsg: `task ${shortLabel ? `${shortLabel} (${id})` : id} via LLM direto em background (${provider.name}:${chosenModel})${ephemeral ? " [ephemeral]" : ""}\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara status: n_task_status({ task_id: "${id}" })` };
+        return { bgMsg: `task ${shortLabel ? `${shortLabel} (${id})` : id} via LLM direto em background (${provider.name}:${chosenModel})${ephemeral ? " [ephemeral]" : ""}\npara esperar: cv_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara status: cv_task_status({ task_id: "${id}" })` };
       }
       const r = await llmChat([{ role: "user", content: prompt }], { timeoutMs: t, maxTokens: 4000 });
       entry.finishedAt = new Date().toISOString(); entry.lastActivityAt = entry.finishedAt;
@@ -772,13 +774,13 @@ if (!model && isOpencode) {
       const eph = ephemeral ? " [ephemeral auto-exclui em 30s]" : "";
       const tag = shortLabel ? `${shortLabel} (${id})` : id;
       if (_isBatch && background) {
-        return { bgMsg: `task ${tag} batch ${_batchTotal} jobs via serve em background (sem spawn run) (${agent} | ${chosenModel})${eph}\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: n_task_send({ task_id: "${id}", message: "..." })\npara excluir: n_task_delete({task_id:"${id}"}) ou n_task_delete({task_id:"all"})` };
+        return { bgMsg: `task ${tag} batch ${_batchTotal} jobs via serve em background (sem spawn run) (${agent} | ${chosenModel})${eph}\npara esperar: cv_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: cv_task_send({ task_id: "${id}", message: "..." })\npara excluir: cv_task_delete({task_id:"${id}"}) ou cv_task_delete({task_id:"all"})` };
       }
       if (background) {
-        return { bgMsg: `task ${tag} via serve em background (sem spawn run) (${agent} | ${chosenModel})${eph}\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: n_task_send({ task_id: "${id}", message: "..." })\npara excluir: n_task_delete({task_id:"${id}"}) ou n_task_delete({task_id:"all"})` };
+        return { bgMsg: `task ${tag} via serve em background (sem spawn run) (${agent} | ${chosenModel})${eph}\npara esperar: cv_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: cv_task_send({ task_id: "${id}", message: "..." })\npara excluir: cv_task_delete({task_id:"${id}"}) ou cv_task_delete({task_id:"all"})` };
       }
       let finServe;
-      if (t > HOST_GUARD_MS) { finServe = await Promise.race([serveDone, new Promise((r) => setTimeout(() => r(null), HOST_GUARD_MS))]); if (!finServe) return { pendingMsg: `task ${shortLabel ? `${shortLabel} (${id})` : id} ainda rodando após ${Math.round(HOST_GUARD_MS / 1000)}s (limite de resposta; continua em background)\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" })\npara status: n_task_status({ task_id: "${id}" })` }; } else { finServe = await serveDone; }
+      if (t > HOST_GUARD_MS) { finServe = await Promise.race([serveDone, new Promise((r) => setTimeout(() => r(null), HOST_GUARD_MS))]); if (!finServe) return { pendingMsg: `task ${shortLabel ? `${shortLabel} (${id})` : id} ainda rodando após ${Math.round(HOST_GUARD_MS / 1000)}s (limite de resposta; continua em background)\npara esperar: cv_task_wait({ task_ids: ["${id}"], wait: "all" })\npara status: cv_task_status({ task_id: "${id}" })` }; } else { finServe = await serveDone; }
       return { fin: finServe };
     };
     if (isOpencode && TASK_MODE !== "spawn" && SERVE_PORT > 0) {
@@ -945,18 +947,18 @@ if (!model && isOpencode) {
     if (_isBatch && background) {
       const eph = ephemeral ? " [ephemeral auto-exclui em 30s]" : "";
       const tag = shortLabel ? `${shortLabel} (${id})` : id;
-      return out(`task ${tag} batch ${_batchTotal} jobs em 1 PID spawned in background (${agent} | ${chosenModel})${eph} — economia ${_batchTotal}×200MB→1×\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: n_task_send({ task_id: "${id}", message: "..." })\npara excluir: n_task_delete({task_id:"${id}"}) ou n_task_delete({task_id:"all"})`);
+      return out(`task ${tag} batch ${_batchTotal} jobs em 1 PID spawned in background (${agent} | ${chosenModel})${eph} — economia ${_batchTotal}×200MB→1×\npara esperar: cv_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: cv_task_send({ task_id: "${id}", message: "..." })\npara excluir: cv_task_delete({task_id:"${id}"}) ou cv_task_delete({task_id:"all"})`);
     }
     if (background) {
       const eph = ephemeral ? " [ephemeral auto-exclui em 30s]" : "";
       const tag = shortLabel ? `${shortLabel} (${id})` : id;
-      return out(`task ${tag} spawned in background (${agent} | ${chosenModel})${eph}\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: n_task_send({ task_id: "${id}", message: "..." })\npara excluir: n_task_delete({task_id:"${id}"}) ou n_task_delete({task_id:"all"})`);
+      return out(`task ${tag} spawned in background (${agent} | ${chosenModel})${eph}\npara esperar: cv_task_wait({ task_ids: ["${id}"], wait: "all" | "any", timeout })\npara comunicar: cv_task_send({ task_id: "${id}", message: "..." })\npara excluir: cv_task_delete({task_id:"${id}"}) ou cv_task_delete({task_id:"all"})`);
     }
     let fin;
     if (t > HOST_GUARD_MS) {
       fin = await Promise.race([donePromise, new Promise((r) => setTimeout(() => r(null), HOST_GUARD_MS))]);
       if (!fin) {
-        return out(`task ${shortLabel ? `${shortLabel} (${id})` : id} ainda rodando após ${Math.round(HOST_GUARD_MS / 1000)}s (limite de resposta; continua em background)\npara esperar: n_task_wait({ task_ids: ["${id}"], wait: "all" })\npara status: n_task_status({ task_id: "${id}" })`);
+        return out(`task ${shortLabel ? `${shortLabel} (${id})` : id} ainda rodando após ${Math.round(HOST_GUARD_MS / 1000)}s (limite de resposta; continua em background)\npara esperar: cv_task_wait({ task_ids: ["${id}"], wait: "all" })\npara status: cv_task_status({ task_id: "${id}" })`);
       }
     } else {
       fin = await donePromise;
@@ -1049,8 +1051,8 @@ function getSessionTools(sessionId) {
     `SELECT DISTINCT json_extract(p.data,'$.tool') as tool FROM part p WHERE p.session_id='${escapeSql(sessionId)}' AND json_extract(p.data,'$.type')='tool'`
   );
   return rows.map((r) => String(r.tool || "")).filter(Boolean).map((t) => {
-    const bare = t.replace(/^(native|canivete)_/, "");
-    return bare.startsWith("n_") ? bare : `NÃO-MCP:${bare}`;
+    const bare = bareCaniveteToolName(t);
+    return bare.startsWith("cv_") ? bare : `NÃO-MCP:${bare}`;
   });
 }
 
@@ -1160,7 +1162,7 @@ async function pollDetached(ids, deadline) {
   });
 }
 
-regTask("n_task_wait", {
+regTask("cv_task_wait", {
   description: "Aguarda subagentes e retorna resultados. wait:'any' resolve quando O PRIMEIRO termina; 'all' espera todos. Depois de spawn em background. Responde em até ~170s (clamp do host timeout) — se ainda rodando, chame de novo. ID desconhecido → not found imediato.",
   inputSchema: {
     type: "object",
@@ -1247,7 +1249,7 @@ regTask("n_task_wait", {
     done = ids.map((i) => resolveTask(i)).filter(Boolean);
     const running = done.filter((t) => t.status === "running");
     if (running.length) {
-      return out(`wait timeout — ainda rodando: ${running.map((t) => `${t.id} (${t.status})`).join(", ")} (chame n_task_wait de novo para continuar esperando)`);
+      return out(`wait timeout — ainda rodando: ${running.map((t) => `${t.id} (${t.status})`).join(", ")} (chame cv_task_wait de novo para continuar esperando)`);
     }
     return formatTaskResult(done, false, [], summaryMode, deltasMode);
   },
@@ -1346,23 +1348,23 @@ function formatTaskResult(done, any, still, summary = false, deltas = false) {
   );
 }
 
-regTask("n_list_models", {
-   description: "PASSO 1 antes de n_task: lista modelos disponíveis. No modo opencode a escolha é obrigatória e validada; no modo LLM direto, lista providers configurados (CANIVETE_LLM_*).",
+regTask("cv_list_models", {
+   description: "PASSO 1 antes de cv_task: lista modelos disponíveis. No modo opencode a escolha é obrigatória e validada; no modo LLM direto, lista providers configurados (CANIVETE_LLM_*).",
    inputSchema: { type: "object", properties: {}, required: [] },
    run: async () => {
      if (isOpencode) {
-       return out(`Modelos (${FREE_MODELS.length}, runner opencode):\n${FREE_MODELS.join("\n")}\n\nUso: n_task({prompt, model: "${FREE_MODELS[2] || FREE_MODELS[0]}"})\nBloqueados: opencode-go/* e opencode/hy3-free\nFonte: config/models.json (ou CANIVETE_MODELS_FILE).`);
+       return out(`Modelos (${FREE_MODELS.length}, runner opencode):\n${FREE_MODELS.join("\n")}\n\nUso: cv_task({prompt, model: "${FREE_MODELS[2] || FREE_MODELS[0]}"})\nBloqueados: opencode-go/* e opencode/hy3-free\nFonte: config/models.json (ou CANIVETE_MODELS_FILE).`);
      }
      if (isLLMDirect) {
        const providers = llmModels();
        if (!providers.length) return out(llmMissing(), true);
-       return out(`Modelos LLM direto (${providers.length}):\n${providers.map((p) => `${p.provider}: ${p.model} (${p.base})`).join("\n")}\n\nUso: n_task({prompt, model: "${providers[0].model}"})\nSet CANIVETE_LLM_* env vars ou ~/.config/canivete/llm.env.`);
+       return out(`Modelos LLM direto (${providers.length}):\n${providers.map((p) => `${p.provider}: ${p.model} (${p.base})`).join("\n")}\n\nUso: cv_task({prompt, model: "${providers[0].model}"})\nSet CANIVETE_LLM_* env vars ou ~/.config/canivete/llm.env.`);
      }
-     return out(`Runner genérico ativo (${RUNNER}). Sem lista fixa — use o model name do seu runner no template.\nTemplate: ${RUN_TEMPLATE}\nSugestões (modo opencode): ${FREE_MODELS.slice(0, 3).join(", ")}\nUso: n_task({prompt, model: "qualquer-nome"})`);
+     return out(`Runner genérico ativo (${RUNNER}). Sem lista fixa — use o model name do seu runner no template.\nTemplate: ${RUN_TEMPLATE}\nSugestões (modo opencode): ${FREE_MODELS.slice(0, 3).join(", ")}\nUso: cv_task({prompt, model: "qualquer-nome"})`);
    },
  });
 
-regTask("n_task_status", {
+regTask("cv_task_status", {
   description: "Lista subagentes (id|status|tools|elapsed|modelo) ou detalha 1. Nunca bloqueia. Mostra mailbox:N (msg não lida), idle:Ns e marca interrupted quando o PID morre.",
   inputSchema: {
     type: "object",
@@ -1418,7 +1420,7 @@ regTask("n_task_status", {
   },
 });
 
-regTask("n_task_send", {
+regTask("cv_task_send", {
   description: "Envia msg p/ mailbox (não-bloqueante). ttl_ms opcional: msg velha some no recv/peek/notify.",
   inputSchema: {
     type: "object",
@@ -1443,8 +1445,8 @@ regTask("n_task_send", {
   },
 });
 
-regTask("n_task_delete", {
-  description: "Exclui task(s)+mailbox p/ organizar. Em running encerra o processo (tombstone). Use p/ coletores de info. Auto: n_task ephemeral:true exclui ~30s após done. Requer confirm:true p/ bulk all ou alvo running (sem confirm só preview). dryRun:true lista sem deletar.",
+regTask("cv_task_delete", {
+  description: "Exclui task(s)+mailbox p/ organizar. Em running encerra o processo (tombstone). Use p/ coletores de info. Auto: cv_task ephemeral:true exclui ~30s após done. Requer confirm:true p/ bulk all ou alvo running (sem confirm só preview). dryRun:true lista sem deletar.",
   inputSchema: {
     type: "object",
     properties: {
@@ -1515,7 +1517,7 @@ regTask("n_task_delete", {
   },
 });
 
-regTask("n_task_recv", {
+regTask("cv_task_recv", {
   description: "Lê e esvazia mailbox (destrutivo). filter: só consome o que casa. Expirada (ttl) é descartada.",
   inputSchema: {
     type: "object",
@@ -1573,7 +1575,7 @@ regTask("n_task_recv", {
   },
 });
 
-regTask("n_task_peek", {
+regTask("cv_task_peek", {
   description: "Espia mailbox SEM esvaziar. Retorna últimas N + idade. Expirada (ttl) é oculta. filter opcional: só mostra o que casa.",
   inputSchema: {
     type: "object",
@@ -1611,8 +1613,8 @@ regTask("n_task_peek", {
   },
 });
 
-regTask("n_task_tail", {
-  description: "Mostra o que o subagente está GERANDO agora (transcrição parcial ao vivo via arquivo de saída). Quando sessions parece parado mas há tokens: revela o texto já emitido. Barato, sem interferir. Finalizada → resultado completo em n_task_status.",
+regTask("cv_task_tail", {
+  description: "Mostra o que o subagente está GERANDO agora (transcrição parcial ao vivo via arquivo de saída). Quando sessions parece parado mas há tokens: revela o texto já emitido. Barato, sem interferir. Finalizada → resultado completo em cv_task_status.",
   inputSchema: {
     type: "object",
     properties: {
@@ -1647,12 +1649,12 @@ regTask("n_task_tail", {
     if (!raw) raw = t.tailRaw || "";
     const transcript = raw.slice(-cap);
     const alive = t.pid && procAlive(t.pid);
-    const head = `[${t.status || "unknown"}] ${t.id}${alive ? " (gerando agora — parcial)" : t.status === "running" ? " (running, consultando DB)" : " (finalizada — completo em n_task_status)"}`;
+    const head = `[${t.status || "unknown"}] ${t.id}${alive ? " (gerando agora — parcial)" : t.status === "running" ? " (running, consultando DB)" : " (finalizada — completo em cv_task_status)"}`;
     return out(transcript ? `${head}\n\n${transcript}` : `${head}\n(sem tokens ainda — modelo não emitiu texto ou sessão não encontrada na DB)`);
   },
 });
 
-regTask("n_task_notifications", {
+regTask("cv_task_notifications", {
   description: "Lê notifs de tasks + correio dormindo. Esvazia notifs. Expirada (ttl) é oculta.",
   inputSchema: { type: "object", properties: {}, required: [] },
   run: async () => {
@@ -1691,7 +1693,7 @@ regTask("n_task_notifications", {
   },
 });
 
-reg("n_todowrite", {
+reg("cv_todowrite", {
   description: "Substitui (replace, padrão) ou mescla (append por content igual) a lista in-memory. Volátil (morre com o processo).",
   inputSchema: {
     type: "object",
@@ -1736,13 +1738,13 @@ function fmtTodo() {
     : "(empty)";
 }
 
-reg("n_todo", {
+reg("cv_todo", {
   description: "Read the in-memory task list.",
   inputSchema: { type: "object", properties: {}, required: [] },
   run: () => out(fmtTodo()),
 });
 
-reg("n_question", {
+reg("cv_question", {
   description: "Registra pergunta p/ o usuário. MCP não renderiza UI — o agente pergunta diretamente. multiple permite várias opções; id só ecoa p/ referência.",
   inputSchema: {
     type: "object",
@@ -1760,7 +1762,7 @@ reg("n_question", {
     ),
 });
 
-reg("n_skill", {
+reg("cv_skill", {
   description: "Carrega SKILL.md por nome. refresh:true só lista skills (re-scan p/ recém-criadas).",
   inputSchema: {
     type: "object",
@@ -1812,7 +1814,7 @@ async function skillNames() {
   return [...names].sort();
 }
 
-reg("n_plan", {
+reg("cv_plan", {
   description: "Plan mode cannot be toggled from an MCP server; use /plan in the TUI.",
   inputSchema: { type: "object", properties: {}, required: [] },
   run: () => out("To enter/exit plan mode use the TUI command /plan. No equivalent exists inside this MCP."),

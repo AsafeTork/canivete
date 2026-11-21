@@ -31,7 +31,7 @@ async function waGw(path, method = "GET", body = null, timeoutMs = 25000) {
   }
 }
 
-reg("n_whatsapp", {
+reg("cv_whatsapp", {
   description: "WhatsApp DEDICADO: via gateway Baileys (WebSocket, sem browser) com fallback p/ Chrome logado. state|chats|open|read|send|pair. Envio só com texto explícito do dono. Ex: {action:\"open\", name:\"Projeto II\"} {action:\"pair\", phone:\"5591999999999\"}.",
   inputSchema: {
     type: "object",
@@ -116,7 +116,7 @@ reg("n_whatsapp", {
     if (!r.ok) {
       if (a.action === "open") {
         const chatNames = gatewayChats.map(g => g.name || g.title || "?").join(", ");
-        return devOut({ status: "error", summary: `Chat "${a.name}" não abriu (extensão: ${r.error}). Busca+scroll pages=${payload.pages} via data-testid. Chats de state: ${chatNames || "(vazio — confira n_whatsapp chats)"}. Tente pages maior ex: {action:"open", name:"${a.name}", pages:6}.`,
+        return devOut({ status: "error", summary: `Chat "${a.name}" não abriu (extensão: ${r.error}). Busca+scroll pages=${payload.pages} via data-testid. Chats de state: ${chatNames || "(vazio — confira cv_whatsapp chats)"}. Tente pages maior ex: {action:"open", name:"${a.name}", pages:6}.`,
           data: { action: "whatsapp_open", available_chats: gatewayChats, name: a.name, pages: payload.pages }, telemetry: { execution_time_ms: Date.now() - t0 } });
       }
       return devOut({ status: "error", summary: `extensão: ${r.error}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
@@ -124,7 +124,7 @@ reg("n_whatsapp", {
     const d = r.data || {};
     if (a.action === "open" && !d.opened) {
       const chatNames = gatewayChats.map(g => g.name || g.title || "?").join(", ");
-      return devOut({ status: "error", summary: `Chat "${a.name}" não encontrado (browser: ${d.reason || "lista virtualizada — snapshot não captura"}). Chats de state: ${chatNames || "(vazio — confira n_whatsapp chats)"}. Tente busca exata + pages maior ex: {action:"open", name:"${a.name}", pages:6}.`,
+      return devOut({ status: "error", summary: `Chat "${a.name}" não encontrado (browser: ${d.reason || "lista virtualizada — snapshot não captura"}). Chats de state: ${chatNames || "(vazio — confira cv_whatsapp chats)"}. Tente busca exata + pages maior ex: {action:"open", name:"${a.name}", pages:6}.`,
         data: { action: "whatsapp_open", available_chats: gatewayChats, result: d, name: a.name, pages: payload.pages }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const msgs = Array.isArray(d) ? d : d.messages || [];
@@ -134,6 +134,6 @@ reg("n_whatsapp", {
       : a.action === "send" ? (d.sent ? "Mensagem enviada ✓ (confira no telefone)" : `NÃO enviada (${d.reason || "?"})`)
       : a.action === "chats" ? `${(Array.isArray(d) ? d.length : (d.chats || []).length)} conversa(s)`
       : `state: ${d.logged ? "logado" : d.qr ? "QR (parear no telefone)" : "carregando"}`;
-    return devOut({ summary, data: { action: "whatsapp_" + a.action, risk: a.action === "send" ? "medium" : "low", result: d }, telemetry: { execution_time_ms: Date.now() - t0 }, next: a.action === "open" && d.opened ? [{ tool: "n_whatsapp", reason: "Ler mensagens (read)" }] : [] });
+    return devOut({ summary, data: { action: "whatsapp_" + a.action, risk: a.action === "send" ? "medium" : "low", result: d }, telemetry: { execution_time_ms: Date.now() - t0 }, next: a.action === "open" && d.opened ? [{ tool: "cv_whatsapp", reason: "Ler mensagens (read)" }] : [] });
   },
 });

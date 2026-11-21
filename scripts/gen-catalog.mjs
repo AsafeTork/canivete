@@ -1,126 +1,69 @@
 #!/usr/bin/env node
-// scripts/gen-catalog.mjs — gera docs/TOOLS.md a partir do código (parse estático).
-//
-// Por que NÃO importar TOOLS de src/server.mjs?
-// - importar src/server.mjs registra tudo e mantém o processo vivo
-//   (readline stdio + sweep + modo --http), além de risco de duplo registro.
-// - test/smoke.mjs já evita importar o server pelo mesmo motivo.
-// Por isso: parse estático via regex `(reg|regTask)("n_*", { description: ... })`
-// em src/lib/*.mjs + src/server.mjs, gerando tabela nome|arquivo|1ª frase.
-// SEM importar código do servidor (só node:fs/path/url).
-//
-// Uso: node scripts/gen-catalog.mjs  (gera docs/TOOLS.md)
-// Validação: node --check scripts/gen-catalog.mjs
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, dirname, relative } from "node:path";
+// Gera docs/TOOLS.md a partir do catálogo público real (inclui tools consolidadas).
+// O servidor imprime o catálogo e sai antes de entrar no loop MCP.
+import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const LIB_DIR = join(ROOT, "src", "lib");
-const SERVER_FILE = join(ROOT, "src", "server.mjs");
 const OUT_FILE = join(ROOT, "docs", "TOOLS.md");
+const result = spawnSync(process.execPath, ["src/server.mjs", "--catalog"], {
+  cwd: ROOT,
+  encoding: "utf8",
+  timeout: 15000,
+  env: { ...process.env, CANIVETE_TASK_ENABLE: "0" },
+});
+if (result.error) throw result.error;
+if (result.status !== 0) throw new Error(`server --catalog saiu com ${result.status}: ${(result.stderr || "").slice(0, 1000)}`);
+let tools;
+try { tools = JSON.parse(result.stdout); } catch { throw new Error(`catálogo inválido: ${(result.stdout || "").slice(0, 500)}`); }
+if (!Array.isArray(tools)) throw new Error("server --catalog não retornou uma lista de tools");
 
-// reg("n_xxx", ...) ou regTask("n_xxx", ...) { description: "..." | '...' | `...` })
-// - nome sempre aspas duplas hoje (suporta simples p/ futuro)
-// - description é a 1ª chave do objeto; captura até a aspa de fechamento
-//   respeitando escapes (\" \\ \n etc.), com flag s p/ suportar `...` multilinha.
-const REG_RE =
-  /(?:reg|regTask)\(\s*["'](n_[A-Za-z0-9_]+)["']\s*,\s*\{\s*description\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/gs;
-
-function decodeDouble(inner) {
-  try {
-    return JSON.parse(`"${inner}"`);
-  } catch {
-    return decodeGeneric(inner);
-  }
+function group(name) {
+  if (/^cv_file_|^cv_bash$/.test(name)) return "Arquivos e comandos";
+  if (/^cv_web|^cv_lookup$/.test(name)) return "Web e consultas";
+  if (/^cv_browser_/.test(name)) return "Browser headless";
+  if (/^cv_owner_/.test(name)) return "Chrome logado do dono";
+  if (/^cv_android_/.test(name)) return "Android";
+  if (/^cv_codespace_/.test(name)) return "Codespaces";
+  if (/^cv_code_|^cv_manage_background_process$|^cv_orchestrate_task$/.test(name)) return "Desenvolvimento";
+  if (/^cv_task_|^cv_todo/.test(name)) return "Orquestração";
+  if (/^cv_elemreports_/.test(name)) return "Reports de elemento";
+  if (name === "cv_audio_analyze") return "Mídia local";
+  if (name === "cv_whatsapp") return "WhatsApp";
+  return "Meta";
 }
 
-function decodeGeneric(inner) {
-  // unescape mínimo p/ single/backtick + fallback do double
-  return String(inner).replace(/\\(n|r|t|b|f|v|0|'|"|`|\\|u[0-9a-fA-F]{4})/g, (m, seq) => {
-    if (seq === "n") return "\n";
-    if (seq === "r") return "\r";
-    if (seq === "t") return "\t";
-    if (seq === "b") return "\b";
-    if (seq === "f") return "\f";
-    if (seq === "v") return "\v";
-    if (seq === "0") return "\0";
-    if (seq.startsWith("u")) {
-      try {
-        return String.fromCharCode(parseInt(seq.slice(1), 16));
-      } catch {
-        return m;
-      }
-    }
-    return seq;
-  });
+function params(tool) {
+  const schema = tool.inputSchema || {};
+  if (Array.isArray(schema.oneOf)) return schema.oneOf.map((branch) => {
+    const props = branch.properties || {};
+    const [modeKey, modeSchema] = Object.entries(props).find(([, p]) => p && typeof p.const === "string") || [];
+    const mode = modeSchema?.const || "modo";
+    const fields = Object.keys(props).filter((key) => key !== modeKey);
+    return `${mode}: ${fields.join(", ")}`;
+  }).join("; ");
+  return Object.keys(schema.properties || {}).join(", ") || "sem parâmetros";
 }
 
-function firstSentence(desc) {
-  const collapsed = String(desc ?? "").replace(/\s+/g, " ").trim();
-  if (!collapsed) return "";
-  // 1ª frase = até o 1º [.!?] seguido de espaço/fim (evita cortar em
-  // package.json, SKILL.md, ip-api.com ou "anônima?," — o naive /^[^.!?]+[.!?]/
-  // usado no n_tools_info quebra nesses casos).
-  const m = collapsed.match(/^(.*?[.!?])(?=\s|$)/);
-  return (m?.[1] ?? collapsed).trim();
-}
-
-function escCell(s) {
-  return String(s).replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
-}
-
-function collectFromFile(absPath) {
-  const rel = relative(ROOT, absPath).replace(/\\/g, "/");
-  const src = readFileSync(absPath, "utf8");
-  const found = [];
-  REG_RE.lastIndex = 0;
-  let m;
-  while ((m = REG_RE.exec(src)) !== null) {
-    const name = m[1];
-    // grupos: 2=double, 3=single, 4=backtick
-    const raw = m[2] ?? m[3] ?? m[4] ?? "";
-    const quote = m[2] !== undefined ? '"' : m[3] !== undefined ? "'" : "`";
-    const desc = quote === '"' ? decodeDouble(raw) : decodeGeneric(raw);
-    found.push({ name, file: rel, description: desc, first: firstSentence(desc) });
-  }
-  return found;
-}
-
-function main() {
-  const libFiles = readdirSync(LIB_DIR, { withFileTypes: true })
-    .filter((e) => e.isFile() && e.name.endsWith(".mjs"))
-    .map((e) => join(LIB_DIR, e.name))
-    .sort();
-  const sources = [SERVER_FILE, ...libFiles];
-
-  const byName = new Map(); // nome -> {name,file,first} (último vence, como TOOLS.set)
-  for (const f of sources) {
-    for (const t of collectFromFile(f)) {
-      if (byName.has(t.name)) {
-        console.warn(`warn: duplicado ${t.name} (antes ${byName.get(t.name).file}, agora ${t.file}) — mantendo último`);
-      }
-      byName.set(t.name, t);
-    }
-  }
-  const tools = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const date = new Date().toISOString().slice(0, 10);
-  const lines = [
-    "# TOOLS — catálogo gerado a partir do código",
-    "",
-    "> GERADO AUTOMATICAMENTE por `node scripts/gen-catalog.mjs` — NÃO EDITE MANUALMENTE.",
-    `> Fonte: parse estático de \`reg("n_*", { description: ... })\` em \`src/lib/*.mjs\` + \`src/server.mjs\` (sem importar o servidor — importar \`src/server.mjs\` registra tudo e mantém o processo vivo via watch/readline).`,
-    `> Total: ${tools.length - 10} tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = ${tools.length}). Gerado em ${date}.`,
-    "",
-    "| nome | arquivo | descrição (1ª frase) |",
-    "|---|---|---|",
-    ...tools.map((t) => `| \`${t.name}\` | \`${escCell(t.file)}\` | ${escCell(t.first)} |`),
-    "",
-    "_Regenerar: `node scripts/gen-catalog.mjs` · Validar: `node --check scripts/gen-catalog.mjs`_",
-    "",
-  ];
-  writeFileSync(OUT_FILE, lines.join("\n"), "utf8");
-  console.log(`catalog: ${tools.length} tools -> docs/TOOLS.md`);
-}
-
-main();
+const date = new Date().toISOString().slice(0, 10);
+const taskExtras = 4;
+const lines = [
+  "# TOOLS — catálogo MCP público do Canivete",
+  "",
+  "> GERADO AUTOMATICAMENTE por `node scripts/gen-catalog.mjs` — NÃO EDITE MANUALMENTE.",
+  "> Fonte: `tools/list` construído pelo registro real do servidor (`node src/server.mjs --catalog`). Executores antigos podem continuar como aliases ocultos para compatibilidade.",
+  `> Total: ${tools.length} tools ativas; ${tools.length + taskExtras} com a família opcional de tarefas habilitada. Gerado em ${date}.`,
+  "",
+  "| nome | grupo | descrição | modos/parâmetros |",
+  "|---|---|---|---|",
+  ...tools.map((tool) => `| \`${tool.name}\` | ${group(tool.name)} | ${String(tool.description || "").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim()} | ${params(tool).replace(/\|/g, "\\|")} |`),
+  "",
+  "Os modos usam enums explícitos e campos específicos por operação. Para a descrição completa, use `cv_help {query, detail:true}`.",
+  "",
+  "_Regenerar: `node scripts/gen-catalog.mjs` · Validar: `node --check scripts/gen-catalog.mjs`_",
+  "",
+];
+writeFileSync(OUT_FILE, lines.join("\n"), "utf8");
+console.log(`catalog: ${tools.length} tools públicas -> docs/TOOLS.md`);

@@ -3,9 +3,10 @@
 // Modo remoto (sem restart do host p/ trocar código): node src/server.mjs --http 19423
 import { createInterface } from "node:readline";
 import { join } from "node:path";
-import { TOOLS, reg, out, sendToHost, CTX, CTX_BUDGET } from "./lib/ctx.mjs";
+import { TOOLS, reg, out, sendToHost, CTX, CTX_BUDGET, visibleTools, toolCount } from "./lib/ctx.mjs";
 import { TOOL_GROUPS, groupOf as groupOfCore, firstSentence as firstSentenceCore } from "./core/taxonomy.mjs";
-import { buildToolsList, dispatchStdio } from "./core/rpc.mjs";
+import { installToolConsolidation } from "./core/tool-consolidation.mjs";
+import { buildToolsList, dispatchStdio, MCP_AGENT_SESSION_ID } from "./core/rpc.mjs";
 import { sweepTask, safeTaskIds, readJson, TASKS_DIR } from "./lib/tasks.mjs";
 import { ubEnsure } from "./lib/ubridge.mjs";
 import "./lib/fs.mjs";
@@ -22,34 +23,33 @@ import "./lib/tools-adb.mjs";
 import "./lib/feedback.mjs";
 import "./lib/elemreports.mjs";
 
-reg("n_tools_info", {
-  description: "Catálogo agrupado do canivete: filesystem+exec, web/APIs sem chave, orquestração, DevEngine, browsers e meta. Use para descobrir o que o MCP faz e qual tool chamar.",
-  inputSchema: { type: "object", properties: {}, required: [] },
-  run: () => {
+reg("cv_tools_info", {
+  description: "Lista as tools do Canivete por categoria. Use detail=true para incluir resumo e parâmetros; cv_find_tools traz a descrição integral de uma tool.",
+  inputSchema: { type: "object", properties: { detail: { type: "boolean", default: false, description: "Inclui resumo e nomes dos parâmetros de todas as tools; saída maior" } }, required: [] },
+  run: ({ detail = false } = {}) => {
     const first = firstSentenceCore;
     const g = (names) => names.map((n) => { const t = TOOLS.get(n); return t ? `${t.name} — ${first(t.description)}` : n; }).join("\n");
-    const taskOn = TOOLS.has("n_task");
-    const orchNames = ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"].filter((n) => TOOLS.has(n));
-    const groups = TOOL_GROUPS.map((gr) =>
-      gr.title === "Orquestração"
-        ? { title: taskOn ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)", hint: taskOn ? "spawn sync/async, wait any/all, status com modelo+mailbox, send/recv/peek/tail não-bloqueante, delete, models, todos" : "todos in-memory; subagentes voltam com CANIVETE_TASK_ENABLE=1", names: orchNames }
-        : gr
-    );
+    const taskOn = TOOLS.has("cv_task_start");
+    const groups = TOOL_GROUPS.map((gr) => ({
+      ...gr,
+      title: gr.dynamicTitle ? (taskOn ? "Orquestração paralela monitorada" : "Tarefas e contexto") : gr.title,
+      names: gr.names.filter((n) => TOOLS.get(n)?.public !== false),
+    })).filter((gr) => gr.names.length > 0);
     const listed = new Set(groups.flatMap((gr) => gr.names));
-    const extras = [...TOOLS.keys()].filter((n) => !listed.has(n));
+    const extras = visibleTools().map((tool) => tool.name).filter((n) => !listed.has(n));
     const lines = [
-      `== CANIVETE (src/server.mjs, 1.0.0, ${TOOLS.size} tools — MCP universal, qualquer CLI) ==`,
+      `== CANIVETE (src/server.mjs, 1.0.0, ${toolCount()} tools — MCP universal, qualquer CLI) ==`,
       taskOn ? "Runner atual: CANIVETE_RUNNER=opencode (ou genérico via CANIVETE_RUN_TEMPLATE)." : "Subagentes desativados (RAM) — reative com CANIVETE_TASK_ENABLE=1.",
       "",
-      ...groups.flatMap((gr) => [`-- ${gr.title} (${gr.names.length}): ${gr.hint} --`, g(gr.names), ""]),
+      ...groups.flatMap((gr) => [`-- ${gr.title} (${gr.names.length}) --`, detail ? g(gr.names) : gr.names.join(" "), ""]),
     ];
-    if (extras.length > 0) lines.push(`-- Outras (${extras.length}): não agrupadas (novas sem grupo) --`, g(extras), "");
-    lines.push(`detalhe: n_find_tools "<query>"`);
+    if (extras.length > 0) lines.push(`-- Outras (${extras.length}) --`, detail ? g(extras) : extras.join(" "), "");
+    lines.push(`detalhe: cv_help {query:"termo",detail:true}`);
     return out(lines.join("\n").trimEnd());
   },
 });
 
-reg("n_ctx_status", {
+reg("cv_ctx_status", {
   description: "A LLM manipula o próprio contexto: mostra gasto da sessão (calls, chars, ~tokens por tool) vs orçamento CANIVETE_CTX_BUDGET. Quando usar: antes de dumps grandes; se estourar, prefira destilados/compact/max menores.",
   inputSchema: { type: "object", properties: {}, required: [] },
   run: () => {
@@ -59,30 +59,31 @@ reg("n_ctx_status", {
   },
 });
 
-reg("n_find_tools", {
-  description: "Busca local de tools por keyword (tool-search enxuto). Use para descobrir qual tool chamar sem ler o catálogo completo.",
+reg("cv_find_tools", {
+  description: "Busca tools por nome ou descrição. Use detail=true para ver instrução integral e schema de uma tool.",
   inputSchema: {
     type: "object",
     properties: {
       query: { type: "string", description: "Keyword(s) para buscar em nome+descrição (case-insensitive)." },
       limit: { type: "integer", minimum: 1, maximum: 20, default: 8, description: "Máx. de resultados (default 8, max 20)." },
+      detail: { type: "boolean", default: false, description: "Inclui descrição completa e inputSchema dos resultados; refine query para limitar o custo" },
     },
     required: ["query"],
   },
   run: (args = {}) => {
     const query = String(args.query ?? "").trim().toLowerCase();
-    if (!query) return out("n_find_tools: query vazia — informe keyword(s) para buscar em nome+descrição.");
+    if (!query) return out("cv_find_tools: query vazia — informe keyword(s) para buscar em nome+descrição.");
     const limit = Math.min(Math.max(Number(args.limit) || 8, 1), 20);
     const terms = query.split(/\s+/).filter(Boolean);
     const groups = TOOL_GROUPS.map((gr) =>
       gr.title === "Orquestração"
-        ? { title: TOOLS.has("n_task") ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)", names: ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"].filter((n) => TOOLS.has(n)) }
+        ? { title: TOOLS.has("cv_task") ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)", names: ["cv_task", "cv_task_wait", "cv_task_status", "cv_task_send", "cv_task_recv", "cv_task_peek", "cv_task_tail", "cv_task_notifications", "cv_task_delete", "cv_list_models", "cv_todowrite", "cv_todo"].filter((n) => TOOLS.has(n)) }
         : gr
     );
     const groupOf = (n) => groupOfCore(n, groups);
     const firstSentence = firstSentenceCore;
     const scored = [];
-    for (const t of TOOLS.values()) {
+    for (const t of visibleTools()) {
       const name = t.name.toLowerCase();
       const desc = String(t.description ?? "").toLowerCase();
       let score = 0;
@@ -94,11 +95,22 @@ reg("n_find_tools", {
     }
     scored.sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
     const hits = scored.slice(0, limit);
-    if (hits.length === 0) return out(`n_find_tools: 0 resultados para "${args.query}". Tente outra keyword ou n_tools_info.`);
-    const lines = hits.map(({ tool: t }) => `${t.name} [${groupOf(t.name)}] — ${firstSentence(t.description)}`);
+    if (hits.length === 0) return out(`cv_find_tools: 0 resultados para "${args.query}". Tente outra keyword ou cv_tools_info.`);
+    const lines = hits.map(({ tool: t }) => args.detail
+      ? `${t.name} [${groupOf(t.name)}] — ${t.description}\ninputSchema: ${JSON.stringify(t.inputSchema)}`
+      : `${t.name} [${groupOf(t.name)}] — ${firstSentence(t.description)}`);
     return out(`${hits.length} resultado(s) para "${args.query}":\n${lines.join("\n")}`);
   },
 });
+
+// Reduz o catálogo público; os executores antigos continuam disponíveis como aliases de compatibilidade.
+installToolConsolidation();
+
+// Static catalogue mode for docs/scripts: boot registrations, print public tools, then exit.
+if (process.argv.includes("--catalog")) {
+  process.stdout.write(JSON.stringify(buildToolsList(TOOLS, { sorted: true, annotations: false })) + "\n");
+  process.exit(0);
+}
 
 await Promise.allSettled(
   safeTaskIds().map(async (id) => {
@@ -141,7 +153,7 @@ async function proxyMcp(msg) {
   const ids = (isArray ? msg : [msg]).map((m) => (m && typeof m === "object" && "id" in m ? m.id : undefined));
   const temId = ids.some((i) => i !== undefined);
   try {
-    const r = await fetch(`http://127.0.0.1:${MCP_HTTP_PORT}/mcp`, { method: "POST", headers: { "content-type": "application/json", "x-token": getToken() }, body: JSON.stringify(msg) });
+    const r = await fetch(`http://127.0.0.1:${MCP_HTTP_PORT}/mcp`, { method: "POST", headers: { "content-type": "application/json", "x-token": getToken(), "x-canivete-agent-session": MCP_AGENT_SESSION_ID }, body: JSON.stringify(msg) });
     const j = await r.json().catch(() => null);
     if (!temId) return; // notification: daemon não devolve resposta
     const vazio = !j || (Array.isArray(j) ? j.length === 0 : Object.keys(j).length === 0);
@@ -256,6 +268,6 @@ rl.on("line", async (raw) => {
   }
   if (proxyMode) return proxyMcp(msg);
   // Dispatch compartilhado (ver core/rpc.mjs) — mesma semântica do modo remoto.
-  const resp = await dispatchStdio(msg, TOOLS, sendToHost);
+  const resp = await dispatchStdio(msg, TOOLS, sendToHost, MCP_AGENT_SESSION_ID);
   if (resp) sendToHost(resp);
 });
