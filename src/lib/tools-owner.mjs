@@ -569,7 +569,7 @@ reg("cv_ubrowser_snapshot", {
 });
 
 reg("cv_ubrowser_act", {
-  description: "Opera o Chrome autenticado na guia escolhida; `goto` troca o site nessa mesma guia. Guias novas entram no grupo Canivete e as existentes seguem acessíveis. A janela-alvo ganha foco por padrão (`focus:false` preserva o atual). Use CDP quando necessário. `companion` abre um chat e plano visíveis na página; marcações apontam alvos sem alterar atributos do site. `flow` exibe o progresso automaticamente. Cursor: coordenadas/selector, movimento animado e hover. Alto risco requer confirmação.",
+  description: "Opera o Chrome autenticado na guia escolhida; `goto` troca o site nessa mesma guia. Guias novas entram no grupo Canivete e as existentes seguem acessíveis. A janela-alvo ganha foco por padrão (`focus:false` preserva o atual). Use CDP quando necessário. `companion` mantém chat e progresso na página; mensagens interrompem `flow` entre passos para o agente responder e continuar. Marcações apontam alvos sem alterar atributos do site. Cursor: coordenadas/selector, movimento animado e hover. Alto risco requer confirmação.",
   inputSchema: {
     type: "object",
     properties: {
@@ -584,6 +584,7 @@ reg("cv_ubrowser_act", {
       timeoutMs: { type: "number", description: "tempo de espera para waittext/evaluate" },
       steps: { type: "array", description: "p/ flow: sequência de comandos [{cmd, ...args}] em uma ida-volta", items: { type: "object" } },
       showProgress: { type: "boolean", description: "p/ flow: exibe o passo a passo no painel da página (default true)" },
+      checkInbox: { type: "boolean", description: "ações do navegador entregam mensagens do companion no retorno; flow pausa entre passos (default true)" },
       progressTitle: { type: "string" }, progressMessage: { type: "string" },
       mode: { type: "string", enum: ["close_by_prefix", "open", "update", "close", "read", "wait"], description: "p/ close: close_by_prefix; p/ companion: abrir/atualizar/fechar o painel, ou ler/aguardar mensagens do usuário" },
       message: { type: "string", description: "mensagem visível no painel companion" },
@@ -661,7 +662,12 @@ reg("cv_ubrowser_act", {
         // indisponível/matching → segue p/ extensão (banner, mas funciona e resolve por tabId)
       }
     }
-    if (a.action === "wait") { const requested = Number(a.waitMs ?? a.ms); const waitMs = Number.isFinite(requested) && requested >= 0 ? requested : 2000; await new Promise((r) => setTimeout(r, waitMs)); return devOut({ summary: "wait ok", data: { action: "wait", waitedMs: waitMs }, telemetry: { execution_time_ms: Date.now() - t0 } }); }
+    if (a.action === "wait") {
+      const requested = Number(a.waitMs ?? a.ms), waitMs = Number.isFinite(requested) && requested >= 0 ? requested : 2000;
+      await new Promise((r) => setTimeout(r, waitMs));
+      const messages = a.checkInbox === false ? [] : await ubCompanionRead({ profile: tgt.id, tabId: a.tabId });
+      return devOut({ summary: messages.length ? `${messages.length} mensagem(ns) do companion recebida(s) durante a espera` : "wait ok", data: { action: "wait", waitedMs: waitMs, messages }, telemetry: { execution_time_ms: Date.now() - t0 }, next: messages.length ? [{ tool: "cv_owner_act", reason: "Responda no painel com action=companion mode=update antes de continuar" }] : [] });
+    }
     const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", monstate: "tab.monstate", cdp: "tab.cdp", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", companion: "tab.companion", console: "tab.console", close: "tab.close", activate: "tab.activate", elem_pick: "tab.elem_pick" };
     if (!map[a.action]) return devOut({ status: "error", summary: `action "${a.action}" desconhecida — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // valida antes da ida-volta: param que a extensão joga como throw vira erro AQUI com exemplo pronto p/ colar.
@@ -717,6 +723,14 @@ reg("cv_ubrowser_act", {
       return devOut({ status: "error", summary: `extensão: ${r.error}${ubErrHint(r.error) || ""}${unknownAct ? ` — tab.activate precisa extensão ${UB_VER_ACT}+ (cv_ubrowser_status → data.version); rode {action:"reload-extension"}` : ""} | ${UB_FB}`, data: { action: a.action, ...(unknownAct ? { versionHint: UB_VER_ACT } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const d = r.data || {};
+    if (a.action === "flow" && d.interrupted && Array.isArray(d.messages) && d.messages.length) {
+      const first = d.messages[0];
+      return devOut({ summary: `[flow] pausado após o passo ${d.nextStepIndex || d.steps?.length || 0} para responder no companion: ${(first.text || "mensagem recebida").slice(0, 180)}`, data: { action: "flow", ...d }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Responda ao usuário no painel com action=companion mode=update; depois continue com remainingSteps do resultado." }] });
+    }
+    if (!['companion', 'flow'].includes(a.action) && a.checkInbox !== false) {
+      const messages = await ubCompanionRead({ profile: tgt.id, tabId: a.tabId });
+      if (messages.length) return devOut({ summary: `[${a.action}] concluída · mensagem do usuário recebida no navegador`, data: { action: a.action, result: d, messages }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Responda no painel com action=companion mode=update; continue a tarefa depois da resposta." }] });
+    }
     if (a.action === "activate") {
       // aba à frente NO Chrome (contrato u Melhora): tolera d.tab{} (futuro), {tabId,title,url,focused} (bg 1.7.3) ou d plano.
       const tb = (d.tab && typeof d.tab === "object") ? d.tab : d;

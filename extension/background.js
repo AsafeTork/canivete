@@ -38,10 +38,11 @@ chrome.storage.onChanged.addListener((ch, area) => {
 try {
   chrome.tabs.onRemoved.addListener((tabId) => {
     try { chrome.debugger.detach({ tabId }).catch(() => {}); } catch {}
+    try { chrome.storage.session.remove(`ubCompanion:${tabId}`).catch(() => {}); } catch {}
   });
 } catch {}
 
-const UB_EXPECTED = "17"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "18"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 // Versão do próprio worker (manifest): reportada no /hello + tab.diag → cv_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
@@ -69,6 +70,19 @@ async function ubClientId() {
     UB_CLIENT_ID = await UB_CLIENT_P;
   }
   return UB_CLIENT_ID;
+}
+async function ubCompanionPoll(tabId) {
+  if (!settings.enabled || !settings.token || !Number.isInteger(Number(tabId))) return [];
+  try {
+    const response = await fetch(settings.url + "/companion-poll", {
+      method: "POST", headers: { "content-type": "application/json", "x-token": settings.token },
+      body: JSON.stringify({ profile: await ubClientId(), tabId: Number(tabId) }),
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) return [];
+    const result = await response.json().catch(() => ({}));
+    return Array.isArray(result.messages) ? result.messages : [];
+  } catch { return []; }
 }
 const injectedTabs = new Set(); // fallback manual 1x por aba/sessão (registro cobre o resto)
 const ubPushLast = new Map(); // debounce do /ubpush por tabId (4s)
@@ -1203,6 +1217,7 @@ async function ubTrustedMove(tabId, x, y) {
     const id = a.tabId || (await activeTabId());
     const out = [];
     const showProgress = a.showProgress !== false;
+    const checkInbox = a.checkInbox !== false;
     const progressSteps = steps.map((step) => ({ label: String(step.label || step.cmd || "passo").slice(0, 120), status: "pending" }));
     if (showProgress) await ask(id, "companion", { mode: "flow", title: a.progressTitle || "Canivete em ação", message: a.progressMessage || "Executando a sequência", steps: progressSteps }).catch(() => {});
     for (let i = 0; i < steps.length; i++) {
@@ -1215,6 +1230,13 @@ async function ubTrustedMove(tabId, x, y) {
         const r = await handle(s.cmd, { ...a, ...s, tabId: id });
         out.push({ cmd: s.cmd, ok: true, data: r });
         progressSteps[i].status = "done";
+        if (checkInbox) {
+          const messages = await ubCompanionPoll(id);
+          if (messages.length) {
+            if (showProgress) await ask(id, "companion", { mode: "step", title: a.progressTitle || "Canivete em ação", message: "Mensagem recebida · vou pausar para responder", steps: progressSteps }).catch(() => {});
+            return { steps: out, interrupted: true, messages, nextStepIndex: i + 1, remainingSteps: steps.slice(i + 1), tabId: id };
+          }
+        }
         if (s.stopOn && JSON.stringify(r).includes(s.stopOn)) { for (let j = i + 1; j < progressSteps.length; j++) progressSteps[j].status = "skipped"; break; }
       } catch (e) {
         progressSteps[i].status = "error";
@@ -1396,6 +1418,35 @@ async function loop() {
 
 // status p/ popup
 chrome.runtime.onMessage.addListener((msg, _s, reply) => {
+  if (msg && msg.__ubCompanionStateGet) {
+    (async () => {
+      const tabId = _s?.tab?.id;
+      if (!Number.isInteger(tabId)) { reply({ ok: false }); return; }
+      try {
+        const key = `ubCompanion:${tabId}`;
+        const stored = await chrome.storage.session.get(key);
+        reply({ ok: true, state: stored[key] || null });
+      } catch { reply({ ok: false }); }
+    })();
+    return true;
+  }
+  if (msg && msg.__ubCompanionStateSet) {
+    (async () => {
+      const tabId = _s?.tab?.id, state = msg.__ubCompanionStateSet;
+      if (!Number.isInteger(tabId) || !state || typeof state !== "object") { reply({ ok: false }); return; }
+      try {
+        const key = `ubCompanion:${tabId}`;
+        await chrome.storage.session.set({ [key]: {
+          active: state.active === true, collapsed: state.collapsed === true,
+          title: String(state.title || "Canivete").slice(0, 100), message: String(state.message || "").slice(0, 1000), delivery: String(state.delivery || "").slice(0, 160),
+          steps: Array.isArray(state.steps) ? state.steps.slice(0, 30).map((step) => ({ label: String(step.label || "Passo").slice(0, 120), status: String(step.status || "pending") })) : [],
+          messages: Array.isArray(state.messages) ? state.messages.slice(-50).map((item) => ({ role: item.role === "user" ? "user" : "agent", text: String(item.text || "").slice(0, 2000) })) : [],
+        } });
+        reply({ ok: true });
+      } catch { reply({ ok: false }); }
+    })();
+    return true;
+  }
   if (msg && msg.__ubCompanionMessage) {
     (async () => {
       try {

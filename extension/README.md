@@ -30,11 +30,11 @@ Manual só em 2 casos: migração de pasta (esta seção) ou `act {action:"reloa
 
 ## Conversa e passo a passo na página
 
-O agente abre o painel flutuante com `cv_owner_act {action:"companion",mode:"open",tab:"Gmail"}`. Ele pode enviar uma mensagem inicial, mostrar uma lista de passos e destacar controles por selector com `annotations:[{selector:"button[type=submit]",label:"Enviar formulário"}]`. A anotação é desenhada no shadow root da extensão; não altera atributos nem estilos do site.
+O agente abre o painel lateral de foco com `cv_owner_act {action:"companion",mode:"open",tab:"Gmail"}`. Ele ocupa a altura da página, escurece o fundo sem bloquear as áreas livres e pode ser minimizado ou fechado. O agente pode enviar uma mensagem inicial, mostrar uma lista de passos e destacar controles por seletor com `annotations:[{selector:"button[type=submit]",label:"Enviar formulário"}]`. A anotação é desenhada no shadow root da extensão; não altera atributos nem estilos do site.
 
-O usuário digita no campo **Escreva para o agente**. O texto vai pela extensão ao endpoint local autenticado e fica numa fila de memória. O agente lê com `mode:"read"` ou espera uma nova mensagem com `mode:"wait",waitMs:60000`; pode responder visivelmente com `mode:"update",message:"Recebi; vou verificar…"`. A fila mantém até 100 mensagens e não sobrevive ao reinício do processo. O histórico visual e o painel pertencem ao documento atual; ao navegar para outro site na mesma guia, o agente pode reabrir o painel, mas as mensagens anteriores não são restauradas na página.
+O usuário pode escrever enquanto o agente trabalha. A mensagem fica na fila local autenticada; o agente a recebe no retorno da próxima ação do navegador ou, em `flow`, entre etapas. Quando chega durante um fluxo, ele pausa após a ação atual e devolve `remainingSteps`: o agente responde com `mode:"update"` e retoma o que falta. `checkInbox:false` desliga as interrupções. O agente também pode ler com `mode:"read"` ou esperar com `mode:"wait",waitMs:60000`. A fila mantém até 100 mensagens e não sobrevive ao reinício do servidor. O histórico e o painel persistem no armazenamento de sessão da extensão ao recarregar ou navegar na mesma guia; fechar a guia ou o Chrome encerra essa sessão.
 
-`cv_owner_act {action:"flow",steps:[{cmd:"tab.overview",label:"Entender a página"},{cmd:"tab.click",selector:"button"}]}` mostra progresso enquanto executa. O padrão é visível; `showProgress:false` desliga o painel para aquela sequência. `cv_owner_inspect {action:"overview"}` retorna um mapa compacto com regiões, títulos, formulários e selectors prontos para as ações.
+`cv_owner_act {action:"flow",steps:[{cmd:"tab.overview",label:"Entender a página"},{cmd:"tab.click",selector:"button"}]}` mostra progresso e verifica o chat entre etapas. `showProgress:false` esconde o plano; `checkInbox:false` impede que mensagens pausem a sequência. `cv_owner_inspect {action:"overview"}` retorna um mapa compacto com regiões, títulos, formulários e seletores prontos para as ações.
 
 `cv_owner_act {action:"goto",tab:"Gmail",url:"https://example.com"}` troca a página na guia escolhida. O agente pode selecionar guias existentes de qualquer grupo; novas guias criadas por `action:"new"` entram em **Canivete · agente**. Ativar a guia ou interagir foca a janela do Chrome; passe `focus:false` para preservar o foco atual.
 
@@ -42,7 +42,7 @@ O usuário digita no campo **Escreva para o agente**. O texto vai pela extensão
 
 - **Pausar** no popup = o modelo não enxerga nem toca em nada.
 - Guias novas abertas pelo agente entram no grupo “Canivete · agente”; qualquer guia escolhida continua acessível. Ativação traz a janela do Chrome à frente; `focus:false` preserva o foco atual. Ações sensíveis de alto risco continuam exigindo confirmação.
-- O painel `companion` oferece chat, plano/progresso e marcações numa camada visual isolada. As anotações não alteram atributos do site; mensagens do usuário chegam ao agente pela ponte local autenticada.
+- O painel `companion` oferece chat, plano/progresso e marcações numa camada visual isolada. O histórico dura a sessão do Chrome e continua na mesma guia entre sites. As anotações não alteram atributos do site; mensagens chegam pela ponte local autenticada.
 - O cursor animado e o `mousemove` CDP atuam na página; não deslocam o ponteiro físico do sistema operacional.
 - Ações de alto risco (pagamento, senha, excluir conta, apagar tudo, fechar guias em lote) exigem `confirm` com frase do dono.
 - Tudo via `localhost` + token. Nunca compartilhe o token.
