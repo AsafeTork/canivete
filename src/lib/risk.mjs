@@ -52,6 +52,14 @@ function isAllowlistURL(url) {
 const ALLOWLIST_BYPASS = /redefinir|trocar.*senha|alterar.*senha|nova senha|change.*password|reset.*password|esqueci.*senha|forgot.*password|#[a-z]*senha|selector.*senha|#password|chpasswd|drop\s+(table|database)|delete\s+from|truncate|delete|wipe|format|exclu|apag|rm\s+-/i;
 
 export function riskOf(a = {}) {
+  if (["flow", "tab.flow"].includes(a.action || a.cmd) && Array.isArray(a.steps)) {
+    const riskyStep = a.steps.some((step) => {
+      const cmd = String(step?.cmd || step?.action || "").replace(/^tab\./, "");
+      return riskOf({ ...step, action: cmd }) === "high";
+    });
+    if (riskyStep) return "high";
+  }
+  if (["close", "tab.close"].includes(a.action || a.cmd) && a.mode === "close_by_prefix") return "high";
   const blob = `${a.action || ""} ${a.cmd || ""} ${a.selector || ""} ${a.text || ""} ${a.js || ""} ${a.url || ""}`;
   const norm = blob.replace(/[\/\-]+/g, " ").replace(/\s+/g, " ");
   const isTextAction = a.action === "fill" || a.action === "type";

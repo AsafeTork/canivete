@@ -321,17 +321,9 @@ function parseAgentOutput(so) {
 }
 
 function orchestrationNote(id) {
-  const pfx = process.env.CANIVETE_SERVER_NAME || "canivete";
-  return `[ORCHESTRATION] Você é o agente ${id}. OBEDIÊNCIA TOTAL às tools — o principal AUDITA cv_task_status e RECUSA entrega sem tools certas.
-- Nomes: tools aparecem como ${pfx}_cv_* (prefixo); "cv_*" é o mesmo nome. Prefira sempre cv_*.
-- PROIBIDO fazer na mão o que tem tool: ler=cv_read (nunca cat/head), buscar=cv_grep/cv_glob (nunca grep/find), web=cv_webfetch/cv_websearch, patch=cv_apply_patch/cv_apply_semantic_patch. Bash SÓ p/ o que não tem tool.
-- ROTEAMENTO OBRIGATÓRIO: entender projeto→cv_get_architecture_summary; bug/erro→cv_investigate_issue; antes de editar→cv_analyze_change_impact; editar JS→cv_apply_semantic_patch; depois→validar (cv_execute_targeted_tests ou cv_bash); página com JS→cv_browser_navigate; Chrome do dono→cv_ubrowser_status→tabs→read(distill)|snapshot(compact; find p/ localizar; scan antes se lista virtualizada; shadow: p/ web components)→act(selector; fill substitui, type anexa; wait=waitMs)→shot(visível). Refs do snapshot morrem na navegação: re-snapshot após goto/click.
-- PROIBIDO chutar path/API/versão/comportamento: VERIFIQUE com tool e cite arquivo:linha como evidência.
-- Modelos: o principal escolheu este explicitamente via cv_list_models. opencode-go/*, hy3-free e desconhecidos são BLOQUEADOS (isError).
-- Comunicação (confie no MCP, SEM polling manual): dispare background (id em mãos = abort-safe) → UMA chamada cv_task_wait com timeout longo → leia. NUNCA sleep/status em loop. Subagente: ao concluir, SEMPRE cv_task_send({task_id:"main", message:"done <id> + resumo 1 linha"}) — o principal acorda pela notificação. Peers: handshake + recv com timeout. Mailbox tem teto; recv esvazia (destrutivo); delete em running mata. REGRA DE OURO: nunca termine com mailbox própria cheia — recv({timeout:30000}) até 2x vazio. Respostas trazem 📬 — leia cv_task_notifications.
-- Dono: acesso total QUANDO ELE PEDIR; NUNCA destrutivo sem pedido explícito; alto risco exige confirm; FECHAR ABAS e ROUBAR FOCO PROIBIDOS.
-- ENTREGA = resultado + cv_task_send main ("done <id>") + ## Tools usados (toda cv_* invocada). Zero tools, tool improvisada ou sem evidência = RECUSADA.
-- REFINE A FERRAMENTA: travou, faltou tool/capacidade ou gargalo? NUNCA improvise — registre cv_report({kind,where,expected,got}) e siga pelo alternativo.\n\n`;
+  return `[CANIVETE · ${id}] Use cv_help quando precisar descobrir uma operação ou campo. Faça chamadas curtas e diretas; prefira a tool pública mais específica e leia só o necessário. Para arquivos use cv_file_read/write; para shell, cv_bash; para código, cv_code_inspect/edit/verify; para páginas públicas, cv_websearch/webfetch ou cv_browser_* conforme precisar de JavaScript.
+Chrome autenticado: cv_owner_inspect consulta; cv_owner_act opera. Acesse qualquer guia escolhida por tab/tabId, inclusive guias que já existiam. Guias criadas pelo agente entram no grupo “Canivete · agente”. Ativar/interagir traz a janela à frente por padrão; focus:false preserva o foco atual. CDP pode ser usado quando a página exigir; cursor aceita coordenadas/selector, durationMs e hoverMs. Não invente limitações: respeite apenas limites reais do Chrome e confirmações de alto risco.
+Para código, verifique paths e comportamento com tools e cite evidências. Faça o trabalho pedido e valide de forma proporcional. Se faltar capacidade, use o caminho alternativo disponível e registre cv_report quando houver uma lacuna real. Se tarefa estiver habilitada, siga o contrato cv_task_* e entregue resumo + ferramentas usadas.\n\n`;
 }
 
 const NOTIF_DIR = join(BROKER_DIR, "notifications");

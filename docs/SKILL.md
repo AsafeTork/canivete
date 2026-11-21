@@ -35,7 +35,7 @@ Para processos longos use `cv_manage_background_process`; para tarefas shell cur
 ## Regras operacionais
 
 - Prefira a menor operação que resolve o pedido: leitura textual antes de screenshot, resumo antes de extração completa, e confirmação do estado antes de agir.
-- Consulta e ação são separadas para Chrome do dono e Android. Não trate `inspect` como autorização para clicar, enviar ou alterar.
+- Chrome autenticado: `cv_owner_inspect` consulta e `cv_owner_act` opera em qualquer guia escolhida. Guias novas do agente ficam no grupo “Canivete · agente”; ativar/interagir traz a janela à frente por padrão (`focus:false` preserva o foco). Use CDP quando a página exigir. Android mantém inspeção e ação em modos próprios.
 - Preserve confirmações exigidas para exclusão, envio e ações destrutivas. Nunca invente consentimento.
 - Para código, entenda o contexto, faça a edição solicitada e valide de acordo com o pedido. Não execute uma suíte de testes sem solicitação.
 - Use `cv_help` em vez de despejar schemas e descrições no contexto; isso reduz tokens e evita exigir treinamento específico do Canivete.

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "UBrowser Bridge",
-  "version": "1.9.3",
+  "version": "1.9.4",
   "description": "Ponte local: seu agente (opencode/MCP) usa ESTE Chrome, com suas contas logadas. Localhost apenas, com token.",
   "permissions": [
     "tabs",
@@ -9,7 +9,8 @@
     "scripting",
     "storage",
     "alarms",
-    "debugger"
+    "debugger",
+    "tabGroups"
   ],
   "host_permissions": [
     "<all_urls>"

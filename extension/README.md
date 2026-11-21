@@ -31,7 +31,7 @@ Manual só em 2 casos: migração de pasta (esta seção) ou `act {action:"reloa
 ## Segurança
 
 - **Pausar** no popup = o modelo não enxerga nem toca em nada.
-- O modelo só age quando o dono pede. Fechar abas e roubar foco são proibidos no código.
-- Ações de alto risco (pagamento, senha, excluir conta, apagar tudo) exigem `confirm` com frase do dono.
+- Guias novas abertas pelo agente entram no grupo “Canivete · agente”; qualquer guia escolhida continua acessível. Ativação traz a janela do Chrome à frente; `focus:false` preserva o foco atual. Ações sensíveis de alto risco continuam exigindo confirmação.
+- Ações de alto risco (pagamento, senha, excluir conta, apagar tudo, fechar guias em lote) exigem `confirm` com frase do dono.
 - Tudo via `localhost` + token. Nunca compartilhe o token.
 - Clique trusted mostra o banner amarelo "depurando" do Chrome durante o clique (some sozinho).

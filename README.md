@@ -13,7 +13,7 @@ O catálogo é gerado do registro real em [docs/TOOLS.md](docs/TOOLS.md). Em run
 | Consultar dados públicos | `cv_lookup` | `source`: `currency`, `cep`, `cnpj`, `ipinfo`, `weather`, `github`, `npm` |
 | Ler uma página pública com JS | `cv_browser_read` | `detail`: `summary` ou `full` |
 | Capturar página/medir contraste | `cv_browser_capture` | `action`: `screenshot`, `pdf`, `contrast` |
-| Usar o Chrome autenticado do dono | `cv_owner_inspect` e `cv_owner_act` | consultar e agir são tools separadas |
+| Usar o Chrome autenticado do dono | `cv_owner_inspect` e `cv_owner_act` | consulta e ação têm modos próprios; o agente pode operar em qualquer guia escolhida |
 | Inspecionar/agir em Android | `cv_android_inspect`, `cv_android_act` | parear com `cv_android_connect` |
 | Consultar e editar código | `cv_code_inspect`, `cv_code_edit`, `cv_code_verify` | use o `action` descrito por `cv_help` |
 | Entender o próprio Canivete | `cv_help`, `cv_ctx_status`, `cv_report` | descoberta, consumo de contexto e relato de falha |
@@ -127,8 +127,9 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 
 ## Segurança (doutrina do dono)
 
-- O agente só age **quando o dono pede**. Fechar abas e roubar foco **existem mas exigem `confirm`** (fechamento de aba do dono em http(s), foco de SO) — recusados sem.
-- Alto risco (pagamento, senha/2FA, excluir conta, apagar tudo) exige `confirm="<frase do dono>"`.
+- O agente pode atuar nas guias incluídas no pedido. Guias criadas por ele ficam no grupo “Canivete · agente”; guias existentes continuam acessíveis.
+- A janela do Chrome alvo ganha foco ao ativar uma guia ou interagir; `focus:false` preserva o foco atual.
+- Alto risco (pagamento, senha/2FA, excluir conta, apagar tudo, fechar guias em lote) exige `confirm="<frase do dono>"`.
 - Ponte local (`127.0.0.1:19422`) + token (`~/.config/canivete/token.txt`, gerado sozinho, `0600`, no `.gitignore`).
 - Kill switch: pause na extensão = acesso zero.
 

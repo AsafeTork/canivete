@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "15"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "16"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -497,12 +497,15 @@ function ubShowCursor() {
   document.documentElement.appendChild(ubCursor);
   return ubCursor;
 }
-function ubGlide(x, y) {
+function ubGlide(x, y, durationMs) {
   const c = ubShowCursor();
   ubCX = Math.max(0, Math.round(x)); ubCY = Math.max(0, Math.round(y));
-  c.style.left = ubCX - 4 + "px"; c.style.top = ubCY - 2 + "px"; // ponta da seta no alvo
+  const requested = durationMs === undefined || durationMs === null ? 220 : Number(durationMs);
+  const duration = Number.isFinite(requested) ? Math.max(0, requested) : 220;
+  c.style.transition = duration ? `left ${duration}ms cubic-bezier(.2,.8,.2,1),top ${duration}ms cubic-bezier(.2,.8,.2,1)` : "none";
+  c.style.left = ubCX - 4 + "px"; c.style.top = ubCY - 2 + "px";
   try { chrome.storage.session.set({ ubCursor: { x: ubCX, y: ubCY } }).catch(() => {}); } catch {}
-  return Promise.resolve(); // TELEPORTE: transition none — seta apenas APARECE no alvo, sem trajetória
+  return duration ? new Promise((resolve) => setTimeout(resolve, duration)) : Promise.resolve();
 }
 // recria o cursor no load, na última posição salva (constante entre páginas)
 try {
@@ -623,7 +626,8 @@ function ubTopmostCover(target, x, y) {
 function ubHoverBeforeClick(el, x, y, ms) {
   try {
     if (!el) return Promise.resolve(false);
-    const wait = Math.min(Math.max(Number(ms) || 300, 0), 1500);
+    const requested = ms === undefined || ms === null ? 300 : Number(ms);
+    const wait = Number.isFinite(requested) ? Math.max(0, requested) : 300;
     const cx = Math.round(Number(x) || 0), cy = Math.round(Number(y) || 0);
     const init = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 0 };
     try { el.dispatchEvent(new MouseEvent("mouseover", init)); } catch {}
@@ -793,13 +797,14 @@ function ubEphemScanLive() {
   } catch {}
   return out;
 }
-// Pesca transientes: fast-poll (~200ms, até ~3s, teto 15 iterações) observando nós
+// Pesca transientes: fast-poll (~200ms) observando nós
 // de vida curta. Retorna {appeared, disappeared, samples, durationMs} com texto
 // curto (teto 10+10). Nunca lança exceção.
 async function ubCatchup({ intervalMs = 200, durationMs = 3000 } = {}) {
   try {
-    const iv = Math.min(Math.max(Number(intervalMs) || 200, 100), 1000);
-    const du = Math.min(Math.max(Number(durationMs) || 3000, 500), 5000);
+    const requestedInterval = Number(intervalMs), requestedDuration = Number(durationMs);
+    const iv = Number.isFinite(requestedInterval) && requestedInterval > 0 ? requestedInterval : 200;
+    const du = Number.isFinite(requestedDuration) && requestedDuration >= 0 ? requestedDuration : 3000;
     const seen = new Map();
     let first = [];
     try {
@@ -808,7 +813,7 @@ async function ubCatchup({ intervalMs = 200, durationMs = 3000 } = {}) {
     } catch {}
     const base = new Set(first.map((nd) => { try { return String(nd.key); } catch { return ""; } }).filter(Boolean));
     const t0 = Date.now();
-    const steps = Math.min(Math.ceil(du / iv), 15);
+    const steps = Math.ceil(du / iv);
     let last = first;
     for (let i = 0; i < steps; i++) {
       try { await ubSleep(iv); } catch {}
@@ -2829,7 +2834,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         }
         // (c) hover opt-in p/ menus e linhas que exigem estado :hover.
         if (a.hover) { try { await ubHoverBeforeClick(tgt, fresh.p.x, fresh.p.y, a.hoverMs); } catch {} }
-        await ubGlide(fresh.p.x, fresh.p.y); // cursor desliza até o alvo antes de clicar
+        await ubGlide(fresh.p.x, fresh.p.y, a.durationMs); // cursor desliza até o alvo antes de clicar
         ubPulse();
         // (b) sintético + verificação + duplo-clique; trusted é escalado no background.
         const r = await ubClickWithVerify(tgt, fresh.p.x, fresh.p.y, { noEscalate: a.noEscalate });
@@ -2893,7 +2898,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
     } else if (msg.cmd === "cursor") {
       // cursor independente: move (x,y da viewport) e opcionalmente clica no ponto
       try {
-        await ubGlide(Number(a.x) || 0, Number(a.y) || 0);
+        await ubGlide(Number(a.x) || 0, Number(a.y) || 0, a.durationMs);
         let clicked = null;
         if (a.click) {
           ubPulse();
@@ -2930,7 +2935,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         if (a.click && coverCs && coverCs.covered && !a.force) {
           return reply({ ok: false, error: "COVERED por " + (coverCs.cover || "?") + " em (" + freshCs.p.x + "," + freshCs.p.y + ") — alvo: " + a.selector + " (force:true p/ clicar mesmo assim)" });
         }
-        await ubGlide(freshCs.p.x, freshCs.p.y);
+        await ubGlide(freshCs.p.x, freshCs.p.y, a.durationMs);
         let clicked = null;
         if (a.click) {
           ubPulse();
@@ -2975,7 +2980,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         }
         let before = [];
         try { before = ubTooltipNodes().map((n) => n.text); } catch { before = []; }
-        try { await ubGlide(Number(px) || 0, Number(py) || 0); } catch {}
+        try { await ubGlide(Number(px) || 0, Number(py) || 0, a.durationMs); } catch {}
         try { await ubHoverBeforeClick(el, px, py, a.hoverMs); } catch {}
         try { if (el && el.focus) el.focus(); } catch {}
         try { await ubSettle({ timeout: 1200, quiet: 200 }); } catch {}

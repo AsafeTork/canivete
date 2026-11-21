@@ -393,7 +393,7 @@ function ubEnsure() {
       }
       // ---- gestão pelo painel (127.0.0.1, mesmo nível das rotas GET de leitura) ----
       // update = overlay do dono p/ reports do cv_report · locate = leva o dono até a página
-      // numa aba NOVA em fundo (tab.new) elevada sem roubar foco de SO (tab.activate) ·
+      // numa nova guia agrupada do Canivete e traz a janela do Chrome à frente ·
       // toggle = liga/desliga tool do catálogo (persiste em tools-off.json).
       const pth = u.pathname;
       if (req.method === "POST" && (pth === "/api/tools/toggle" || /^\/api\/issues\/[A-Za-z0-9_-]+\/(update|locate)$/.test(pth))) {
@@ -444,7 +444,7 @@ function ubEnsure() {
           return;
         }
 
-        // locate: leva até a página p/ revisar — aba nova em fundo + eleva (sem foco de SO)
+        // locate: abre a página em nova guia do Canivete e foca a janela do Chrome
         if (!item.url || !/^https?:\/\//i.test(String(item.url))) return j422("este item não tem url p/ abrir");
         const nova = await ubSend("tab.new", { url: String(item.url) }, 15000);
         if (nova && nova.__offline) { res.writeHead(409, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: UB_OFF })); return; }
@@ -563,9 +563,12 @@ function ubEnsure() {
           // fallthrough: qualquer tab.* futuro encaminha cru (a extensão valida e responde)
           const bridged = map[p.cmd] || (String(p.cmd || "").startsWith("tab.") ? p.cmd : null);
           if (p.cmd === "status") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, data: { connected: ubConnected(), lastPollAgoMs: ubLastPoll ? Date.now() - ubLastPoll : -1, queued: ubQueue.length, ext: ubExtInfo } })); return; }
-          if (!bridged && p.cmd !== "wait") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "cmd: status|diag|tabs|read|snapshot|scan|shot|goto|back|forward|reload|click|fill|press|scroll|wait|evaluate|cursor|select|highlight|waittext|type|new|close|flow (close só aba about:blank do agente; roubar foco: PROIBIDO pelo dono)" })); return; }
-          if (p.cmd === "wait") { await new Promise((r) => setTimeout(r, Math.min(Number(a.waitMs ?? a.ms) || 2000, 15000))); res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"data":{"waited":true}}'); return; }
-          const r2 = await ubSend(bridged, { ...a }, Math.min(Number(p.timeoutMs) || UB_TIMEOUT_MS, 120000));
+          if (!bridged && p.cmd !== "wait") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "cmd: status|diag|tabs|read|snapshot|scan|shot|goto|back|forward|reload|click|fill|press|scroll|wait|evaluate|cursor|select|highlight|waittext|type|new|close|flow" })); return; }
+          if (p.cmd === "wait") { const requested = Number(a.waitMs ?? a.ms); const waitMs = Number.isFinite(requested) && requested >= 0 ? requested : 2000; await new Promise((r) => setTimeout(r, waitMs)); res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, data: { waited: true, waitedMs: waitMs } })); return; }
+          const requestedTimeout = Number(p.timeoutMs) || UB_TIMEOUT_MS;
+          const actionDuration = Number(a.durationMs || 0) + Number(a.hoverMs || 0) + 15000;
+          const timeoutMs = Number.isFinite(actionDuration) ? Math.max(requestedTimeout, actionDuration) : requestedTimeout;
+          const r2 = await ubSend(bridged, { ...a }, timeoutMs);
           if (r2.__offline || r2.__timeout) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: r2.__offline ? "EXTENSAO_OFFLINE" : "TIMEOUT_EXTENSAO" })); return; }
           res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: !!r2.ok, data: r2.data, error: r2.error, ...(r2.chunks ? { chunks: r2.chunks, chunked: true, bytes: r2.bytes, note: r2.note } : {}) }));
           return;

@@ -171,7 +171,7 @@ export function installToolConsolidation() {
       { action: "screenshot", source: "cv_ubrowser_shot" },
     ],
   });
-  addAlias({ name: "cv_owner_act", source: "cv_ubrowser_act", description: "Age numa aba do Chrome logado do dono. Ação separada das consultas para manter visível a fronteira de segurança." });
+  addAlias({ name: "cv_owner_act", source: "cv_ubrowser_act", description: "Opera o Chrome autenticado em qualquer guia escolhida; guias novas entram no grupo Canivete. A janela-alvo ganha foco por padrão (focus:false preserva o atual). Use CDP quando necessário; confirmações ficam para ações de alto risco." });
   addAlias({ name: "cv_owner_alerts", source: "cv_ubrowser_alerts", description: "Lê e consome alertas pendentes da sessão Chrome do dono." });
 
   addComposite({

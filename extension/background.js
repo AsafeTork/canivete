@@ -41,7 +41,7 @@ try {
   });
 } catch {}
 
-const UB_EXPECTED = "15"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "16"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 // Versão do próprio worker (manifest): reportada no /hello + tab.diag → cv_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
@@ -232,13 +232,27 @@ async function ensureContent(tabId) {
   throw new Error("página sem responder (" + lastErr.slice(0, 100) + ") — recarregue a página (F5)");
 }
 
-async function ask(tabId, cmd, args) {  await ensureContent(tabId);  const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd, args }), 15000, "content " + cmd);
+async function ask(tabId, cmd, args) {  await ensureContent(tabId);  const timed = Number(args?.durationMs || 0) + Number(args?.hoverMs || 0); const waitMs = Math.max(15000, Number.isFinite(timed) ? timed + 10000 : 15000); const r = await withTimeout(chrome.tabs.sendMessage(tabId, { cmd, args }), waitMs, "content " + cmd);
   if (!r?.ok) throw new Error(r?.error || "content falhou");
   return r.data;
 }
 
 function normWait(a) {
-  return Math.min(Math.max(Number(a?.waitMs) || 1800, 500), 15000);
+  const requested = a?.waitMs == null ? 1800 : Number(a.waitMs);
+  return Number.isFinite(requested) ? Math.max(0, requested) : 1800;
+}
+
+async function groupCaniveteTab(tabId, windowId) {
+  const title = "Canivete · agente";
+  const groups = await chrome.tabGroups.query({ windowId });
+  let group = groups.find((item) => item.title === title);
+  if (group) await chrome.tabs.group({ tabIds: [tabId], groupId: group.id });
+  else {
+    const groupId = await chrome.tabs.group({ tabIds: [tabId] });
+    group = await chrome.tabGroups.update(groupId, { title, color: "purple", collapsed: false });
+  }
+  if (!group) throw new Error("Chrome não criou o grupo de abas do Canivete");
+  return { id: group.id, title: group.title || title, color: group.color };
 }
 
 // aguarda EVENTO de load (onUpdated complete) com teto; retorna elapsed ms. Erro de navegação propaga na hora.
@@ -277,10 +291,8 @@ function ubTabScore(needle, t) {
 }
 
 async function handle(cmd, a = {}) {
-  // tab.activate: ELEVA a aba (chrome.tabs.update active:true) DENTRO da janela dela —
-  // tudo por tabs/windows API: sem content, sem injeção, resposta instantânea.
-  // REGRA DO DONO (inviolável): roubar foco de janela é PROIBIDO por padrão —
-  // focused:true SÓ com confirm (texto ≥4 chars); default é só elevar a aba na janela.
+  // Ativa a aba e traz a janela do Chrome à frente por padrão. focused:false mantém
+  // o foco do sistema onde estava; foco explicitamente selecionável pelo agente.
   if (cmd === "tab.activate") {
     const all = (await chrome.tabs.query({})).filter((t) => Number.isInteger(t.id));
     let t = null;
@@ -306,14 +318,13 @@ async function handle(cmd, a = {}) {
       if (isNoTabErr(e)) throw new Error("aba fechou no meio da ação — reliste tabs");
       throw new Error("ativar aba falhou: " + String(e?.message || e).slice(0, 120));
     }
-    if (a.focused === true) {
-      if (!(a.confirm && String(a.confirm).trim().length >= 4))
-        throw new Error('focused:true rouba foco do dono — exige confirm="<frase>" (≥4 chars); default é só elevar a aba na janela');
+    const focused = a.focused !== false && a.focus !== false;
+    if (focused) {
       try {
         await chrome.windows.update(t.windowId, { focused: true });
       } catch (e) { throw new Error("aba ativada, mas janela não recebeu foco (" + String(e?.message || e).slice(0, 100) + ")"); }
     }
-    return { tabId: t.id, title: (t.title || "").slice(0, 100), url: t.url || "", focused: !!a.focused };
+    return { tabId: t.id, title: (t.title || "").slice(0, 100), url: t.url || "", focused, windowId: t.windowId };
   }
   // resolução de aba por nome: vale p/ todos os comandos que aceitam tabId
   // (tab.activate tem resolver próprio acima, com erro dedicado).
@@ -327,6 +338,14 @@ async function handle(cmd, a = {}) {
     if (!found) throw new Error(`aba "${a.tab}" não encontrada — veja cv_ubrowser_tabs`);
     a.tabId = found.id;
   }
+  const foregroundActions = new Set(["tab.goto", "tab.back", "tab.forward", "tab.reload", "tab.click", "tab.fill", "tab.type", "tab.press", "tab.select", "tab.scroll", "tab.cursor", "tab.tooltip", "tab.cdp", "tab.flow"]);
+  if (foregroundActions.has(cmd) && a.focus !== false) {
+    const id = a.tabId || (await activeTabId());
+    const target = await getTabOrThrow(id);
+    await chrome.tabs.update(id, { active: true });
+    await chrome.windows.update(target.windowId, { focused: true });
+    a.tabId = id;
+  }
   if (cmd === "ping") return { pong: true, url: settings.url };
   // reports de elemento mudaram na ponte (humano marcou / agente resolveu): re-sync do cache
   // da origin + re-aplica os highlights nas abas do site (notify via job curto no /poll).
@@ -337,7 +356,7 @@ async function handle(cmd, a = {}) {
     await ubElemApplyToTabs(origin, reports);
     return { origin, reports: reports.filter((r) => r && r.status !== "resolvido").length };
   }
-  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, focusRule: "tab.activate: default só eleva a aba na janela; focused:true rouba foco do dono — exige confirm={<frase>} (≥4 chars)" };
+  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, focusRule: "tab.activate ativa a aba e foca a janela por padrão; focused:false preserva o foco atual" };
   if (cmd === "tabs.list") {
     const [tabs, wins, incog] = await Promise.all([
       chrome.tabs.query({}),
@@ -346,23 +365,28 @@ async function handle(cmd, a = {}) {
     ]);
     const byWin = {};
     for (const t of tabs) byWin[t.windowId] = (byWin[t.windowId] || 0) + 1;
-    // v14: filter/max opcionais (substring título+url, default 50, teto 200 — callers antigos inalterados).
+    // filter/max/offset são opcionais; não há teto de paginação.
     let pool = tabs;
     try {
       const needle = String((a && a.filter) || "").trim().toLowerCase();
       if (needle) pool = tabs.filter((t) => { try { return (((t.title || "") + " " + (t.url || "")).toLowerCase().includes(needle)); } catch { return false; } });
     } catch {}
-    let cap = 50;
-    try { cap = Math.min(Math.max(Number(a && a.max) || 50, 1), 200); } catch {}
+    let cap = Infinity, offset = 0;
+    try { cap = Number.isFinite(Number(a?.max)) && Number(a.max) > 0 ? Math.floor(Number(a.max)) : Infinity; } catch {}
+    try { offset = Math.max(0, Math.floor(Number(a?.offset) || 0)); } catch {}
+    const groupIds = [...new Set(pool.map((t) => t.groupId).filter((id) => Number.isInteger(id) && id >= 0))];
+    const groups = await Promise.all(groupIds.map((id) => chrome.tabGroups.get(id).catch(() => null)));
+    const groupById = new Map(groups.filter(Boolean).map((group) => [group.id, group]));
+    const page = pool.slice(offset, offset + cap);
     return {
-      tabs: pool.slice(0, cap).map((t) => ({ id: t.id, windowId: t.windowId, incognito: !!t.incognito, pinned: !!t.pinned, title: (t.title || "").slice(0, 100), url: t.url || "", active: !!t.active })),
+      tabs: page.map((t) => { const group = groupById.get(t.groupId); return { id: t.id, windowId: t.windowId, incognito: !!t.incognito, pinned: !!t.pinned, title: (t.title || "").slice(0, 100), url: t.url || "", active: !!t.active, ...(group ? { groupId: group.id, group: group.title || "", agentOwned: group.title === "Canivete · agente" } : {}) }; }),
       windows: wins.map((w) => ({ id: w.id, focused: !!w.focused, incognito: !!w.incognito, state: w.state, tabs: byWin[w.id] || 0 })),
       incognitoAllowed: !!incog,
-      ...(pool.length > cap ? { omitted: pool.length - cap } : {}),
+      total: pool.length, offset, ...(Number.isFinite(cap) && pool.length > offset + cap ? { omitted: pool.length - offset - cap, nextOffset: offset + cap } : {}),
     };
   }
   if (cmd === "tab.focus") {
-    throw new Error("ROUBAR FOCO É PROIBIDO pelo dono (removido do MCP)");
+    return handle("tab.activate", { ...a, focused: true });
   }
   if (cmd === "tab.goto") {
     if (!a.url) throw new Error("url obrigatória");
@@ -386,12 +410,14 @@ async function handle(cmd, a = {}) {
     return await ask(id, "state", {}); // dieta: só título+url (leia explícito se precisar do texto)
   }
   if (cmd === "tab.new") {
-    // aba INDEPENDENTE: SEMPRE em fundo (active:false) — nunca rouba foco
-    const t = await chrome.tabs.create({ url: a.url || "about:blank", active: false });
+    const t = await chrome.tabs.create({ url: a.url || "about:blank", ...(a.windowId != null ? { windowId: Number(a.windowId) } : {}), active: a.active !== false });
+    const group = await groupCaniveteTab(t.id, t.windowId);
+    if (a.focus !== false) await chrome.windows.update(t.windowId, { focused: true });
     // espera carregar (por evento) pra já sair usável
     if (a.url) {
       await new Promise((res) => {
-        const to = setTimeout(() => { chrome.tabs.onUpdated.removeListener(fn); res(); }, 12000);
+        const requested = a.waitMs == null ? 12000 : Number(a.waitMs);
+        const to = setTimeout(() => { chrome.tabs.onUpdated.removeListener(fn); res(); }, Number.isFinite(requested) ? Math.max(0, requested) : 12000);
         const fn = (tid, info) => {
           if (tid === t.id && info.status === "complete") {
             clearTimeout(to); chrome.tabs.onUpdated.removeListener(fn); res();
@@ -400,19 +426,12 @@ async function handle(cmd, a = {}) {
         chrome.tabs.onUpdated.addListener(fn);
       });
     }
-    return { id: t.id, url: t.url || a.url, background: !t.active };
+    return { id: t.id, url: t.url || a.url, active: t.active, focused: a.focus !== false, group };
   }
   if (cmd === "tab.close") {
-    // #67: fechar SÓ aba-fantasma do agente (about:blank). Regra do dono: NUNCA
-    // fechar aba dele — qualquer URL não-blank (http(s) ativo, chrome://, ...)
-    // exige confirm explícito. mode:"close_by_prefix" limpa TODAS as about:blank.
-    const isBlank = (u) => /^about:blank/i.test(String(u || "")) || String(u || "").trim().toLowerCase() === "blank";
     if (a.mode === "close_by_prefix") {
-      // prefixo só pode ser blank: fechar "por prefixo" http(s) seria fechar aba do dono em massa.
       const raw = String(a.urlPrefix || "about:blank").trim().toLowerCase();
       const prefix = raw === "blank" ? "about:blank" : raw;
-      if (!/^about:blank/.test(prefix))
-        throw new Error(`close_by_prefix só aceita urlPrefix blank (about:blank) — fechar abas do dono (${raw.slice(0, 60)}) é PROIBIDO`);
       const hits = (await chrome.tabs.query({})).filter((t) => String(t.url || "").startsWith(prefix));
       const closed = [];
       for (const t of hits) { try { await chrome.tabs.remove(t.id); closed.push(t.id); } catch {} }
@@ -421,8 +440,6 @@ async function handle(cmd, a = {}) {
     const id = a.tabId || (await activeTabId());
     const t = await getTabOrThrow(id);
     const url = String(t.url || "");
-    if (!isBlank(url) && !(a.confirm && String(a.confirm).trim().length >= 4))
-      throw new Error(`aba do dono (${url.slice(0, 80) || "sem url"}) — NUNCA fecho aba do dono: fechar exige confirm="<frase do dono>"; p/ limpar fantasmas use {action:"close", mode:"close_by_prefix"}`);
     await chrome.tabs.remove(id);
     return { closed: 1, tabId: id, url, title: (t.title || "").slice(0, 100) };
   }
@@ -733,6 +750,21 @@ async function ubTrustedClick(tabId, x, y, opts) {
     return { ok: false, error: String((e && e.message) || e).slice(0, 150) };
   }
 }
+async function ubTrustedMove(tabId, x, y) {
+  const target = { tabId };
+  try { await chrome.debugger.detach(target).catch(() => {}); } catch {}
+  try {
+    await chrome.debugger.attach(target, "1.3");
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: Math.round(Number(x) || 0), y: Math.round(Number(y) || 0),
+    });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error).slice(0, 160) };
+  } finally {
+    try { await chrome.debugger.detach(target); } catch {}
+  }
+}
   if (cmd === "tab.cursor") {
     // cursor INDEPENDENTE: {x,y} na viewport (+click opcional) ou {selector} (+click)
     const id = a.tabId || (await activeTabId());
@@ -740,6 +772,10 @@ async function ubTrustedClick(tabId, x, y, opts) {
     if (a.selector) {
       // cursor_sel ja verifica no content (sintetico+duplo); trusted aqui só se needsTrusted.
       const dataSel = await ask(id, "cursor_sel", a);
+      if (a.click !== true && dataSel && Number.isFinite(Number(dataSel.x)) && Number.isFinite(Number(dataSel.y))) {
+        const moved = await ubTrustedMove(id, dataSel.x, dataSel.y);
+        return { ...dataSel, pointer: moved.ok ? "cdp-mousemove" : "visual-only", ...(moved.error ? { pointerFallback: moved.error } : {}) };
+      }
       if (dataSel && (dataSel.verified || !dataSel.needsTrusted || a.trusted === false)) return dataSel;
       const sx = Number(dataSel.x), sy = Number(dataSel.y);
       if (Number.isFinite(sx) && Number.isFinite(sy)) {
@@ -816,9 +852,10 @@ async function ubTrustedClick(tabId, x, y, opts) {
       const st = a.click ? await ask(id, "state", {}).catch(() => ({})) : {};
       return { ...data, ...st, via: "synthetic", trustedFallback: (tr.error || "debugger").slice(0, 120) };
     }
-    const data = await ask(id, "cursor", a); // content já faz settle antes de responder — sem sleep
+    const data = await ask(id, "cursor", a);
     if (a.click) return { ...data, ...(await ask(id, "state", {})) };
-    return data;
+    const moved = await ubTrustedMove(id, Number(a.x) || 0, Number(a.y) || 0);
+    return { ...data, pointer: moved.ok ? "cdp-mousemove" : "visual-only", ...(moved.error ? { pointerFallback: moved.error } : {}) };
   }
   if (cmd === "tab.scan") {
     // varre lista virtualizada (ex: WhatsApp) com scroll coletando snapshot
@@ -1161,8 +1198,8 @@ async function ubTrustedClick(tabId, x, y, opts) {
   }
   // flow: sequência atômica numa só ida-volta (eficiente: 1 poll, 1 tab, N passos)
   if (cmd === "tab.flow") {
-    const steps = Array.isArray(a.steps) ? a.steps.slice(0, 12) : [];
-    if (!steps.length) throw new Error("steps: array não-vazio (máx 12)");
+    const steps = Array.isArray(a.steps) ? a.steps : [];
+    if (!steps.length) throw new Error("steps: array não-vazio");
     const id = a.tabId || (await activeTabId());
     const out = [];
     for (const s of steps) {
