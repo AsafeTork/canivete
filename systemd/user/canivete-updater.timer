@@ -1,0 +1,10 @@
+[Unit]
+Description=Canivete auto-atualiza: a cada 5 minutos e no boot
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

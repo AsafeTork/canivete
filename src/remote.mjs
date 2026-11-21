@@ -87,5 +87,23 @@ export async function serveHttp(port, token) {
     srv.listen(port, "127.0.0.1", res);
   });
   process.stderr.write(`[canivete] remoto em http://127.0.0.1:${port}/mcp (${toolCount()} tools)\n`);
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    process.stderr.write(`[canivete] ${signal}: encerrando após concluir chamadas ativas\n`);
+    const forceTimer = setTimeout(() => {
+      process.stderr.write("[canivete] timeout de encerramento; forçando saída\n");
+      process.exit(1);
+    }, 60000);
+    forceTimer.unref();
+    srv.close((error) => {
+      clearTimeout(forceTimer);
+      if (error) process.stderr.write(`[canivete] erro no encerramento HTTP: ${error.message}\n`);
+      process.exit(error ? 1 : 0);
+    });
+  };
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
   return srv;
 }

@@ -1,0 +1,6 @@
+[Unit]
+Description=Canivete auto-atualiza origin/main e reinicia se o código mudou
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash %h/Projetos/canivete/scripts/auto-atualiza.sh
