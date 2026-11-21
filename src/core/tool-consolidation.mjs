@@ -162,7 +162,7 @@ export function installToolConsolidation() {
 
   addComposite({
     name: "cv_owner_inspect",
-    description: "Entenda a página autenticada em uma chamada: overview compacto, snapshot de controles e roles, leitura, guias ou imagem. Para agir use cv_owner_act; alertas ficam em cv_owner_alerts.",
+    description: "Consulta o Chrome autenticado. `tabs` apenas lista abas e é leitura; overview, snapshot compacto e leitura não alteram a página. Para agir use cv_owner_act; alertas ficam em cv_owner_alerts.",
     variants: [
       { action: "status", source: "cv_ubrowser_status" },
       { action: "tabs", source: "cv_ubrowser_tabs" },
@@ -172,7 +172,7 @@ export function installToolConsolidation() {
       { action: "screenshot", source: "cv_ubrowser_shot" },
     ],
   });
-  addAlias({ name: "cv_owner_act", source: "cv_ubrowser_act", description: "Opera qualquer guia do Chrome autenticado; goto troca o site na mesma guia. Guias novas entram no grupo Canivete. Panel exibe status, passo a passo e marcações na página; flow atualiza o progresso. CDP está disponível quando necessário." });
+  addAlias({ name: "cv_owner_act", source: "cv_ubrowser_act", description: "Opera guias do Chrome sem tirar o foco do usuário por padrão (`focus:true` é explícito); guias novas abrem em segundo plano (`active:true` seleciona). Panel exibe progresso. CDP está disponível quando necessário." });
   addAlias({ name: "cv_owner_alerts", source: "cv_ubrowser_alerts", description: "Lê e consome alertas pendentes da sessão Chrome do dono." });
 
   addComposite({

@@ -35,9 +35,9 @@ Manual só em 2 casos: migração de pasta (esta seção) ou `act {action:"reloa
 ## Segurança
 
 - **Pausar** no popup = o modelo não enxerga nem toca em nada.
-- Guias novas abertas pelo agente entram no grupo “Canivete · agente”; qualquer guia escolhida continua acessível. Ativação traz a janela do Chrome à frente; `focus:false` preserva o foco atual. Ações sensíveis de alto risco continuam exigindo confirmação.
+- Guias novas abertas pelo agente entram no grupo “Canivete · agente”; qualquer guia escolhida continua acessível. As ações preservam o foco e o cursor atuais; `focus:true` traz o Chrome à frente. Guias novas abrem em segundo plano; `active:true` seleciona a nova guia. Ações sensíveis de alto risco continuam exigindo confirmação.
 - O painel de progresso oferece status, plano e marcações numa camada visual isolada. Ele continua na mesma guia entre sites. As anotações não alteram atributos do site.
 - O cursor animado e o `mousemove` CDP atuam na página; não deslocam o ponteiro físico do sistema operacional.
 - Ações de alto risco (pagamento, senha, excluir conta, apagar tudo, fechar guias em lote) exigem `confirm` com frase do dono.
 - Tudo via `localhost` + token. Nunca compartilhe o token.
-- Clique trusted mostra o banner amarelo "depurando" do Chrome durante o clique (some sozinho).
+- A depuração CDP é mantida por aba e reutilizada entre cliques, movimentos e leituras; o aviso amarelo do Chrome aparece uma vez e pode ser ocultado pelo usuário. Para encerrar a sessão e remover o aviso, use `cv_owner_act {action:"cdp", off:true, tabId}`.

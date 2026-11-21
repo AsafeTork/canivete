@@ -200,9 +200,9 @@ reg("cv_ubrowser_alerts", {
 });
 
 reg("cv_ubrowser_tabs", {
-  description: "Lista as abas em todas as janelas e grupos do Chrome, incluindo o grupo de trabalho Canivete. O agente pode atuar em qualquer aba; abas novas ficam agrupadas. Use filter/max/offset para localizar ou paginar sem teto fixo. profile escolhe um perfil; sem profile, perfis conectados são consolidados.",
-  inputSchema: { type: "object", properties: { filter: { type: "string", description: "substring em título+url (case-insensitive)" }, max: { type: "number", description: "tamanho da página; sem teto máximo" }, offset: { type: "number", default: 0, description: "posição inicial para paginação" }, profile: { type: "string", description: "clientId de um perfil conectado; omitir consolida os perfis" } }, required: [] },
-  run: async ({ filter, max, offset = 0, profile } = {}) => {
+  description: "Leitura: lista até 30 abas (filtro por título/URL) do Chrome. profile limita a um perfil; sem ele, consolida perfis conectados. Use offset para paginar. Não ativa abas nem muda o foco.",
+  inputSchema: { type: "object", properties: { filter: { type: "string", description: "substring em título+url (case-insensitive)" }, max: { type: "number", default: 30, description: "abas nesta página (default 30)" }, offset: { type: "number", default: 0, description: "posição inicial para paginação" }, profile: { type: "string", description: "clientId de um perfil conectado; omitir consolida os perfis" } }, required: [] },
+  run: async ({ filter, max = 30, offset = 0, profile } = {}) => {
     const t0 = Date.now();
     const tgt = ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
@@ -226,8 +226,7 @@ reg("cv_ubrowser_tabs", {
       const f = ubTabsFilterMax(tabs, filter, max, offset);
       const omitNote = f.omitted ? ` (${f.omitted} restantes; offset=${offset + f.tabs.length} para continuar)` : "";
       const badNote = bads.length ? ` (${bads.length} perfil sem resposta: ${bads.map((b) => b.e.profileLabel || b.e.id).join(", ")})` : "";
-      const firstProf = f.tabs.find((t) => t.profile)?.profile || profiles[0]?.id || "";
-      return devOut({ summary: `${f.tabs.length} aba(s) em ${profiles.length} perfil(is)${omitNote}${badNote}`, data: { tabs: f.tabs, profiles, total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_read", reason: profiles.length > 1 && !bads.length ? `Escolha a aba e use profile:"${firstProf}" no read/snapshot/act` : "Ler aba ativa" }] });
+      return devOut({ summary: `${f.tabs.length} aba(s) em ${profiles.length} perfil(is)${omitNote}${badNote}`, data: { tabs: f.tabs, profiles, total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const r = res.single;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
@@ -238,7 +237,7 @@ reg("cv_ubrowser_tabs", {
     const slim = (Array.isArray(tabs) ? tabs : []).map((t) => ubTabsSlim(t, ubProfTag(ext0)));
     const f = ubTabsFilterMax(slim, filter, max, offset);
     const omitNote = f.omitted ? ` (${f.omitted} restantes; offset=${offset + f.tabs.length} para continuar)` : "";
-    return devOut({ summary: `${f.tabs.length} aba(s) em ${wins.length || "?"} janela(s)${omitNote}`, data: { tabs: f.tabs, profiles: ext0 ? [{ id: ext0.id, ...(ext0.profileLabel ? { label: ext0.profileLabel } : {}), windows: wins.length, tabs: (Array.isArray(tabs) ? tabs : []).length }] : [], total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_read", reason: "Ler aba ativa" }] });
+    return devOut({ summary: `${f.tabs.length} aba(s) em ${wins.length || "?"} janela(s)${omitNote}`, data: { tabs: f.tabs, profiles: ext0 ? [{ id: ext0.id, ...(ext0.profileLabel ? { label: ext0.profileLabel } : {}), windows: wins.length, tabs: (Array.isArray(tabs) ? tabs : []).length }] : [], total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 
@@ -500,11 +499,11 @@ async function ubTabsFetch(args, tgt, timeoutMs) {
 const UB_SHOT_LAST = new Map(); // hash do último shot por aba (frescor v14)
 
 reg("cv_ubrowser_snapshot", {
-  description: "Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). find=\"texto\": localiza com ±3 contexto sem despejar tudo. layer=\"modal|menu|popover|tooltip\": foca SÓ na camada (modal de 2 botões sem ler a página); sem filtro e com overlay aberto, a camada vai primeiro sozinha. Listas grandes dobram sozinhas (marcador … +N similares com refs). Links repetidos caem no dedup. shadow: na frente do selector = dentro de web component (clicável). imgs com alt/src entram. compact=true economiza ~60% tokens (mantém layer). max (50-120) + offset pagina. Lista virtualizada (WhatsApp): act scan antes. Rank: viewport→nome→papel.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 50, description: "máximo de elementos por página (default 50, máx 120)" }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" }, compact: { type: "boolean", default: false, description: "compact=true: só ref|tag|texto|role sem x/y/w/h (~60% menos tokens, paridade com headless)" }, find: { type: "string", description: "busca texto no snapshot e devolve matches ±3 contexto (sem despejar tudo)" }, layer: { type: "string", enum: ["modal", "menu", "popover", "tooltip"], description: "foco SÓ na camada (ex: modal de 2 botões sem ler a página inteira)" } }, required: [] },
-  run: async ({ tabId, tab, max, offset, compact, find, layer, profile }) => {
+  description: "Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). find=\"texto\": localiza com ±3 contexto sem despejar tudo. layer=\"modal|menu|popover|tooltip\": foca SÓ na camada. Listas grandes dobram sozinhas; links duplicados são removidos. compact (padrão) retorna só ref/tag/texto/role e reduz tokens; max=30 por padrão. Lista virtualizada: act scan antes. Rank: viewport→nome→papel.",
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 30, description: "máximo de elementos por página (default 30, máx 120)" }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" }, compact: { type: "boolean", default: true, description: "padrão true: só ref|tag|texto|role; false inclui mais campos por elemento" }, find: { type: "string", description: "busca texto no snapshot e devolve matches ±3 contexto (sem despejar tudo)" }, layer: { type: "string", enum: ["modal", "menu", "popover", "tooltip"], description: "foco SÓ na camada (ex: modal de 2 botões sem ler a página inteira)" } }, required: [] },
+  run: async ({ tabId, tab, max, offset, compact = true, find, layer, profile }) => {
     const t0 = Date.now();
-    const cappedMax = Math.min(Number(max) || 50, 120);
+    const cappedMax = Math.min(Number(max) || 30, 120);
     const needle = String(find || "").trim().toLowerCase();
     const tgt = ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
@@ -569,7 +568,7 @@ reg("cv_ubrowser_snapshot", {
 });
 
 reg("cv_ubrowser_act", {
-  description: "Opera o Chrome autenticado na guia escolhida; `goto` troca o site nessa mesma guia. Guias novas entram no grupo Canivete e as existentes seguem acessíveis. A janela-alvo ganha foco por padrão (`focus:false` preserva o atual). Use CDP quando necessário. `panel` exibe o progresso na página; `flow` atualiza cada passo. Marcações apontam alvos sem alterar atributos do site. Cursor: coordenadas/selector, movimento animado e hover. Alto risco requer confirmação.",
+  description: "Opera o Chrome autenticado sem tirar o foco do usuário por padrão; use `focus:true` só quando quiser trazer o Chrome à frente. Guias novas são abertas em segundo plano (`active:true` para selecionar). `goto` troca o site na guia escolhida. Use CDP quando necessário. `panel` exibe progresso e marcações; `flow` atualiza cada passo. Alto risco requer confirmação.",
   inputSchema: {
     type: "object",
     properties: {
@@ -609,11 +608,11 @@ reg("cv_ubrowser_act", {
       expectUrl: { type: "string", description: "p/ click/fill/type/select: substring que deve aparecer na URL após settle" },
       expectText: { type: "string", description: "p/ click/fill/type/select: substring que deve aparecer no texto após settle" },
       expectGone: { type: "string", description: "p/ click/fill/type/select: selector que deve SUMIR após settle" },
-      focused: { type: "boolean", description: "p/ activate: focar a janela (default true; false mantém o foco atual)" },
+      focused: { type: "boolean", default: false, description: "p/ activate: focar a janela (padrão false; true traz o Chrome à frente)" },
       confirm: { type: "string", description: "Confirmação de ações sensíveis de alto risco" },
-      focus: { type: "boolean", description: "para interações de página, foca a janela-alvo (default true)" },
+      focus: { type: "boolean", default: false, description: "opcionalmente traz o Chrome à frente (padrão false; preserva o foco e o cursor atuais)" },
       windowId: { type: "number", description: "janela em que criar uma nova guia" },
-      active: { type: "boolean", description: "para action=new: cria a guia ativa (default true)" },
+      active: { type: "boolean", default: false, description: "para action=new: abre a guia ativa (padrão false; mantém a guia atual)" },
     },
     required: ["action"],
   },
@@ -911,9 +910,15 @@ reg("cv_ubrowser_act", {
     }
     // next[] utile: URL mudou = domínio novo → snapshot (refs frescas) vale mais que print.
     const nxtGen = urlChanged
-      ? [{ tool: "cv_ubrowser_snapshot", reason: "URL mudou — mapeie refs frescas antes de agir (shot confirma se precisar)" }]
-      : [{ tool: "cv_ubrowser_shot", reason: "Confirmar visualmente" }];
-    return devOut({ summary: `[${a.action} risk=${risk}] ok — ${diff}${deltaNote}${snapNote}${clickNote}${expectNote}${ubAlertsHint()}`, data: { action: a.action, risk, ok: true, title: d.title, url: d.url, result: trimOut(d.text ?? d.value ?? "", 500), delta: d.delta || undefined, ...verifyFields, ...expectFields, ...(snapTop ? { snapshotTop: snapTop } : {}), after: { url: afterUrl, title: afterTitle }, changed: { url: urlChanged, title: titleChanged } }, telemetry: { execution_time_ms: Date.now() - t0 }, next: nxtGen });
+      ? [{ tool: "cv_ubrowser_snapshot", reason: "URL mudou — refs antigas expiraram; mapeie só se precisar agir de novo" }]
+      : [];
+    const compactExpect = expectFields.expect ? {
+      expect: {
+        passed: expectFields.expect.passed,
+        checks: (expectFields.expect.checks || []).map(({ name, ok }) => ({ name, ok })),
+      },
+    } : {};
+    return devOut({ summary: `[${a.action}] ${diff}${deltaNote}${snapNote}${clickNote}${expectNote}${ubAlertsHint()}`, data: { action: a.action, ok: true, ...(d.title ? { title: d.title } : {}), ...(d.url ? { url: d.url } : {}), ...(d.text || d.value ? { result: trimOut(d.text ?? d.value, 240) } : {}), ...verifyFields, ...compactExpect, ...(snapTop ? { snapshotTop: snapTop } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: nxtGen });
   },
 });
 

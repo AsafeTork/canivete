@@ -78,7 +78,7 @@ export async function dispatchHttpItem(m, TOOLS, agentSessionId = DEFAULT_AGENT_
   }
   if (m.method === "ping") return { jsonrpc: "2.0", id: m.id, result: {} };
   if (m.method === "tools/list") {
-    return { jsonrpc: "2.0", id: m.id, result: { tools: buildToolsList(TOOLS, { sorted: false, annotations: false }) } };
+    return { jsonrpc: "2.0", id: m.id, result: { tools: buildToolsList(TOOLS, { sorted: false, annotations: true }) } };
   }
   if (m.method === "tools/call") {
     const { name: tn, arguments: args } = m.params || {};

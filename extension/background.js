@@ -42,7 +42,7 @@ try {
   });
 } catch {}
 
-const UB_EXPECTED = "23"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "24"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 // Versão do próprio worker (manifest): reportada no /hello + tab.diag → cv_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
@@ -292,8 +292,8 @@ function ubTabScore(needle, t) {
 }
 
 async function handle(cmd, a = {}) {
-  // Ativa a aba e traz a janela do Chrome à frente por padrão. focused:false mantém
-  // o foco do sistema onde estava; foco explicitamente selecionável pelo agente.
+  // Seleciona a aba alvo sem roubar foco do sistema por padrão. A janela do Chrome
+  // só vem à frente quando o chamador pede focus:true/focused:true.
   if (cmd === "tab.activate") {
     const all = (await chrome.tabs.query({})).filter((t) => Number.isInteger(t.id));
     let t = null;
@@ -319,7 +319,7 @@ async function handle(cmd, a = {}) {
       if (isNoTabErr(e)) throw new Error("aba fechou no meio da ação — reliste tabs");
       throw new Error("ativar aba falhou: " + String(e?.message || e).slice(0, 120));
     }
-    const focused = a.focused !== false && a.focus !== false;
+    const focused = a.focused === true || a.focus === true;
     if (focused) {
       try {
         await chrome.windows.update(t.windowId, { focused: true });
@@ -340,7 +340,7 @@ async function handle(cmd, a = {}) {
     a.tabId = found.id;
   }
   const foregroundActions = new Set(["tab.goto", "tab.back", "tab.forward", "tab.reload", "tab.click", "tab.fill", "tab.type", "tab.press", "tab.select", "tab.scroll", "tab.cursor", "tab.tooltip", "tab.cdp", "tab.flow", "tab.panel"]);
-  if (foregroundActions.has(cmd) && a.focus !== false) {
+  if (foregroundActions.has(cmd) && a.focus === true) {
     const id = a.tabId || (await activeTabId());
     const target = await getTabOrThrow(id);
     await chrome.tabs.update(id, { active: true });
@@ -357,7 +357,7 @@ async function handle(cmd, a = {}) {
     await ubElemApplyToTabs(origin, reports);
     return { origin, reports: reports.filter((r) => r && r.status !== "resolvido").length };
   }
-  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, focusRule: "tab.activate ativa a aba e foca a janela por padrão; focused:false preserva o foco atual" };
+  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, focusRule: "ações preservam o foco do sistema por padrão; use focus:true para trazer o Chrome à frente" };
   if (cmd === "tabs.list") {
     const [tabs, wins, incog] = await Promise.all([
       chrome.tabs.query({}),
@@ -411,9 +411,9 @@ async function handle(cmd, a = {}) {
     return await ask(id, "state", {}); // dieta: só título+url (leia explícito se precisar do texto)
   }
   if (cmd === "tab.new") {
-    const t = await chrome.tabs.create({ url: a.url || "about:blank", ...(a.windowId != null ? { windowId: Number(a.windowId) } : {}), active: a.active !== false });
+    const t = await chrome.tabs.create({ url: a.url || "about:blank", ...(a.windowId != null ? { windowId: Number(a.windowId) } : {}), active: a.active === true });
     const group = await groupCaniveteTab(t.id, t.windowId);
-    if (a.focus !== false) await chrome.windows.update(t.windowId, { focused: true });
+    if (a.focus === true) await chrome.windows.update(t.windowId, { focused: true });
     // espera carregar (por evento) pra já sair usável
     if (a.url) {
       await new Promise((res) => {
@@ -427,7 +427,7 @@ async function handle(cmd, a = {}) {
         chrome.tabs.onUpdated.addListener(fn);
       });
     }
-    return { id: t.id, url: t.url || a.url, active: t.active, focused: a.focus !== false, group };
+    return { id: t.id, url: t.url || a.url, active: t.active, focused: a.focus === true, group };
   }
   if (cmd === "tab.close") {
     if (a.mode === "close_by_prefix") {
@@ -690,9 +690,9 @@ async function ubExpectEnsure(id, a, data, force) {
 }
 // ---- CDP permanente por aba (a pedido do dono): parte do ubrowser, não tool nova ----
 // attach 1x → Runtime.evaluate IMUNE a CSP (WhatsApp), Page.captureScreenshot de aba em
-// fundo, Input trusted, DOM edit. Banner "depurando" fica visível (custo assumido do modo
-// permanente; desligue com act {action:"cdp", off:true}). DevTools aberto na aba → erro claro.
-// globalThis: o attach do Chrome SOBREVIVE ao SW dormindo, o cache não — re-attach cobre.
+// fundo, Input trusted, DOM edit. O aviso "depurando" fica visível até ser ocultado pelo
+// usuário ou a sessão ser desligada com act {action:"cdp", off:true}. DevTools aberto na aba → erro claro.
+// globalThis: o attach do Chrome SOBREVIVE ao SW dormindo, o cache não — attach existente é reutilizado.
 if (!globalThis.__ubDbgInit) {
   globalThis.__ubDbgInit = true;
   globalThis.__ubDbgOn = new Set(); // tabIds com debugger preso
@@ -702,7 +702,9 @@ if (!globalThis.__ubDbgInit) {
 async function ubDbgEnsure(tabId) {
   const target = { tabId };
   if (globalThis.__ubDbgOn && globalThis.__ubDbgOn.has(tabId)) return target;
-  try { await chrome.debugger.detach(target).catch(() => {}); } catch {} // zombie-detach best-effort
+  // O attach do Chrome sobrevive ao ciclo de vida do service worker. Tente
+  // reaproveitá-lo antes de qualquer attach novo: detach/attach fazia o aviso
+  // amarelo piscar e reiniciava a sessão em cada ação.
   try {
     await chrome.debugger.attach(target, "1.3");
   } catch (e) {
@@ -717,53 +719,37 @@ async function ubDbgEnsure(tabId) {
   return target;
 }
 // Cursor-remoto: clique TRUSTED via CDP Input (isTrusted=true, como o mouse do dono),
-// sem mover o mouse dele, escopado na aba (target=tabId). Banner "depurando" pisca
-// (attach→dispatch→detach na mesma tacada). Falhas (DevTools aberto, zombie) → caller faz fallback.
+// sem mover o mouse físico, escopado na aba. Reutiliza o attach persistente da aba;
+// o aviso do Chrome aparece uma vez e permanece até o usuário ocultá-lo ou desligar CDP.
 // opts.dblclick=true: duplo-clique (2 ciclos press/release, clickCount 1 e 2).
 async function ubTrustedClick(tabId, x, y, opts) {
   try {
-    const target = { tabId };
+    const target = await ubDbgEnsure(tabId);
     const px = Math.round(Number(x) || 0), py = Math.round(Number(y) || 0);
     const dbl = !!(opts && opts.dblclick);
-    try { await chrome.debugger.detach(target).catch(() => {}); } catch {} // zombie-detach best-effort antes do attach
-    try {
-      await chrome.debugger.attach(target, "1.3");
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e).slice(0, 150) };
+    const cmd = (m, p) => chrome.debugger.sendCommand(target, m, p);
+    await cmd("Input.dispatchMouseEvent", { type: "mouseMoved", x: px, y: py });
+    await cmd("Input.dispatchMouseEvent", { type: "mousePressed", x: px, y: py, button: "left", clickCount: 1 });
+    await cmd("Input.dispatchMouseEvent", { type: "mouseReleased", x: px, y: py, button: "left", clickCount: 1 });
+    if (dbl) {
+      await cmd("Input.dispatchMouseEvent", { type: "mousePressed", x: px, y: py, button: "left", clickCount: 2 });
+      await cmd("Input.dispatchMouseEvent", { type: "mouseReleased", x: px, y: py, button: "left", clickCount: 2 });
+      return { ok: true, x: px, y: py, dblclick: true };
     }
-    try {
-      const cmd = (m, p) => chrome.debugger.sendCommand(target, m, p);
-      await cmd("Input.dispatchMouseEvent", { type: "mouseMoved", x: px, y: py });
-      await cmd("Input.dispatchMouseEvent", { type: "mousePressed", x: px, y: py, button: "left", clickCount: 1 });
-      await cmd("Input.dispatchMouseEvent", { type: "mouseReleased", x: px, y: py, button: "left", clickCount: 1 });
-      if (dbl) {
-        await cmd("Input.dispatchMouseEvent", { type: "mousePressed", x: px, y: py, button: "left", clickCount: 2 });
-        await cmd("Input.dispatchMouseEvent", { type: "mouseReleased", x: px, y: py, button: "left", clickCount: 2 });
-        return { ok: true, x: px, y: py, dblclick: true };
-      }
-      return { ok: true, x: px, y: py };
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e).slice(0, 150) };
-    } finally {
-      try { await chrome.debugger.detach(target); } catch {}
-    }
+    return { ok: true, x: px, y: py };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e).slice(0, 150) };
   }
 }
 async function ubTrustedMove(tabId, x, y) {
-  const target = { tabId };
-  try { await chrome.debugger.detach(target).catch(() => {}); } catch {}
   try {
-    await chrome.debugger.attach(target, "1.3");
+    const target = await ubDbgEnsure(tabId);
     await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
       type: "mouseMoved", x: Math.round(Number(x) || 0), y: Math.round(Number(y) || 0),
     });
     return { ok: true };
   } catch (error) {
     return { ok: false, error: String(error?.message || error).slice(0, 160) };
-  } finally {
-    try { await chrome.debugger.detach(target); } catch {}
   }
 }
   if (cmd === "tab.cursor") {
@@ -806,7 +792,7 @@ async function ubTrustedMove(tabId, x, y) {
       return dataSel;
     }
     // REMOTO (default no click): input TRUSTED via CDP — mesma autoridade do mouse do dono,
-    // sem mover o mouse dele, escopado na aba. Banner amarelo "depurando" pisca (attach→dispatch→detach).
+    // sem mover o mouse dele, escopado na aba. Reutiliza a sessão CDP persistente da aba.
     // trusted:false volta ao clique sintético. Fallback automático se debugger ocupado.
     if (a.click && a.x !== undefined && a.y !== undefined && a.trusted !== false) {
       // glide visual primeiro (o dono vê o remoto deslizando), depois o dispatch trusted.
