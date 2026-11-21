@@ -162,7 +162,7 @@ export function installToolConsolidation() {
 
   addComposite({
     name: "cv_owner_inspect",
-    description: "Entenda a página autenticada em uma chamada: overview compacto, leitura, controles, guias ou imagem. Para agir use cv_owner_act; alertas ficam em cv_owner_alerts.",
+    description: "Entenda a página autenticada em uma chamada: overview compacto, snapshot de controles e roles, leitura, guias ou imagem. Para agir use cv_owner_act; alertas ficam em cv_owner_alerts.",
     variants: [
       { action: "status", source: "cv_ubrowser_status" },
       { action: "tabs", source: "cv_ubrowser_tabs" },
