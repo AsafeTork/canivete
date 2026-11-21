@@ -11,6 +11,12 @@ const DESTRUCTIVE_RE = /write|edit|patch|bash|delete|send|fill|type|lifecycle|co
 const DESTRUCTIVE_ACT_RE = /(^|_)act(_|$)/i;
 
 export function annotationsFor(name = "") {
+  // cv_owner_act is a mixed browser-control surface. MCP annotations apply to
+  // the whole tool, so marking it destructive would demand approval even for
+  // harmless navigation/new-tab actions. Its runner still applies Canivete's
+  // action-level high-risk confirmation before destructive operations.
+  if (name === "cv_owner_act")
+    return { readOnlyHint: false, destructiveHint: false, idempotentHint: false };
   if (DESTRUCTIVE_RE.test(name) || DESTRUCTIVE_ACT_RE.test(name))
     return { readOnlyHint: false, destructiveHint: true, idempotentHint: false };
   if (READ_ONLY_RE.test(name)) return { readOnlyHint: true, destructiveHint: false, idempotentHint: true };
