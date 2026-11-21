@@ -153,7 +153,7 @@ else try {
   const ok = !infoM.result.isError && nInfo === count && count > 0 &&
     listM.result.tools.every((tool) => tool.name.startsWith("cv_")) && catalogBytes < 100000 &&
     ownerInspect?.annotations?.readOnlyHint === true && ownerInspect?.annotations?.destructiveHint === false &&
-    ownerAct?.annotations?.readOnlyHint === false && ownerAct?.annotations?.destructiveHint === false &&
+    ownerAct?.annotations?.readOnlyHint === false && ownerAct?.annotations?.destructiveHint === true &&
     androidAct?.annotations?.destructiveHint === true;
   console.log(`${ok ? "PASS" : "FAIL"} tools_info sync == tools/list (${infoMs}ms) :: info=${nInfo} list=${count} catalog=${catalogBytes}B`);
   ok ? pass++ : fail++;
