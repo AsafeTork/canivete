@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Atualiza a cópia limpa para origin/main e reinicia só quando os arquivos mudam.
+# Atualiza a cópia limpa para origin/main e reinicia quando o commit avança.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,7 +15,7 @@ fi
 BRANCH="$(git branch --show-current)"
 git fetch --quiet origin main || skip "fetch de origin/main falhou"
 REMOTE_MAIN="$(git rev-parse --verify origin/main 2>/dev/null)" || skip "origin/main indisponível"
-OLD_TREE="$(git rev-parse 'HEAD^{tree}')"
+OLD_COMMIT="$(git rev-parse HEAD)"
 
 # Depois que uma branch de PR mesclada fica ativa, avance para main. Branches
 # ainda não mescladas nunca são descartadas nem atualizadas por este serviço.
@@ -31,8 +31,8 @@ fi
 
 git merge-base --is-ancestor HEAD "$REMOTE_MAIN" || skip "main local divergiu do remoto"
 git merge --ff-only --quiet "$REMOTE_MAIN" || skip "fast-forward para origin/main falhou"
-NEW_TREE="$(git rev-parse 'HEAD^{tree}')"
-[[ "$OLD_TREE" == "$NEW_TREE" ]] && exit 0
+NEW_COMMIT="$(git rev-parse HEAD)"
+[[ "$OLD_COMMIT" == "$NEW_COMMIT" ]] && exit 0
 
 log "código novo em origin/main — aguardando chamadas ativas e reiniciando o daemon"
 systemctl --user restart canivete

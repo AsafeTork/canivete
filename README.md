@@ -113,7 +113,7 @@ Detalhes do fluxo:
 - **Remote (opencode)**: sem restart do cliente — o daemon atende código novo por chamada.
 - **stdio (codex/claude)**: sessão nova spawna o proxy atualizado; sessão aberta segue no código antigo até fechar.
 - **Pegadinha**: se alguém editou arquivos como **root**, o `git pull` do tork falha (arquivo root-owned). Conserte com `sudo chown -R tork:tork /caminho/canivete` e rode de novo.
-- **Auto (padrão)**: timer `canivete-updater` consulta `origin/main` a cada 5min e 2min após boot; avança com segurança de uma branch de PR já mesclada para `main`, e reinicia o daemon só se os arquivos mudaram. O desligamento espera chamadas HTTP em andamento (máx. 60s). Log: `journalctl --user -u canivete-updater`; carimbo: `~/.config/canivete/last-update`.
+- **Auto (padrão)**: timer `canivete-updater` consulta `origin/main` a cada 5min e 2min após boot; avança com segurança de uma branch de PR já mesclada para `main` e reinicia quando o commit avança. O desligamento espera chamadas HTTP em andamento (máx. 60s). Log: `journalctl --user -u canivete-updater`; carimbo: `~/.config/canivete/last-update`.
 
 Instale/atualize o timer do checkout atual:
 
