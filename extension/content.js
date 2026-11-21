@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "18"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "19"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -2695,34 +2695,62 @@ function ubCompanionRender() {
     if (!ubCompanionState.active) { host?.remove(); return; }
     if (!host) { host = document.createElement("div"); host.id = "ubrowser-companion"; document.documentElement.appendChild(host); }
     const root = host.shadowRoot || host.attachShadow({ mode: "open" });
+    const make = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
     const priorInput = root.querySelector(".composer textarea");
     const priorMessages = root.querySelector(".messages");
     const draft = priorInput?.value || "";
     const hadFocus = priorInput === root.activeElement;
     const selection = hadFocus ? [priorInput.selectionStart, priorInput.selectionEnd] : null;
     const wasAtBottom = !priorMessages || priorMessages.scrollHeight - priorMessages.scrollTop - priorMessages.clientHeight < 48;
-    root.innerHTML = `<style>
+    const style = make("style");
+    style.textContent = `
       :host{all:initial;color-scheme:dark}*,*::before,*::after{box-sizing:border-box}.stage{position:fixed;inset:0;z-index:2147483646;pointer-events:none;font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f3f4ef;isolation:isolate}.scrim{position:fixed;inset:0;z-index:0;pointer-events:none;background:rgba(7,9,8,.18);backdrop-filter:brightness(.72) saturate(.72) blur(1px)}.panel{pointer-events:auto;position:fixed;z-index:1;right:0;top:0;bottom:0;width:min(420px,100vw);height:100dvh;display:flex;flex-direction:column;background:rgba(14,17,15,.96);border-left:1px solid #3a4037;box-shadow:-24px 0 72px #0007;overflow:hidden;backdrop-filter:blur(20px)}header{height:56px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid #30352e}header strong{flex:1;font-size:14px;font-weight:600;letter-spacing:-.2px;color:#f6f7f2}.live{width:7px;height:7px;border-radius:50%;background:#c7f36b;box-shadow:0 0 10px #c7f36688}button{font:inherit;cursor:pointer;color:#eef0e8;background:transparent;border:0;border-radius:6px;padding:8px 10px}button:hover{background:#272c25}button:focus-visible,textarea:focus-visible{outline:2px solid #c7f36b;outline-offset:2px}.body{min-height:0;flex:1;display:flex;flex-direction:column;gap:0}.status{padding:12px 16px;color:#c9cec4;font-size:12px;white-space:pre-wrap;border-bottom:1px solid #252a24}.plan{max-height:150px;overflow:auto;padding:12px 16px;border-bottom:1px solid #252a24}.plan[hidden]{display:none}.plan-label{margin-bottom:8px;color:#929a8c;font-size:10px;letter-spacing:.08em;text-transform:uppercase}.steps{list-style:none;margin:0;padding:0;display:grid;gap:4px}.steps li{display:flex;align-items:center;gap:8px;color:#aab0a4;font-size:12px}.steps li.active{color:#f1f3eb}.steps li.done{color:#aebe99}.steps li.error{color:#ff9b89}.badge{width:16px;height:16px;flex:none;display:grid;place-items:center;color:#aab0a4;font-size:11px}.steps li.active .badge{color:#c7f36b}.messages{min-height:0;flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;align-items:stretch;gap:12px;overscroll-behavior:contain}.bubble{max-width:92%;white-space:pre-wrap;overflow-wrap:anywhere;color:#e7eae2;font-size:13px;line-height:1.5}.bubble.user{align-self:flex-end;padding:9px 12px;background:#292f28;border:1px solid #3b4338;border-radius:12px 12px 3px 12px}.bubble.agent{align-self:flex-start;padding:4px 0}.who{margin-bottom:3px;color:#899184;font-size:10px;letter-spacing:.02em}.empty{margin:auto 0;color:#8d9588;font-size:13px}.composer-wrap{flex:none;padding:12px 16px 8px;border-top:1px solid #30352e}.composer{display:flex;align-items:flex-end;gap:8px;padding:8px;background:#1b201b;border:1px solid #3b4338;border-radius:10px}.composer:focus-within{border-color:#899f65}.composer textarea{width:100%;min-width:0;min-height:42px;max-height:140px;resize:vertical;background:transparent;color:#f3f4ef;border:0;padding:5px 6px;font:13px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;outline:none}.composer textarea::placeholder{color:#899184}.composer button{flex:none;background:#c7f36b;color:#12160d;font-size:12px;font-weight:650;padding:8px 12px}.composer button:hover{background:#d5fb82}.composer button:disabled{opacity:.55;cursor:wait}.delivery{display:block;min-height:24px;padding:6px 2px 0;color:#889184;font-size:10px}.collapsed .body{display:none}.stage.is-collapsed .scrim{opacity:0}.stage.is-collapsed .panel{top:10px;right:10px;bottom:auto;width:min(250px,calc(100vw - 20px));height:56px;border:1px solid #434a3d;border-radius:10px}.mark{position:fixed;border:2px solid #c7f36b;border-radius:3px;background:#c7f36b18;box-shadow:0 0 0 2px #1118;pointer-events:none}.mark span{position:absolute;left:-2px;top:-24px;white-space:nowrap;background:#c7f36b;color:#12160d;border-radius:3px;padding:3px 7px;font-size:11px;font-weight:650;max-width:240px;overflow:hidden;text-overflow:ellipsis}@media(max-width:560px){.panel{width:100vw}.stage.is-collapsed .panel{width:min(250px,calc(100vw - 20px))}}
-    </style><div class="stage"><div class="scrim"></div><section class="panel"><header><span class="live" aria-hidden="true"></span><strong></strong><button class="min" type="button" aria-label="Minimizar painel">−</button><button class="close" type="button" aria-label="Fechar painel">×</button></header><div class="body"><div class="status" aria-live="polite"></div><section class="plan" hidden><div class="plan-label">Em andamento</div><ol class="steps"></ol></section><div class="messages" aria-live="polite"></div><div class="composer-wrap"><form class="composer"><textarea maxlength="4000" aria-label="Mensagem para o agente" placeholder="Escreva para o agente…"></textarea><button type="submit">Enviar</button></form><small class="delivery"></small></div></div></section><div class="marks"></div></div>`;
-    const stage = root.querySelector(".stage");
+    `;
+    const stage = make("div", "stage"), scrim = make("div", "scrim"), panel = make("section", "panel");
     if (ubCompanionState.collapsed) stage.classList.add("is-collapsed");
-    root.querySelector("header strong").textContent = ubCompanionState.title || "Canivete";
-    root.querySelector(".status").textContent = ubCompanionState.message || "Conversa com o agente";
-    const panel = root.querySelector(".panel"); if (ubCompanionState.collapsed) panel.classList.add("collapsed");
-    const plan = root.querySelector(".plan"); plan.hidden = !(ubCompanionState.steps || []).length;
-    const list = root.querySelector(".steps");
-    for (const [i, step] of (ubCompanionState.steps || []).entries()) { const li = document.createElement("li"); li.className = step.status || "pending"; const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = step.status === "done" ? "✓" : step.status === "active" ? "•" : step.status === "error" ? "!" : step.status === "skipped" ? "–" : String(i + 1); const label = document.createElement("span"); label.textContent = step.label || `Passo ${i + 1}`; li.append(badge, label); list.appendChild(li); }
-    const messages = root.querySelector(".messages");
-    if (!(ubCompanionState.messages || []).length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "Converse comigo enquanto acompanho a página."; messages.appendChild(empty); }
-    for (const item of (ubCompanionState.messages || []).slice(-50)) { const bubble = document.createElement("div"); bubble.className = `bubble ${item.role || "agent"}`; const who = document.createElement("div"); who.className = "who"; who.textContent = item.role === "user" ? "Você" : "Canivete"; const text = document.createElement("div"); text.textContent = item.text || ""; bubble.append(who, text); messages.appendChild(bubble); }
+    if (ubCompanionState.collapsed) panel.classList.add("collapsed");
+    const header = make("header"), live = make("span", "live"), title = make("strong", "", ubCompanionState.title || "Canivete");
+    live.setAttribute("aria-hidden", "true");
+    const minimize = make("button", "min", "−"); minimize.type = "button"; minimize.setAttribute("aria-label", "Minimizar painel");
+    const close = make("button", "close", "×"); close.type = "button"; close.setAttribute("aria-label", "Fechar painel");
+    header.append(live, title, minimize, close);
+    const body = make("div", "body"), status = make("div", "status", ubCompanionState.message || "Conversa com o agente");
+    status.setAttribute("aria-live", "polite");
+    const plan = make("section", "plan"); plan.hidden = !(ubCompanionState.steps || []).length;
+    const planLabel = make("div", "plan-label", "Em andamento"), list = make("ol", "steps");
+    plan.append(planLabel, list);
+    for (const [i, step] of (ubCompanionState.steps || []).entries()) {
+      const li = make("li", step.status || "pending"), badge = make("span", "badge"), label = make("span", "", step.label || `Passo ${i + 1}`);
+      badge.textContent = step.status === "done" ? "✓" : step.status === "active" ? "•" : step.status === "error" ? "!" : step.status === "skipped" ? "–" : String(i + 1);
+      li.append(badge, label); list.appendChild(li);
+    }
+    const messages = make("div", "messages"); messages.setAttribute("aria-live", "polite");
+    if (!(ubCompanionState.messages || []).length) messages.appendChild(make("div", "empty", "Converse comigo enquanto acompanho a página."));
+    for (const item of (ubCompanionState.messages || []).slice(-50)) {
+      const bubble = make("div", `bubble ${item.role || "agent"}`), who = make("div", "who", item.role === "user" ? "Você" : "Canivete"), text = make("div", "", item.text || "");
+      bubble.append(who, text); messages.appendChild(bubble);
+    }
     if (wasAtBottom) messages.scrollTop = messages.scrollHeight;
-    root.querySelector(".delivery").textContent = ubCompanionState.delivery || "O agente lê suas mensagens entre as etapas.";
-    const textarea = root.querySelector("textarea"); textarea.value = draft;
+    const composerWrap = make("div", "composer-wrap"), form = make("form", "composer"), textarea = make("textarea"), send = make("button", "", "Enviar");
+    textarea.maxLength = 4000; textarea.setAttribute("aria-label", "Mensagem para o agente"); textarea.placeholder = "Escreva para o agente…"; textarea.value = draft;
+    send.type = "submit";
+    form.append(textarea, send);
+    const delivery = make("small", "delivery", ubCompanionState.delivery || "O agente lê suas mensagens entre as etapas.");
+    composerWrap.append(form, delivery);
+    body.append(status, plan, messages, composerWrap);
+    const marks = make("div", "marks");
+    stage.append(scrim, panel, marks); panel.append(header, body);
+    root.replaceChildren(style, stage);
     if (hadFocus) { textarea.focus(); if (selection) textarea.setSelectionRange(...selection); }
     ubCompanionRefreshMarks();
-    root.querySelector(".min").onclick = () => { ubCompanionState.collapsed = !ubCompanionState.collapsed; ubCompanionPersist(); ubCompanionRender(); };
-    root.querySelector(".close").onclick = () => { ubCompanionState.active = false; ubCompanionPersist(); host.remove(); };
-    root.querySelector(".composer").onsubmit = async (event) => { event.preventDefault(); const input = root.querySelector("textarea"), text = input.value.trim(); if (!text) return; const button = root.querySelector('button[type="submit"]'), delivery = root.querySelector(".delivery"); button.disabled = true; delivery.textContent = "Enviando…"; try { const sent = await chrome.runtime.sendMessage({ __ubCompanionMessage: { text } }); if (!sent?.ok) throw new Error(sent?.error || "não foi possível enviar"); input.value = ""; ubCompanionState.messages.push({ role: "user", text }); ubCompanionState.messages = ubCompanionState.messages.slice(-50); ubCompanionState.message = "Mensagem recebida · vou responder entre as etapas do trabalho."; ubCompanionState.delivery = "Enviada · o agente lê entre as etapas."; ubCompanionPersist(); ubCompanionRender(); } catch (error) { delivery.textContent = String(error?.message || error); button.disabled = false; } };
+    minimize.onclick = () => { ubCompanionState.collapsed = !ubCompanionState.collapsed; ubCompanionPersist(); ubCompanionRender(); };
+    close.onclick = () => { ubCompanionState.active = false; ubCompanionPersist(); host.remove(); };
+    form.onsubmit = async (event) => { event.preventDefault(); const text = textarea.value.trim(); if (!text) return; send.disabled = true; delivery.textContent = "Enviando…"; try { const sent = await chrome.runtime.sendMessage({ __ubCompanionMessage: { text } }); if (!sent?.ok) throw new Error(sent?.error || "não foi possível enviar"); textarea.value = ""; ubCompanionState.messages.push({ role: "user", text }); ubCompanionState.messages = ubCompanionState.messages.slice(-50); ubCompanionState.message = "Mensagem recebida · vou responder entre as etapas do trabalho."; ubCompanionState.delivery = "Enviada · o agente lê entre as etapas."; ubCompanionPersist(); ubCompanionRender(); } catch (error) { delivery.textContent = String(error?.message || error); send.disabled = false; } };
   } catch {}
 }
 function ubCompanionCommand(args = {}) {

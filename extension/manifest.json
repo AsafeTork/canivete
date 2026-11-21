@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Canivete",
-  "version": "1.9.6",
+  "version": "1.9.7",
   "description": "Seu agente acompanha e opera o Chrome local com suas contas logadas, por uma ponte autenticada.",
   "permissions": [
     "tabs",
