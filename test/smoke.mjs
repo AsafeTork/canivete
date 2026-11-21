@@ -147,8 +147,14 @@ else try {
   const catalogBytes = Buffer.byteLength(JSON.stringify(listM.result), "utf8");
   const mInfo = infoTxt.match(/(\d+)\s*tools/);
   const nInfo = mInfo ? Number(mInfo[1]) : NaN;
+  const ownerInspect = listM.result.tools.find((tool) => tool.name === "cv_owner_inspect");
+  const ownerAct = listM.result.tools.find((tool) => tool.name === "cv_owner_act");
+  const androidAct = listM.result.tools.find((tool) => tool.name === "cv_android_act");
   const ok = !infoM.result.isError && nInfo === count && count > 0 &&
-    listM.result.tools.every((tool) => tool.name.startsWith("cv_")) && catalogBytes < 100000;
+    listM.result.tools.every((tool) => tool.name.startsWith("cv_")) && catalogBytes < 100000 &&
+    ownerInspect?.annotations?.readOnlyHint === true && ownerInspect?.annotations?.destructiveHint === false &&
+    ownerAct?.annotations?.readOnlyHint === false && ownerAct?.annotations?.destructiveHint === false &&
+    androidAct?.annotations?.destructiveHint === true;
   console.log(`${ok ? "PASS" : "FAIL"} tools_info sync == tools/list (${infoMs}ms) :: info=${nInfo} list=${count} catalog=${catalogBytes}B`);
   ok ? pass++ : fail++;
 } catch (e) { console.log(`FAIL tools_info sync :: ${e.message}`); fail++; }
