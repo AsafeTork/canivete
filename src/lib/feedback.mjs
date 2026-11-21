@@ -1,4 +1,4 @@
-// canivete — n_report: canal de refinamento em produção.
+// canivete — cv_report: canal de refinamento em produção.
 // Travou? Faltou tool/capacidade? Achou gargalo? NUNCA improvise em silêncio:
 // registre aqui (inbox global ~/.config/canivete/issues.jsonl) e siga pelo
 // alternativo. Sem report, o problema não existe.
@@ -16,13 +16,13 @@ const inboxPath = () => process.env.CANIVETE_ISSUES_FILE || join(homedir(), ".co
 // Rotação: cap de linhas — delega ao pruneJsonl único (ctx), atômico (#49: ENOSPC não trunca).
 function pruneInbox(p) { pruneJsonl(p, MAX_INBOX_LINES); }
 
-reg("n_report", {
-  description: "Reporta refinação p/ a ferramenta (inbox global). kind aceita 6: bug (erro) | ajuste (correção de comportamento) | aprimoramento (perf/UX) | sugestao (capacidade nova) | missing (faltou tool/capacidade) | bottleneck (gargalo). OBRIGATÓRIO em vez de improvisar. Ex: {kind:\"missing\", where:\"n_ubrowser_shot\", expected:\"print em aba de fundo\", got:\"só na visível\"}.",
+reg("cv_report", {
+  description: "Reporta refinação p/ a ferramenta (inbox global). kind aceita 6: bug (erro) | ajuste (correção de comportamento) | aprimoramento (perf/UX) | sugestao (capacidade nova) | missing (faltou tool/capacidade) | bottleneck (gargalo). OBRIGATÓRIO em vez de improvisar. Ex: {kind:\"missing\", where:\"cv_ubrowser_shot\", expected:\"print em aba de fundo\", got:\"só na visível\"}.",
   inputSchema: {
     type: "object",
     properties: {
       kind: { type: "string", enum: KINDS, description: "bug|ajuste|aprimoramento|sugestao (aliases: missing, bottleneck)" },
-      where: { type: "string", description: "tool/área. Ex: n_ubrowser_shot" },
+      where: { type: "string", description: "tool/área. Ex: cv_ubrowser_shot" },
       expected: { type: "string", description: "O que deveria acontecer" },
       got: { type: "string", description: "O que aconteceu (erro exato)" },
       repro: { type: "string", description: "Passos mínimos p/ reproduzir" },

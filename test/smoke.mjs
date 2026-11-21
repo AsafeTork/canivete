@@ -1,11 +1,35 @@
 // canivete smoke: offline-seguro, rápido (<30s). Falha != quebrou tudo: mostra PASS/FAIL por grupo.
-// OFFLINE: sem rede real, sem spawn opencode (família n_task desativada por padrão). Só stdio local + fs + risk local.
+// OFFLINE: sem rede real, sem spawn opencode (família cv_task desativada por padrão). Só stdio local + fs + risk local.
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { createServer } from "node:net";
 
-const srv = spawn("node", ["src/server.mjs"], { cwd: new URL("..", import.meta.url).pathname, stdio: ["pipe", "pipe", "pipe"] });
+// Isola o smoke do daemon e da extensão reais: o stdio pode virar proxy quando
+// encontra :19423, e um teste de click acabaria agindo numa aba do dono.
+const testDir = mkdtempSync(join(tmpdir(), "canivete-smoke-"));
+const freePort = () => new Promise((resolve, reject) => {
+  const socket = createServer();
+  socket.once("error", reject);
+  socket.listen(0, "127.0.0.1", () => {
+    const port = socket.address().port;
+    socket.close(() => resolve(port));
+  });
+});
+const mcpPort = await freePort();
+const bridgePort = await freePort();
+const srv = spawn("node", ["src/server.mjs"], {
+  cwd: new URL("..", import.meta.url).pathname,
+  stdio: ["pipe", "pipe", "pipe"],
+  env: {
+    ...process.env,
+    CANIVETE_MCP_HTTP_PORT: String(mcpPort),
+    CANIVETE_BRIDGE_PORT: String(bridgePort),
+    CANIVETE_TOKEN_FILE: join(testDir, "token.txt"),
+    CANIVETE_CONFIG_DIR: testDir,
+  },
+});
 srv.stderr.on("data", () => {});
 await new Promise((r) => setTimeout(r, 1500));
 let buf = "";
@@ -21,7 +45,7 @@ const call = (id, name, args, ms = 25000) =>
       if (Date.now() - t0 > ms) { clearInterval(iv); rej(new Error("timeout " + name)); }
     }, 100);
   });
-// tools/list offline (sem rede): valida sync n_tools_info == TOOLS sem importar server (pesado: duplo registro) nem /health (rede).
+// tools/list offline (sem rede): valida sync cv_tools_info == TOOLS sem importar server (pesado: duplo registro) nem /health (rede).
 const list = (id, ms = 25000) =>
   new Promise((res, rej) => {
     srv.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method: "tools/list", params: {} }) + "\n");
@@ -56,76 +80,89 @@ const t = async (label, id, name, args, expect = /./, allowError = null) => {
     ok ? pass++ : fail++;
   } catch (e) { console.log(`FAIL ${label} :: ${e.message}`); fail++; }
 };
-await t("tools_info conta 56", 1, "n_tools_info", {}, /56 tools/);
-await t("read self", 2, "n_read", { filePath: "package.json", limit: 5 });
-await t("bash echo", 3, "n_bash", { command: "echo smoke-ok" });
-await t("glob", 4, "n_glob", { pattern: "src/lib/*.mjs" });
-await t("ubrowser offline claro", 5, "n_ubrowser_status", {}, /./, /EXTENSÃO OFFLINE/);
-await t("risk bloqueia", 6, "n_ubrowser_act", { action: "click", selector: "text=excluir conta" }, /./, /BLOQUEADO/);
-await t("exec fatura risk", 7, "n_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({action:'fill',selector:'#senha'})))\"" });
-await t("grep acha", 8, "n_grep", { pattern: "riskOf", path: "src/lib" });
-await t("investigate roda", 9, "n_investigate_issue", { symptom: "risk bloqueia pagamento" });
+await t("tools_info disponível", 1, "cv_tools_info", {}, /\d+ tools/);
+await t("read self", 2, "cv_read", { filePath: "package.json", limit: 5 });
+await t("bash echo", 3, "cv_bash", { command: "echo smoke-ok" });
+await t("glob", 4, "cv_glob", { pattern: "src/lib/*.mjs" });
+await t("ubrowser offline claro", 5, "cv_ubrowser_status", {}, /./, /EXTENSÃO OFFLINE/);
+await t("risk bloqueia", 6, "cv_ubrowser_act", { action: "click", selector: "text=excluir conta" }, /./, /BLOQUEADO/);
+await t("exec fatura risk", 7, "cv_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({action:'fill',selector:'#senha'})))\"" });
+await t("grep acha", 8, "cv_grep", { pattern: "riskOf", path: "src/lib" });
+await t("investigate roda", 9, "cv_investigate_issue", { symptom: "risk bloqueia pagamento" });
 // risk: informativo permite (Pix Total=low) vs transacional/destrutivo bloqueia (rm -rf=high). Via risk.mjs local, sem rede.
-await t("risk permite Pix Total informativo", 10, "n_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({text:'Pix Total'})))\"" }, /low/);
-await t("risk bloqueia rm -rf", 11, "n_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({cmd:'rm -rf /',action:'n_bash'})))\"" }, /\bhigh\b/);
+await t("risk permite Pix Total informativo", 10, "cv_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({text:'Pix Total'})))\"" }, /low/);
+await t("risk bloqueia rm -rf", 11, "cv_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({cmd:'rm -rf /',action:'cv_bash'})))\"" }, /\bhigh\b/);
 // ubrowser offline claro (sem rede, sem extensão): tabs também deve responder OFFLINE, não travar.
-await t("ubrowser tabs offline claro", 12, "n_ubrowser_tabs", {}, /./, /EXTENSÃO OFFLINE/);
+await t("ubrowser tabs offline claro", 12, "cv_ubrowser_tabs", {}, /./, /EXTENSÃO OFFLINE/);
 // risk permit via tool real: Pix Total NÃO pode BLOQUEAR — deve passar do risk e cair no OFFLINE.
-await t("risk permite Pix Total via ubrowser (offline, sem BLOQUEIO)", 13, "n_ubrowser_act", { action: "click", text: "Pix Total" }, /./, /EXTENSÃO OFFLINE/);
+await t("risk permite Pix Total via ubrowser (offline, sem BLOQUEIO)", 13, "cv_ubrowser_act", { action: "click", text: "Pix Total" }, /./, /EXTENSÃO OFFLINE/);
 // TIME S5 (offline, sem browser): snapshot contém role — trava compreensão sem importar CDP.
-// snapshot headless+dono descobríveis via n_find_tools; ubrowser snapshot responde OFFLINE claro;
+// snapshot headless+dono descobríveis via cv_find_tools; ubrowser snapshot responde OFFLINE claro;
 // campos novos (compact) e receita docs verificados via fs local (node -e, sem CDP).
-await t("ubrowser snapshot offline claro", 14, "n_ubrowser_snapshot", {}, /./, /EXTENSÃO OFFLINE/);
-await t("find snapshot acha headless", 15, "n_find_tools", { query: "snapshot" }, /n_browser_snapshot/);
-await t("find snapshot acha dono", 16, "n_find_tools", { query: "snapshot" }, /n_ubrowser_snapshot/);
-await t("snapshot compact registrado (tools-owner, sem CDP)", 17, "n_bash", { command: "node -e \"import('node:fs').then(fs=>console.log(fs.readFileSync('src/lib/tools-owner.mjs','utf8').includes('compact')?'has-compact':'no-compact'))\"" }, /has-compact/);
-await t("docs receita onde-clicar (snapshot+compact+role)", 18, "n_bash", { command: "node -e \"import('node:fs').then(fs=>{const s=fs.readFileSync('docs/SKILL.md','utf8');console.log(/snapshot/.test(s)&&/compact/.test(s)&&/role/.test(s)?'receita-ok':'receita-falta')})\"" }, /receita-ok/);
+await t("ubrowser snapshot offline claro", 14, "cv_ubrowser_snapshot", {}, /./, /EXTENSÃO OFFLINE/);
+await t("find snapshot acha headless", 15, "cv_find_tools", { query: "snapshot" }, /cv_browser_snapshot/);
+await t("find snapshot acha dono", 16, "cv_find_tools", { query: "snapshot" }, /cv_ubrowser_snapshot/);
+await t("snapshot compact registrado (tools-owner, sem CDP)", 17, "cv_bash", { command: "node -e \"import('node:fs').then(fs=>console.log(fs.readFileSync('src/lib/tools-owner.mjs','utf8').includes('compact')?'has-compact':'no-compact'))\"" }, /has-compact/);
+await t("docs receita onde-clicar (snapshot+compact+role)", 18, "cv_bash", { command: "node -e \"import('node:fs').then(fs=>{const s=fs.readFileSync('docs/SKILL.md','utf8');console.log(/snapshot/.test(s)&&/compact/.test(s)&&/role/.test(s)?'receita-ok':'receita-falta')})\"" }, /receita-ok/);
 // puros do codespace (sem gh, sem rede): parse/clamp críticos — não pode nem abrir mão nem cair em NaN sutil.
-await t("cs puros (normRepo/state/execTmo/idle/parseList)", 40, "n_bash", { command: "node -e \"import('./src/lib/tools-codespace.mjs').then(m=>{const ok=m.csNormRepo('https://github.com/a/b.git')==='a/b'&&m.csStateLabel('Available')==='ativa'&&m.csStateLabel('Shutdown')==='parada'&&m.execTmo(180)===165000&&m.execTmo(3)===5000&&m.execTmo()===120000&&m.csIdleMin(0)===30&&m.csIdleMin(999)===240;const l=m.csParseList(JSON.stringify([{name:'x',state:'Available',gitStatus:{ahead:1}}]));const bad=Array.isArray(m.csParseList('nope'))&&Array.isArray(m.csParseList(''));console.log(ok&&l.length===1&&!!l[0].gitStatus&&bad?'cs-ok':'cs-fail')})\"" }, /cs-ok/);
+await t("cs puros (normRepo/state/execTmo/idle/parseList)", 40, "cv_bash", { command: "node -e \"import('./src/lib/tools-codespace.mjs').then(m=>{const ok=m.csNormRepo('https://github.com/a/b.git')==='a/b'&&m.csStateLabel('Available')==='ativa'&&m.csStateLabel('Shutdown')==='parada'&&m.execTmo(180)===165000&&m.execTmo(3)===5000&&m.execTmo()===120000&&m.csIdleMin(0)===30&&m.csIdleMin(999)===240;const l=m.csParseList(JSON.stringify([{name:'x',state:'Available',gitStatus:{ahead:1}}]));const bad=Array.isArray(m.csParseList('nope'))&&Array.isArray(m.csParseList(''));console.log(ok&&l.length===1&&!!l[0].gitStatus&&bad?'cs-ok':'cs-fail')})\"" }, /cs-ok/);
 // clamp do timeout único do ubridge (env > teto → 300s): garante mensagens coerentes com o valor real.
-await t("UB timeout clamp (env alto -> 300s)", 41, "n_bash", { command: "export CANIVETE_UB_TIMEOUT=999999; node -e \"import('./src/lib/ubridge.mjs').then(m=>console.log(m.UB_TIMEOUT_MS===300000?'ub-clamp-ok':'ub-clamp-fail'))\"" }, /ub-clamp-ok/);
+await t("UB timeout clamp (env alto -> 300s)", 41, "cv_bash", { command: "export CANIVETE_UB_TIMEOUT=999999; node -e \"import('./src/lib/ubridge.mjs').then(m=>console.log(m.UB_TIMEOUT_MS===300000?'ub-clamp-ok':'ub-clamp-fail'))\"" }, /ub-clamp-ok/);
 // SLEEP GUARD (regra do dono, global): bloq com aviso instrutivo em TODOS os caminhos de comando
 // — bash direto, pipeline, codespace (bloqueio é pré-gh: NEM acorda o cs) e devengine start.
-await t("sleep proibido n_bash (aviso monitore)", 42, "n_bash", { command: "sleep 5" }, /./, /NÃO ESPERA, MONITORE/);
-await t("sleep proibido em pipeline bash", 43, "n_bash", { command: "echo x && sleep 2" }, /./, /NÃO ESPERA, MONITORE/);
-await t("sleep proibido n_codespace_exec (bloq local pré-gh)", 44, "n_codespace_exec", { name: "smoke-no-cs", cmd: "sleep 3" }, /./, /NÃO ESPERA, MONITORE/);
-await t("sleep proibido devengine start", 45, "n_manage_background_process", { action: "start", command: "sleep 10" }, /./, /NÃO ESPERA, MONITORE/);
+await t("sleep proibido cv_bash (aviso monitore)", 42, "cv_bash", { command: "sleep 5" }, /./, /NÃO ESPERA, MONITORE/);
+await t("sleep proibido em pipeline bash", 43, "cv_bash", { command: "echo x && sleep 2" }, /./, /NÃO ESPERA, MONITORE/);
+await t("sleep proibido cv_codespace_exec (bloq local pré-gh)", 44, "cv_codespace_exec", { name: "smoke-no-cs", cmd: "sleep 3" }, /./, /NÃO ESPERA, MONITORE/);
+await t("sleep proibido devengine start", 45, "cv_manage_background_process", { action: "start", command: "sleep 10" }, /./, /NÃO ESPERA, MONITORE/);
 // rede do funil: sentinel code=-2 do ctx.exec nunca vira throw (contrato intocado) — prova via subprocesso vitro
-// (string composta dinamicamente: a camada de ENTRADA do n_bash bloquearia a palavra crua — camadas funcionam)
-await t("sleep rede ctx.exec sentinel code=-2", 46, "n_bash", { command: "node -e \"import('./src/lib/ctx.mjs').then(m=>{const c=['sl','eep'].join('')+' 1',sd=['sl','eep-denied'].join('');m.exec('bash',['-lc',c]).then(r=>console.log(r.code===-2&&r.error===sd?'net-ok':'net-fail'))})\"" }, /net-ok/);
+// (string composta dinamicamente: a camada de ENTRADA do cv_bash bloquearia a palavra crua — camadas funcionam)
+await t("sleep rede ctx.exec sentinel code=-2", 46, "cv_bash", { command: "node -e \"import('./src/lib/ctx.mjs').then(m=>{const c=['sl','eep'].join('')+' 1',sd=['sl','eep-denied'].join('');m.exec('bash',['-lc',c]).then(r=>console.log(r.code===-2&&r.error===sd?'net-ok':'net-fail'))})\"" }, /net-ok/);
 // mailbox send/peek/recv roundtrip (leve, filesystem local, sem spawn opencode, sem rede). Filter isola sem limpar caixa alheia.
 // Só quando a família task está ativa (CANIVETE_TASK_ENABLE=1) — senão as tools nem registram.
 const mbTag = `smoke-mb-${Date.now()}`;
 try {
   const { m: listMb } = await list(19);
-  const hasMb = listMb.result && Array.isArray(listMb.result.tools) && listMb.result.tools.some((t) => t && t.name === "n_task_send");
+  const hasMb = listMb.result && Array.isArray(listMb.result.tools) && listMb.result.tools.some((t) => t && t.name === "cv_task_send");
   if (!hasMb) {
-    console.log("SKIP mailbox send/peek/recv (família n_task desativada)");
+    console.log("SKIP mailbox send/peek/recv (família cv_task desativada)");
   } else {
-    await t("mailbox send main", 20, "n_task_send", { task_id: "main", message: mbTag }, /delivered to main/);
-    await t("mailbox peek ve msg", 21, "n_task_peek", { task_id: "main", limit: 5 }, new RegExp(mbTag));
-    await t("mailbox recv roundtrip", 22, "n_task_recv", { task_id: "main", filter: mbTag }, new RegExp(mbTag));
+    await t("mailbox send main", 20, "cv_task_send", { task_id: "main", message: mbTag }, /delivered to main/);
+    await t("mailbox peek ve msg", 21, "cv_task_peek", { task_id: "main", limit: 5 }, new RegExp(mbTag));
+    await t("mailbox recv roundtrip", 22, "cv_task_recv", { task_id: "main", filter: mbTag }, new RegExp(mbTag));
   }
 } catch (e) { console.log(`SKIP mailbox (falha listando tools: ${e.message})`); }
 // elem reports (marcação humana de elemento): store roundtrip offline (fs /tmp via env) —
 // add + dedupe (seletor+nota parecida) + lista por base com path + ciclo de vida com prova.
-await t("elemreports roundtrip+dedupe (fs /tmp)", 50, "n_bash", { command: "CANIVETE_ELEMREPORTS_FILE=/tmp/er-smoke-$$.jsonl node -e 'import(\"./src/lib/elemreports.mjs\").then(m=>{const a=m.erAdd({base_url:\"https://ex.com/checkout\",nota:\"botao pagar nao funciona\",elements:[{selector:\"button.pagar\",tag:\"button\",text:\"Pagar\"}]});const b=m.erAdd({base_url:\"https://ex.com\",nota:\"botao pagar nao funciona!\",elements:[{selector:\"button.pagar\",tag:\"button\"}]});const l=m.erListPublic({base_url:\"https://ex.com/qualquer/path\"});const s0=m.erSetStatus({id:a.report.id,status:\"resolvido\"});const s1=m.erSetStatus({id:a.report.id,status:\"em_resolução\"});const s=m.erSetStatus({id:a.report.id,status:\"resolvido\",proof:\"arrumei o onclick no commit abc123 (antes nao fazia nada)\"});const l2=m.erListPublic({base_url:\"https://ex.com\"});const l3=m.erListPublic({base_url:\"https://ex.com\",status:\"resolvido\"});const bad=m.erNormalizeBase(\"não é url\")===null;console.log(a.ok&&b.ok&&b.deduped&&l.count===1&&!s0.ok&&s1.ok&&s.ok&&l2.count===0&&l3.count===1&&l3.items[0].resolucao&&bad?\"elem-ok\":\"elem-fail \"+JSON.stringify({a:a.ok,ded:b.deduped,l:l.count,s0:!!s0.error,s1:s1.ok,s:s.ok,l2:l2.count,l3:l3.count,bad}))})'" }, /elem-ok/);
-await t("elemreports_list sem base_url erro acionável", 51, "n_elemreports_list", {}, /./, /base_url OBRIGATÓRIO/);
-await t("elemreports_resolve id inválido erro acionável", 52, "n_elemreports_resolve", { id: "xyz", proof: "teste de prova antes/depois" }, /./, /id inválido/);
-await t("elemreports erUpdate (nota/±elementos/apagar/grupo)", 53, "n_bash", { command: "CANIVETE_ELEMREPORTS_FILE=/tmp/er-upd-$$.jsonl node -e 'import(\"./src/lib/elemreports.mjs\").then(m=>{const a=m.erAdd({base_url:\"https://ex.com/checkout\",nota:\"botao pagar nao funciona\",grupo:\"checkout\",elements:[{selector:\"button.pagar\",tag:\"button\",text:\"Pagar\"},{selector:\".resumo\",tag:\"div\"}]});const id=a.report.id;const g1=m.erListPublic({base_url:\"https://ex.com\",grupo:\"CHECKOUT\"});const g2=m.erListPublic({base_url:\"https://ex.com\",grupo:\"auth\"});const dup=m.erAdd({base_url:\"https://ex.com\",nota:\"botao pagar nao funciona!\",grupo:\"auth\",elements:[{selector:\"button.pagar\",tag:\"button\"}]});const n=m.erUpdate({id,nota:\"nota editada — agora com detalhe\",grupo:\"checkout-v2\"});const add=m.erUpdate({id,elements_add:[{selector:\"#finalizar\",tag:\"button\"}]});const rm=m.erUpdate({id,elements_remove:[\".resumo\"]});const last=m.erUpdate({id,elements_remove:[\"button.pagar\",\"#finalizar\"]});const ap=m.erUpdate({id,apagar:true});const l=m.erListPublic({base_url:\"https://ex.com\"});const bad=m.erUpdate({id:\"ernope\",nota:\"x y z\"});const shortv=m.erUpdate({id,nota:\"ab\"});console.log(a.ok&&a.report.grupo===\"checkout\"&&g1.count===1&&g2.count===0&&dup.ok&&!dup.deduped&&n.ok&&n.report.grupo===\"checkout-v2\"&&add.ok&&add.report.elements.length===3&&rm.ok&&rm.report.elements.length===2&&!last.ok&&ap.ok&&ap.apagado&&ap.report.apagado&&l.count===1&&!bad.ok&&!shortv.ok?\"erupd-ok\":\"erupd-fail \"+JSON.stringify({a:a.ok,g1:g1.count,g2:g2.count,ded:dup.deduped,n:n.ok,gn:n.report&&n.report.grupo,add:add.report&&add.report.elements.length,rm:rm.report&&rm.report.elements.length,last:last.ok,ap:ap.ok,l:l.count,bad:bad.ok,shortv:shortv.ok}))})'" }, /erupd-ok/);
-// tools_info sync == TOOLS: compara número no texto n_tools_info com tools/list (stdio offline). Sem import (pesado) nem /health (rede).
+await t("elemreports roundtrip+dedupe (fs /tmp)", 50, "cv_bash", { command: "CANIVETE_ELEMREPORTS_FILE=/tmp/er-smoke-$$.jsonl node -e 'import(\"./src/lib/elemreports.mjs\").then(m=>{const a=m.erAdd({base_url:\"https://ex.com/checkout\",nota:\"botao pagar nao funciona\",elements:[{selector:\"button.pagar\",tag:\"button\",text:\"Pagar\"}]});const b=m.erAdd({base_url:\"https://ex.com\",nota:\"botao pagar nao funciona!\",elements:[{selector:\"button.pagar\",tag:\"button\"}]});const l=m.erListPublic({base_url:\"https://ex.com/qualquer/path\"});const s0=m.erSetStatus({id:a.report.id,status:\"resolvido\"});const s1=m.erSetStatus({id:a.report.id,status:\"em_resolução\"});const s=m.erSetStatus({id:a.report.id,status:\"resolvido\",proof:\"arrumei o onclick no commit abc123 (antes nao fazia nada)\"});const l2=m.erListPublic({base_url:\"https://ex.com\"});const l3=m.erListPublic({base_url:\"https://ex.com\",status:\"resolvido\"});const bad=m.erNormalizeBase(\"não é url\")===null;console.log(a.ok&&b.ok&&b.deduped&&l.count===1&&!s0.ok&&s1.ok&&s.ok&&l2.count===0&&l3.count===1&&l3.items[0].resolucao&&bad?\"elem-ok\":\"elem-fail \"+JSON.stringify({a:a.ok,ded:b.deduped,l:l.count,s0:!!s0.error,s1:s1.ok,s:s.ok,l2:l2.count,l3:l3.count,bad}))})'" }, /elem-ok/);
+await t("elemreports_list sem base_url erro acionável", 51, "cv_elemreports_list", {}, /./, /base_url OBRIGATÓRIO/);
+await t("elemreports_resolve id inválido erro acionável", 52, "cv_elemreports_resolve", { id: "xyz", proof: "teste de prova antes/depois" }, /./, /id inválido/);
+await t("elemreports erUpdate (nota/±elementos/apagar/grupo)", 53, "cv_bash", { command: "CANIVETE_ELEMREPORTS_FILE=/tmp/er-upd-$$.jsonl node -e 'import(\"./src/lib/elemreports.mjs\").then(m=>{const a=m.erAdd({base_url:\"https://ex.com/checkout\",nota:\"botao pagar nao funciona\",grupo:\"checkout\",elements:[{selector:\"button.pagar\",tag:\"button\",text:\"Pagar\"},{selector:\".resumo\",tag:\"div\"}]});const id=a.report.id;const g1=m.erListPublic({base_url:\"https://ex.com\",grupo:\"CHECKOUT\"});const g2=m.erListPublic({base_url:\"https://ex.com\",grupo:\"auth\"});const dup=m.erAdd({base_url:\"https://ex.com\",nota:\"botao pagar nao funciona!\",grupo:\"auth\",elements:[{selector:\"button.pagar\",tag:\"button\"}]});const n=m.erUpdate({id,nota:\"nota editada — agora com detalhe\",grupo:\"checkout-v2\"});const add=m.erUpdate({id,elements_add:[{selector:\"#finalizar\",tag:\"button\"}]});const rm=m.erUpdate({id,elements_remove:[\".resumo\"]});const last=m.erUpdate({id,elements_remove:[\"button.pagar\",\"#finalizar\"]});const ap=m.erUpdate({id,apagar:true});const l=m.erListPublic({base_url:\"https://ex.com\"});const bad=m.erUpdate({id:\"ernope\",nota:\"x y z\"});const shortv=m.erUpdate({id,nota:\"ab\"});console.log(a.ok&&a.report.grupo===\"checkout\"&&g1.count===1&&g2.count===0&&dup.ok&&!dup.deduped&&n.ok&&n.report.grupo===\"checkout-v2\"&&add.ok&&add.report.elements.length===3&&rm.ok&&rm.report.elements.length===2&&!last.ok&&ap.ok&&ap.apagado&&ap.report.apagado&&l.count===1&&!bad.ok&&!shortv.ok?\"erupd-ok\":\"erupd-fail \"+JSON.stringify({a:a.ok,g1:g1.count,g2:g2.count,ded:dup.deduped,n:n.ok,gn:n.report&&n.report.grupo,add:add.report&&add.report.elements.length,rm:rm.report&&rm.report.elements.length,last:last.ok,ap:ap.ok,l:l.count,bad:bad.ok,shortv:shortv.ok}))})'" }, /erupd-ok/);
+// tools_info sync == TOOLS: compara número no texto cv_tools_info com tools/list (stdio offline). Sem import (pesado) nem /health (rede).
 if (_grepRe && !_grepRe.test("tools_info sync == tools/list")) { console.log(`SKIP tools_info sync == tools/list (filtro --grep)`); }
 else try {
-  const { m: infoM, ms: infoMs } = await call(30, "n_tools_info", {});
+  const { m: infoM, ms: infoMs } = await call(30, "cv_tools_info", {});
   const infoTxt = infoM.result.content.map((c) => c.text || "").join("\n");
   const { m: listM } = await list(31);
   const count = listM.result.tools ? listM.result.tools.length : 0;
+  const catalogBytes = Buffer.byteLength(JSON.stringify(listM.result), "utf8");
   const mInfo = infoTxt.match(/(\d+)\s*tools/);
   const nInfo = mInfo ? Number(mInfo[1]) : NaN;
-  const ok = !infoM.result.isError && nInfo === count && count > 0;
-  console.log(`${ok ? "PASS" : "FAIL"} tools_info sync == tools/list (${infoMs}ms) :: info=${nInfo} list=${count}`);
+  const ok = !infoM.result.isError && nInfo === count && count > 0 &&
+    listM.result.tools.every((tool) => tool.name.startsWith("cv_")) && catalogBytes < 100000;
+  console.log(`${ok ? "PASS" : "FAIL"} tools_info sync == tools/list (${infoMs}ms) :: info=${nInfo} list=${count} catalog=${catalogBytes}B`);
   ok ? pass++ : fail++;
 } catch (e) { console.log(`FAIL tools_info sync :: ${e.message}`); fail++; }
+if (_grepRe && !_grepRe.test("resposta repetida compacta")) console.log("SKIP resposta repetida compacta (filtro --grep)");
+else try {
+  const a = await call(60, "cv_todo", {});
+  const b = await call(61, "cv_todo", {});
+  const c = await call(62, "cv_todo", {});
+  const first = a.m.result.content[0].text;
+  const third = c.m.result.content[0].text;
+  const ok = b.m.result.content[0].text === first && third.includes("[REPETIÇÃO 3×]") && third.length < 200;
+  console.log(`${ok ? "PASS" : "FAIL"} resposta repetida compacta :: ${third.slice(0, 100)}`);
+  ok ? pass++ : fail++;
+} catch (e) { console.log(`FAIL resposta repetida compacta :: ${e.message}`); fail++; }
 console.log(`\nSMOKE: ${pass} pass, ${fail} fail`);
 try { // resumo p/ o painel local (GET /api/status → card "testes"): último run, humano lê
   const p = join(homedir(), ".config", "canivete", "smoke-last.json");
@@ -133,4 +170,5 @@ try { // resumo p/ o painel local (GET /api/status → card "testes"): último r
   writeFileSync(p, JSON.stringify({ ts: new Date().toISOString(), pass, fail, total: pass + fail }) + "\n");
 } catch {}
 srv.kill("SIGKILL");
+rmSync(testDir, { recursive: true, force: true });
 setTimeout(() => process.exit(fail ? 1 : 0), 300);

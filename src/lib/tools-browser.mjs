@@ -70,7 +70,7 @@ export function brSnapCacheStore(key, elements) {
 }
 export function brSnapCacheResolve(key, ref) {
   const box = BR_SNAP_CACHE.get(key);
-  if (!box) return { ok: false, error: "sem snapshot em cache p/ esta URL — rode n_browser_snapshot antes de usar ref" };
+  if (!box) return { ok: false, error: "sem snapshot em cache p/ esta URL — rode cv_browser_snapshot antes de usar ref" };
   const hit = box.find((e) => String(e.ref) === String(ref));
   if (!hit) return { ok: false, error: `ref ${ref} expirada (snapshot mudou/navegou) — re-snapshot e use a ref nova` };
   return { ok: true, selector: hit.selector };
@@ -129,7 +129,7 @@ function isRetryableCdpError(e) {
   return /timeout|closed|econn|epipe|socket|ws\b|target|session|cdp|enable|navigate/i.test(String(e?.message || ""));
 }
 function actionableCdpError(e, label, retried) {
-  const hint = `dica acionável: confira CHROME_BIN (CANIVETE_CHROME_BIN/CHROME_BIN) [bin=${CHROME_BIN}], porta CDP livre e tente com waitMs menor; se persistir, rode n_browser_snapshot p/ validar a aba`;
+  const hint = `dica acionável: confira CHROME_BIN (CANIVETE_CHROME_BIN/CHROME_BIN) [bin=${CHROME_BIN}], porta CDP livre e tente com waitMs menor; se persistir, rode cv_browser_snapshot p/ validar a aba`;
   const err = new Error(`${label} falhou${retried ? " (após 1 retry)" : ""}: ${e?.message || e} — ${hint}`);
   err.cause = e;
   return err;
@@ -147,8 +147,8 @@ async function withCdpRetry(fn, opts, label = "CDP") {
   }
 }
 
-reg("n_browser_extract", {
-  description: "EXTRAÇÃO COMPLETA em 1 call: texto principal (escolhe <article>/<main> sozinho) + títulos hierárquicos + TABELAS estruturadas (rows + markdown) + listas + links dedupe + imagens com alt + FORMULÁRIOS (campos/label/tipo/valor/opções de select) + GRÁFICOS/visuais: canvas de gráfico salvo em PNG no disco (leia o arquivo p/ VER o gráfico), svg com labels/textos/fills (valores de gráfico SVG), figcaption, background-image, video/iframe + meta/OG + JSON-LD. Fim da era de 3-5 calls + evaluate ad-hoc pra achar dado estruturado. url opcional (navega na mesma call); selector CSS escopa tudo (ex: \"#app\", \"table.turmas\"); caps por arg. SPA renderiza (Chrome headless). Quer ver a página inteira? n_browser_screenshot; quer clicar? n_browser_act; estática sem JS? n_webfetch.",
+reg("cv_browser_extract", {
+  description: "EXTRAÇÃO COMPLETA em 1 call: texto principal (escolhe <article>/<main> sozinho) + títulos hierárquicos + TABELAS estruturadas (rows + markdown) + listas + links dedupe + imagens com alt + FORMULÁRIOS (campos/label/tipo/valor/opções de select) + GRÁFICOS/visuais: canvas de gráfico salvo em PNG no disco (leia o arquivo p/ VER o gráfico), svg com labels/textos/fills (valores de gráfico SVG), figcaption, background-image, video/iframe + meta/OG + JSON-LD. Fim da era de 3-5 calls + evaluate ad-hoc pra achar dado estruturado. url opcional (navega na mesma call); selector CSS escopa tudo (ex: \"#app\", \"table.turmas\"); caps por arg. SPA renderiza (Chrome headless). Quer ver a página inteira? cv_browser_screenshot; quer clicar? cv_browser_act; estática sem JS? cv_webfetch.",
   inputSchema: { type: "object", properties: { url: { type: "string", description: "opcional: navega antes de extrair — 1 call = goto + extract completo" }, selector: { type: "string", description: "CSS p/ escopar a extração a um container (ex: \"#app\", \"table.turmas\", \"main .produtos\"); sem seletor = <article>/<main> automático (fallback body)" }, maxChars: { type: "number", default: 12000, description: "cap do texto principal (500-40000)" }, maxTables: { type: "number", default: 10 }, maxLinks: { type: "number", default: 50 }, maxImages: { type: "number", default: 20 }, maxForms: { type: "number", default: 10 } }, required: [] },
   run: async ({ url, selector, maxChars, maxTables, maxLinks, maxImages, maxForms }) => {
     const t0 = Date.now();
@@ -159,23 +159,23 @@ reg("n_browser_extract", {
         if (url) await cdpGoto(send, url, 4000);
         const r = await send("Runtime.evaluate", { expression: pageExtractJs({ selector, maxChars, maxTables, maxLinks, maxImages, maxForms }), returnByValue: true }, 20000);
         return r.result?.value || null;
-      }, { url: url || "aba atual" }, "n_browser_extract");
+      }, { url: url || "aba atual" }, "cv_browser_extract");
       if (!ex || !ex.url) return devOut({ status: "error", summary: "extract sem resultado: aba vazia (about:blank)? passe {url:...}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
       await salvaCanvasPng(ex);
       const cnv = (ex.graficos?.canvas || []).filter((c) => c.file);
-      return devOut({ summary: `${ex.title || "(sem título)"} — ${ex.url} · texto ${(ex.text || "").length} chars${ex.tables?.length ? ` · ${ex.tables.length} tabela(s)` : ""}${ex.forms?.length ? ` · ${ex.forms.length} form(s)` : ""}${ex.jsonld?.length ? ` · JSON-LD` : ""}${cnv.length ? ` · ${cnv.length} canvas→PNG (${cnv.map((c) => c.file).join(", ")})` : ""}${ex.graficos?.svg?.length ? ` · ${ex.graficos.svg.length} svg` : ""} [escopo: ${ex.scope}]`, data: ex, telemetry: { execution_time_ms: Date.now() - t0 }, next: ex.tables?.length || ex.forms?.length ? [] : [{ tool: "n_browser_snapshot", reason: "Sem tabelas/forms — mapear elementos interativos" }] });
+      return devOut({ summary: `${ex.title || "(sem título)"} — ${ex.url} · texto ${(ex.text || "").length} chars${ex.tables?.length ? ` · ${ex.tables.length} tabela(s)` : ""}${ex.forms?.length ? ` · ${ex.forms.length} form(s)` : ""}${ex.jsonld?.length ? ` · JSON-LD` : ""}${cnv.length ? ` · ${cnv.length} canvas→PNG (${cnv.map((c) => c.file).join(", ")})` : ""}${ex.graficos?.svg?.length ? ` · ${ex.graficos.svg.length} svg` : ""} [escopo: ${ex.scope}]`, data: ex, telemetry: { execution_time_ms: Date.now() - t0 }, next: ex.tables?.length || ex.forms?.length ? [] : [{ tool: "cv_browser_snapshot", reason: "Sem tabelas/forms — mapear elementos interativos" }] });
     } catch (e) {
-      return devOut({ status: "error", summary: `extract falhou: ${e.message} — confira CHROME_BIN/porta CDP ou use n_webfetch (estático)`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ status: "error", summary: `extract falhou: ${e.message} — confira CHROME_BIN/porta CDP ou use cv_webfetch (estático)`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
   },
 });
 
-reg("n_browser_navigate", {
-  description: "Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. extract:true TROCA o blob por extração completa (tabelas md/forms/meta/JSON-LD — igual n_browser_extract; 1 call total). cookies:true inclui cookies da página. Sem JS? n_webfetch é mais barato. Página logada do dono? n_ubrowser_read (headless não tem sessão). Ex: {url:\"http://localhost:5173\", waitMs:5000, cookies:true} · {url, extract:true}.",
+reg("cv_browser_navigate", {
+  description: "Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. extract:true TROCA o blob por extração completa (tabelas md/forms/meta/JSON-LD — igual cv_browser_extract; 1 call total). cookies:true inclui cookies da página. Sem JS? cv_webfetch é mais barato. Página logada do dono? cv_ubrowser_read (headless não tem sessão). Ex: {url:\"http://localhost:5173\", waitMs:5000, cookies:true} · {url, extract:true}.",
   inputSchema: { type: "object", properties: { url: { type: "string" }, waitMs: { type: "number", default: 4000 }, cookies: { type: "boolean", description: "Retorna cookies da página via CDP" }, extract: { type: "boolean", description: "true = extração completa no lugar do blob de texto (tabelas/listas/forms/meta/JSON-LD — 1 call total)" } }, required: ["url"] },
   run: async ({ url, waitMs, cookies, extract }) => {
     const t0 = Date.now();
-    if (!url) return devOut({ status: "error", summary: "url obrigatória — chame n_browser_navigate com {url:\"https://exemplo.com\", waitMs:5000}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!url) return devOut({ status: "error", summary: "url obrigatória — chame cv_browser_navigate com {url:\"https://exemplo.com\", waitMs:5000}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     try { assertSafeUrl(url); } catch (e) { return devOut({ status: "error", summary: e.message, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } }); }
     try {
       const state = await withCdpRetry(async ({ send }) => {
@@ -184,14 +184,14 @@ reg("n_browser_navigate", {
         if (cookies) { try { st.cookies = await cdpCookies(send); } catch (e) { st.cookiesError = e.message; } }
         if (extract) { try { const er = await send("Runtime.evaluate", { expression: pageExtractJs({}), returnByValue: true }, 20000); st.extract = er.result?.value || null; await salvaCanvasPng(st.extract); } catch (e) { st.extractError = e.message; } }
         return st;
-      }, { url }, "n_browser_navigate");
+      }, { url }, "cv_browser_navigate");
       const ms = Date.now() - t0;
       const ex = state.extract;
       if (ex && ex.url) {
-        return devOut({ summary: `${ex.title || "(sem título)"} — ${ex.url} · texto ${(ex.text || "").length} chars${ex.tables?.length ? ` · ${ex.tables.length} tabela(s)` : ""}${ex.forms?.length ? ` · ${ex.forms.length} form(s)` : ""}${ex.jsonld?.length ? ` · JSON-LD` : ""} [extração completa]`, data: { extract: ex, ms }, telemetry: { execution_time_ms: ms }, next: ex.tables?.length || ex.forms?.length ? [] : [{ tool: "n_browser_snapshot", reason: "Sem tabelas/forms — mapear elementos interativos" }], refs: [] });
+        return devOut({ summary: `${ex.title || "(sem título)"} — ${ex.url} · texto ${(ex.text || "").length} chars${ex.tables?.length ? ` · ${ex.tables.length} tabela(s)` : ""}${ex.forms?.length ? ` · ${ex.forms.length} form(s)` : ""}${ex.jsonld?.length ? ` · JSON-LD` : ""} [extração completa]`, data: { extract: ex, ms }, telemetry: { execution_time_ms: ms }, next: ex.tables?.length || ex.forms?.length ? [] : [{ tool: "cv_browser_snapshot", reason: "Sem tabelas/forms — mapear elementos interativos" }], refs: [] });
       }
       const { extract: _ex, ...stRest } = state;
-      return devOut({ summary: `${state.title || "(sem título)"} — ${state.url || url} (${(state.text || "").length} chars)${state.extractError ? ` | extract falhou: ${state.extractError}` : ""}`, data: { ...stRest, text: trimOut(state.text || "", 6000), ms }, telemetry: { execution_time_ms: ms }, next: [{ tool: "n_browser_snapshot", reason: "Mapear elementos clicáveis" }, { tool: "n_browser_screenshot", reason: "Evidência visual" }], refs: [] });
+      return devOut({ summary: `${state.title || "(sem título)"} — ${state.url || url} (${(state.text || "").length} chars)${state.extractError ? ` | extract falhou: ${state.extractError}` : ""}`, data: { ...stRest, text: trimOut(state.text || "", 6000), ms }, telemetry: { execution_time_ms: ms }, next: [{ tool: "cv_browser_snapshot", reason: "Mapear elementos clicáveis" }, { tool: "cv_browser_screenshot", reason: "Evidência visual" }], refs: [] });
     } catch (e) {
       // fallback: dump-dom single-shot (sem CDP)
       const r = await exec(CHROME_BIN, ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--virtual-time-budget=5000", "--dump-dom", url], { timeout: BROWSER_TIMEOUT_MS });
@@ -204,7 +204,7 @@ reg("n_browser_navigate", {
   },
 });
 
-// --- n_browser_snapshot: rank por importância (lógica pura, sem Chrome) ---
+// --- cv_browser_snapshot: rank por importância (lógica pura, sem Chrome) ---
 // Score = viewport (acima-da-dobra) + área clicável + tem nome + papel interativo-real.
 // Descarte vai p/ `omitted` com motivo (display:none, oculto, zero-area, genérico-sem-nome).
 // REGRA DURA: sem nerf — max default 60 / cap 120 intactos; rank só reordena + filtra junk.
@@ -287,8 +287,8 @@ export function rankSnapshotElements(els = [], geoms = []) {
   return { ranked: ranked.map((s) => ({ ...s.el, score: s.score })), omitted };
 }
 
-reg("n_browser_snapshot", {
-  description: "Lista elementos interativos da página (ref, tag, texto, selector) para usar em n_browser_act. compact:true retorna só ref|tag|texto sem selector (~60% menos tokens). Ex: {compact:true}.",
+reg("cv_browser_snapshot", {
+  description: "Lista elementos interativos da página (ref, tag, texto, selector) para usar em cv_browser_act. compact:true retorna só ref|tag|texto sem selector (~60% menos tokens). Ex: {compact:true}.",
   inputSchema: { type: "object", properties: { url: { type: "string" }, max: { type: "number", default: 60 }, compact: { type: "boolean", default: false, description: "Compacto: só ref|tag|texto, sem selector (~60% menos tokens)" } }, required: [] },
   run: async ({ url, max, compact }) => {
     const t0 = Date.now();
@@ -306,7 +306,7 @@ reg("n_browser_snapshot", {
         } catch {}
         const u = await send("Runtime.evaluate", { expression: "location.href", returnByValue: true }, 5000);
         return { base, geoms, url: u.result?.value || "" };
-      }, { url }, "n_browser_snapshot");
+      }, { url }, "cv_browser_snapshot");
       const { ranked, omitted } = rankSnapshotElements(base, geoms);
       const list = ranked.slice(0, Math.min(Number(max) || 60, 120));
       brSnapCacheStore(brSnapCacheKey(pageUrl || url), list); // #62: ref→selector p/ act por ref
@@ -316,20 +316,20 @@ reg("n_browser_snapshot", {
       const txt = isCompact
         ? list.map((e) => `[${e.ref}] <${e.tag}> ${e.text || "(sem texto)"}`).join("\n") || "(nenhum elemento interativo)"
         : list.map((e) => `[${e.ref}] <${e.tag}> ${e.text || "(sem texto)"} :: ${e.selector}`).join("\n") || "(nenhum elemento interativo)";
-      if (list.length === 0) return devOut({ summary: `0 elemento(s) interativo(s) — (nenhum elemento interativo)${omitted.length ? ` — ${omitted.length} junk omitido(s)` : ""}`, data: { count: 0, elements, compact: isCompact, empty: true, ranked: true, omitted: omittedOut, recovery: "wait/reload ou n_browser_navigate {url} ou {max:120}" }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [] });
-      return devOut({ summary: `${list.length} elemento(s) interativo(s)${isCompact ? " (compact)" : ""}${omitted.length ? ` — ${omitted.length} junk omitido(s)` : ""}`, data: { count: list.length, elements, compact: isCompact, ranked: true, omitted: omittedOut }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_browser_act", reason: "Clicar/preencher com selector do snapshot" }] });
+      if (list.length === 0) return devOut({ summary: `0 elemento(s) interativo(s) — (nenhum elemento interativo)${omitted.length ? ` — ${omitted.length} junk omitido(s)` : ""}`, data: { count: 0, elements, compact: isCompact, empty: true, ranked: true, omitted: omittedOut, recovery: "wait/reload ou cv_browser_navigate {url} ou {max:120}" }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [] });
+      return devOut({ summary: `${list.length} elemento(s) interativo(s)${isCompact ? " (compact)" : ""}${omitted.length ? ` — ${omitted.length} junk omitido(s)` : ""}`, data: { count: list.length, elements, compact: isCompact, ranked: true, omitted: omittedOut }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_browser_act", reason: "Clicar/preencher com selector do snapshot" }] });
     } catch (e) { const msg = /dica acionável/.test(String(e?.message || "")) ? e.message : `${e.message} — dica acionável: confira CHROME_BIN/porta CDP e tente de novo`; return devOut({ status: "error", summary: `snapshot falhou: ${msg}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } }); }
   },
 });
 
-reg("n_browser_act", {
-  description: "Interage via CDP: goto/back/forward/reload/click/fill/press/scroll/wait/wait_selector/evaluate. ref:<n> do n_browser_snapshot vira selector (refs expiram ao navegar — re-snapshot). console:true anexa últimos 30 logs (só pós-enable, ~1.5s). Ex: {action:\"wait_selector\", selector:\"#app\"}.",
+reg("cv_browser_act", {
+  description: "Interage via CDP: goto/back/forward/reload/click/fill/press/scroll/wait/wait_selector/evaluate. ref:<n> do cv_browser_snapshot vira selector (refs expiram ao navegar — re-snapshot). console:true anexa últimos 30 logs (só pós-enable, ~1.5s). Ex: {action:\"wait_selector\", selector:\"#app\"}.",
   inputSchema: {
     type: "object",
     properties: {
       action: { type: "string", enum: ["goto", "back", "forward", "reload", "click", "fill", "press", "scroll", "wait", "wait_selector", "evaluate"] },
       url: { type: "string" }, selector: { type: "string", description: "CSS (wait_selector só CSS; evaluate: pré-valida e lança 'elemento não encontrado' se ausente)" }, text: { type: "string" },
-      ref: { type: "number", description: "ref do n_browser_snapshot (resolve p/ selector via cache por URL; expira se navegar — re-snapshot)" },
+      ref: { type: "number", description: "ref do cv_browser_snapshot (resolve p/ selector via cache por URL; expira se navegar — re-snapshot)" },
       key: { type: "string", description: "Enter|Tab|Escape|ArrowDown..." }, js: { type: "string" },
       ms: { type: "number" }, direction: { type: "string", enum: ["up", "down", "top", "bottom"] },
       submit: { type: "boolean" }, waitMs: { type: "number" },
@@ -356,7 +356,7 @@ reg("n_browser_act", {
             curUrl = cur.result?.value || curUrl;
           } catch {}
           const res = brSnapCacheResolve(brSnapCacheKey(curUrl), a.ref);
-          if (!res.ok) throw new Error(`${res.error} — passe selector CSS ou rode n_browser_snapshot p/ refs novos da URL atual`);
+          if (!res.ok) throw new Error(`${res.error} — passe selector CSS ou rode cv_browser_snapshot p/ refs novos da URL atual`);
           a = { ...a, selector: res.selector, refUsed: a.ref };
         }
         const withConsole = async (base) => {
@@ -387,12 +387,12 @@ reg("n_browser_act", {
           if (!a.js) throw new Error("js obrigatório p/ evaluate");
           if (a.selector) {
             const chk = await send("Runtime.evaluate", { expression: RESOLVE_JS(a.selector), returnByValue: true }, 5000);
-            if (String(chk.result?.value).startsWith("NOTFOUND")) throw new Error(`elemento não encontrado: ${a.selector} — rode n_browser_snapshot`);
+            if (String(chk.result?.value).startsWith("NOTFOUND")) throw new Error(`elemento não encontrado: ${a.selector} — rode cv_browser_snapshot`);
           }
           const r = await send("Runtime.evaluate", { expression: a.js, returnByValue: true, awaitPromise: true, allowUnsafeEvalBlockedByCSP: true }, 15000);
           if (r.exceptionDetails) throw new Error(`evaluate threw: ${r.exceptionDetails.text || r.exceptionDetails.exception?.description || JSON.stringify(r.exceptionDetails).slice(0, 300)}`);
           const v = r.result?.value ?? r.result?.description;
-          if (v == null) return await withConsole({ value: v ?? null, empty: true, note: "seletor não casou ou JS sem return — confira n_browser_snapshot", type: r.result?.type });
+          if (v == null) return await withConsole({ value: v ?? null, empty: true, note: "seletor não casou ou JS sem return — confira cv_browser_snapshot", type: r.result?.type });
           return await withConsole({ value: v, type: r.result?.type });
         }
         if (act === "press") {
@@ -412,7 +412,7 @@ reg("n_browser_act", {
           return await withConsole(await cdpState(send));
         }
         if (act === "click") {
-          if (!a.selector || !String(a.selector).trim()) throw new Error("selector vazio p/ click (CSS ou text=... obrigatório) — rode n_browser_snapshot p/ obter selector válido");
+          if (!a.selector || !String(a.selector).trim()) throw new Error("selector vazio p/ click (CSS ou text=... obrigatório) — rode cv_browser_snapshot p/ obter selector válido");
           // #60: estado pré-click (dialog[open], alvo, url, titulo) p/ verificar depósito
           const clickStateExpr = `(() => {
             const s = ${JSON.stringify(a.selector)};
@@ -435,7 +435,7 @@ reg("n_browser_act", {
           } catch {}
           beforeClickUrl = beforeUrl || null;
           const chk = await send("Runtime.evaluate", { expression: RESOLVE_JS(a.selector), returnByValue: true });
-          if (String(chk.result?.value).startsWith("NOTFOUND")) throw new Error(`elemento não encontrado: ${a.selector} — rode n_browser_snapshot`);
+          if (String(chk.result?.value).startsWith("NOTFOUND")) throw new Error(`elemento não encontrado: ${a.selector} — rode cv_browser_snapshot`);
           await send("Runtime.evaluate", { expression: `({
             s: ${JSON.stringify(a.selector)},
             el: null,
@@ -468,7 +468,7 @@ reg("n_browser_act", {
           return await withConsole({ ...(await cdpState(send)), verified, evidence, verify: { before: beforeSnap, after: afterSnap } });
         }
         if (act === "fill") {
-          if (!a.selector || !String(a.selector).trim()) throw new Error("selector vazio p/ fill (CSS obrigatório) — rode n_browser_snapshot p/ obter selector válido");
+          if (!a.selector || !String(a.selector).trim()) throw new Error("selector vazio p/ fill (CSS obrigatório) — rode cv_browser_snapshot p/ obter selector válido");
           if (a.text === undefined) throw new Error("text obrigatório p/ fill");
           // #61: setter NATIVO + input+change bubbles (caminho que o React enxerga;
           // value= direto não atualiza o estado do app e submit segue disabled).
@@ -488,7 +488,7 @@ reg("n_browser_act", {
             }
             return 'SEM-SETTER:' + el.tagName;
           })()`, returnByValue: true }, 10000)).result?.value || "");
-          if (fillRes.startsWith("NOTFOUND")) throw new Error(`fill: elemento não encontrado: ${a.selector} — selector stale (a página mudou)? rode n_browser_snapshot p/ obter selector válido`);
+          if (fillRes.startsWith("NOTFOUND")) throw new Error(`fill: elemento não encontrado: ${a.selector} — selector stale (a página mudou)? rode cv_browser_snapshot p/ obter selector válido`);
           if (fillRes.startsWith("SEM-SETTER")) {
             // sem setter nativo (contenteditable etc.): caminho antigo preservado
             await send("Input.insertText", { text: String(a.text) });
@@ -501,8 +501,8 @@ reg("n_browser_act", {
           return await withConsole({ ...(await cdpState(send)), value: true, stateAware: fillRes.startsWith("NATIVA") ? "setter-nativo+input+change" : "insertText+input+change" });
         }
         throw new Error(`action desconhecida: ${act} — ações válidas: goto, back, forward, reload, click, fill, press, scroll, wait, wait_selector, evaluate. Ex: {action:"goto", url:"https://...", waitMs:5000}`);
-      }, { url: a.action === "goto" ? a.url : undefined }, "n_browser_act");
-      // state-diff barato (sem round-trip extra, mesmo padrão do n_ubrowser_act): antes = intenção (a.url p/ goto) ou URL pré-click já coletada; depois = cdpState já coletado (result.url/title, fallback p/ a.url).
+      }, { url: a.action === "goto" ? a.url : undefined }, "cv_browser_act");
+      // state-diff barato (sem round-trip extra, mesmo padrão do cv_ubrowser_act): antes = intenção (a.url p/ goto) ou URL pré-click já coletada; depois = cdpState já coletado (result.url/title, fallback p/ a.url).
       const afterUrl = result?.url ?? a.url ?? null;
       const afterTitle = result?.title ?? null;
       const beforeUrl = (a.action === "goto" && a.url) ? String(a.url) : (beforeClickUrl || null);
@@ -510,7 +510,7 @@ reg("n_browser_act", {
       const navNewDoc = ["goto", "back", "forward", "reload"].includes(a.action);
       const titleChanged = !!afterTitle && (urlChanged || navNewDoc);
       const afterLabel = String(afterTitle ? `${afterTitle} — ${afterUrl || ""}` : (afterUrl || `${a.action} ok`)).slice(0, 120);
-      const diff = urlChanged ? `${beforeUrl}→${afterUrl}` : (navNewDoc && afterUrl ? `navegou para ${afterLabel}` : `mesma página: ${afterLabel} — URL não mudou; nem todo click navega, confirme o efeito (n_browser_snapshot/evaluate) antes de repetir`);
+      const diff = urlChanged ? `${beforeUrl}→${afterUrl}` : (navNewDoc && afterUrl ? `navegou para ${afterLabel}` : `mesma página: ${afterLabel} — URL não mudou; nem todo click navega, confirme o efeito (cv_browser_snapshot/evaluate) antes de repetir`);
       const summary = `${a.action} ok — ${diff}`;
       const msAct = Date.now() - t0;
       // #60: click sem nada verificável = WARN (não sucesso cego)
@@ -527,13 +527,13 @@ reg("n_browser_act", {
           ...(a.refUsed !== undefined ? { refUsed: a.refUsed } : {}),
         },
         telemetry: { execution_time_ms: msAct },
-        next: [{ tool: "n_browser_snapshot", reason: unverifiedClick ? "Re-snapshot: o click não confirmou mudança" : "Confirmar visualmente a ação" }],
+        next: [{ tool: "cv_browser_snapshot", reason: unverifiedClick ? "Re-snapshot: o click não confirmou mudança" : "Confirmar visualmente a ação" }],
       });
-    } catch (e) { const msErr = Date.now() - t0; const msg = /dica acionável/.test(String(e?.message || "")) ? e.message : `${e.message} — dica acionável: rode n_browser_snapshot p/ validar seletores e confira CHROME_BIN/porta CDP`; return devOut({ status: "error", summary: `act falhou: ${msg}`, data: { action: a.action, ms: msErr }, telemetry: { execution_time_ms: msErr } }); }
+    } catch (e) { const msErr = Date.now() - t0; const msg = /dica acionável/.test(String(e?.message || "")) ? e.message : `${e.message} — dica acionável: rode cv_browser_snapshot p/ validar seletores e confira CHROME_BIN/porta CDP`; return devOut({ status: "error", summary: `act falhou: ${msg}`, data: { action: a.action, ms: msErr }, telemetry: { execution_time_ms: msErr } }); }
   },
 });
 
-reg("n_browser_screenshot", {
+reg("cv_browser_screenshot", {
   description: "Captura PNG da página ou só de um elemento (selector CSS via clip). Ex: {url:\"http://localhost:5173\", selector:\"#app\"}. Sem url = aba atual.",
   inputSchema: { type: "object", properties: { url: { type: "string" }, width: { type: "number", default: 1280 }, height: { type: "number", default: 800 }, fullPage: { type: "boolean", default: false }, selector: { type: "string", description: "CSS do elemento p/ screenshot recortado (clip via DOM.getBoxModel)" }, scale: { type: "number", enum: [0.5, 1], default: 1, description: "deviceScaleFactor: 0.5 = metade dos bytes" } }, required: [] },
   run: async ({ url, width, height, fullPage, selector, scale }) => {
@@ -561,13 +561,13 @@ reg("n_browser_screenshot", {
         } finally {
           await cdpClearViewport(send); // override não vaza p/ atos seguintes na mesma aba
         }
-      }, { url }, "n_browser_screenshot");
+      }, { url }, "cv_browser_screenshot");
       const file = shotFile();
       await writeFile(file, Buffer.from(b64, "base64"));
       // #58: viewport EFETIVO vs pedido — divergência >2px = WARN (não é mais sucesso cego)
       const vpCheck = viewportMismatch(vp?.real, w, h);
       const vpWarn = vpCheck.off ? ` — WARN: viewport real ${vpCheck.real.width}x${vpCheck.real.height} != pedido ${w}x${h} (>2px; render/layout da página forçou outro tamanho)` : "";
-      const payload = { status: "success", summary: `Screenshot ${w}x${h}@${dsf}x${selector ? ` [${selector}]` : ""} — ${state.title || state.url || url || "aba atual"}${vpWarn} → ${file}`, data: { file, width: w, height: h, scale: dsf, viewportReal: vpCheck.real, viewportMatch: !vpCheck.off, title: state.title, url: state.url, selector: selector || null, clip: state.clip || null }, telemetry: { execution_time_ms: Date.now() - t0 }, next_suggested_actions: [{ tool: "n_browser_act", reason: "Interagir após ver o layout" }], context_refs: [] };
+      const payload = { status: "success", summary: `Screenshot ${w}x${h}@${dsf}x${selector ? ` [${selector}]` : ""} — ${state.title || state.url || url || "aba atual"}${vpWarn} → ${file}`, data: { file, width: w, height: h, scale: dsf, viewportReal: vpCheck.real, viewportMatch: !vpCheck.off, title: state.title, url: state.url, selector: selector || null, clip: state.clip || null }, telemetry: { execution_time_ms: Date.now() - t0 }, next_suggested_actions: [{ tool: "cv_browser_act", reason: "Interagir após ver o layout" }], context_refs: [] };
       return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }, { type: "image", data: b64.length > 1500000 ? b64.slice(0, 1500000) : b64, mimeType: "image/png" }] };
     } catch (e) {
       // fallback: --screenshot single-shot
@@ -587,7 +587,7 @@ reg("n_browser_screenshot", {
   },
 });
 
-reg("n_browser_screencast", {
+reg("cv_browser_screencast", {
   description: "Grava a página headless DURANTE uma interação (Page.startScreencast + ações input-trusted): frames com timestamps reais → WebM/MP4 via ffmpeg (sem ffmpeg = só frames) + meta.json. Viewport/escala definidos. Tudo LOCAL. Ex: {url, actions:[{click:\"#btn\"},{wait:600}]}.",
   inputSchema: {
     type: "object",
@@ -677,7 +677,7 @@ reg("n_browser_screencast", {
           try { await cdpClearViewport(send); } catch {}
         }
         return { frames, state: await cdpState(send), vp };
-      }, { url }, "n_browser_screencast");
+      }, { url }, "cv_browser_screencast");
       if (!frames.length) return devOut({ status: "error", summary: "nenhum frame capturado — página estática sem repaint não emite frame; adicione uma ação (click/scroll/wait) ou confira a url", data: { url: state.url || url || null }, telemetry: { execution_time_ms: Date.now() - t0 } });
       const dir = join(tmpdir(), `opencode-screencast-${Date.now().toString(36)}`);
       mkdirSync(dir, { recursive: true });
@@ -720,20 +720,20 @@ reg("n_browser_screencast", {
         summary: `screencast: ${files.length} frames em ${w}x${h}@${dsf}x${video ? ` → ${video === join(dir, "screencast.webm") ? "screencast.webm" : "screencast.mp4"} (~${durVid}s)` : " (sem ffmpeg — frames mantidos)"} → ${dir}${videoErr ? ` | vídeo falhou: ${String(videoErr).slice(0, 90)}` : ""}`,
         data: { dir, video, frames: files.length, duracao_s: durVid, viewport: { width: w, height: h, dsf }, url: state.url || url || null, title: state.title || null, videoErro: videoErr || null, processamento: "local (CDP+ffmpeg) — proveniência: nenhum byte saiu da máquina" },
         telemetry: { execution_time_ms: Date.now() - t0 },
-        next: [{ tool: "n_bash", reason: "Juntar com áudio: ffmpeg -i screencast.webm -i narração.mp3 -c:v copy -c:a aac demo.mp4" }],
+        next: [{ tool: "cv_bash", reason: "Juntar com áudio: ffmpeg -i screencast.webm -i narração.mp3 -c:v copy -c:a aac demo.mp4" }],
       });
     } catch (e) {
-      return devOut({ status: "error", summary: `screencast falhou: ${e.message}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_browser_screenshot", reason: "Evidência estática como alternativa" }] });
+      return devOut({ status: "error", summary: `screencast falhou: ${e.message}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_browser_screenshot", reason: "Evidência estática como alternativa" }] });
     }
   },
 });
 
-reg("n_browser_pdf", {
+reg("cv_browser_pdf", {
   description: "Gera PDF da página via Chrome headless. Quando usar: exportar relatório/página, arquivar evidência. Ex: {url:\"https://example.com\"}. Retorna caminho em /tmp.",
   inputSchema: { type: "object", properties: { url: { type: "string" }, output: { type: "string" } }, required: ["url"] },
   run: async ({ url, output }) => {
     const t0 = Date.now();
-    if (!url) return devOut({ status: "error", summary: "url obrigatória — chame n_browser_navigate com {url:\"https://exemplo.com\", waitMs:5000}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!url) return devOut({ status: "error", summary: "url obrigatória — chame cv_browser_navigate com {url:\"https://exemplo.com\", waitMs:5000}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     try { assertSafeUrl(url); } catch (e) { return devOut({ status: "error", summary: e.message, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } }); }
     const file = output ? fpath(output) : join(tmpdir(), `opencode-page-${Date.now().toString(36)}.pdf`);
     // TEXT-FIRST: pdf é full render — single-shot sem flags de economia (sem imagesEnabled=false / sem setBlockedURLs).
@@ -752,7 +752,7 @@ reg("n_browser_pdf", {
 // NUNCA destrutivo/idiota sem pedido explícito; alto risco exige `confirm`.
 
 
-// --- n_browser_contrast: contraste REAL por pixel (FIX #12) ---
+// --- cv_browser_contrast: contraste REAL por pixel (FIX #12) ---
 // O DOM media errado 2x: (1) só convertia rgb() e a cor computada volta oklch()
 // → tratava texto e fundo como iguais; (2) gradiente deixa background-color transparente
 // → ratio 1.0. Aqui: Page.captureScreenshot do CLIP do elemento → PNG decodificado em JS
@@ -856,7 +856,7 @@ export const CONTRAST_PROBE_JS = (sel) => `(() => { const el = document.querySel
     if (c.backgroundImage !== "none") return out(c.backgroundColor, c.backgroundImage, true);
     if (c.backgroundColor !== "rgba(0, 0, 0, 0)") return out(c.backgroundColor, "none", false); }
   return out("rgb(255, 255, 255)", "none", false); })()`;
-reg("n_browser_contrast", {
+reg("cv_browser_contrast", {
   description: "Contraste REAL medido em PIXEL (nao no DOM): captura o clip do elemento, decodifica o PNG em JS puro e compara a mediana do anel da borda com a do miolo -> razao WCAG 2.1. Conserta os 2 furos do DOM: cor computada em oklch() (achava texto==fundo) e background-color transparente em gradiente (ratio 1.0). Gradiente devolve ratio:null + warning. Ex: {url:\"http://localhost:5173\", selector:\"button.cta\"}. Sem selector = viewport.",
   inputSchema: { type: "object", properties: { url: { type: "string" }, selector: { type: "string", description: "CSS do elemento a recortar; sem selector mede o viewport inteiro" }, points: { type: "array", description: "Pares [fx,fy] em fracoes 0-1 do clip, amostrados no miolo (substitui a grade 3x3 do centro)" } }, required: [] },
   run: async ({ url, selector, points }) => {
@@ -876,14 +876,14 @@ reg("n_browser_contrast", {
         }
         const shot = await send("Page.captureScreenshot", clip ? { format: "png", clip, captureBeyondViewport: true, fromSurface: true } : { format: "png", fromSurface: true }, 20000);
         return { img: pngPixels(Buffer.from(shot.data, "base64")), probe, clip };
-      }, { url }, "n_browser_contrast");
+      }, { url }, "cv_browser_contrast");
       const img = m.img, warnings = [], gradient = m.probe?.gradient === true;
       const { ring, center } = contrastPoints(img, 0.5, 0.5);
       const outer = medianColor(img, ring), inner = medianColor(img, Array.isArray(points) && points.length ? points.map(norm) : center);
-      if (!outer || !inner) return fail("nenhum pixel amostravel — clip fora da viewport? confira com n_browser_screenshot", { clip: m.clip || null });
+      if (!outer || !inner) return fail("nenhum pixel amostravel — clip fora da viewport? confira com cv_browser_screenshot", { clip: m.clip || null });
       const ratio = gradient ? null : wcagRatio(outer, inner), delta = oklabDelta(outer, inner);
-      if (gradient) warnings.push("fundo em gradiente — medir por pixel nao e valido aqui, use n_browser_screenshot");
-      if (delta < 0.005) warnings.push(`cor do anel e do miolo praticamente identicas (deltaE oklab ${delta}) — o pixel nao diferencia texto de fundo; confira com n_browser_screenshot`);
+      if (gradient) warnings.push("fundo em gradiente — medir por pixel nao e valido aqui, use cv_browser_screenshot");
+      if (delta < 0.005) warnings.push(`cor do anel e do miolo praticamente identicas (deltaE oklab ${delta}) — o pixel nao diferencia texto de fundo; confira com cv_browser_screenshot`);
       if (Math.min(outer.a, inner.a) < 250) warnings.push(`pixels translucidos (alpha ${Math.min(outer.a, inner.a)}/255) — a mediana pode incluir o que esta atras`);
       let domCheck = null; // cruzamento pixel x DOM: oklch()/oklab() -> sRGB antes de comparar
       try {
@@ -895,7 +895,7 @@ reg("n_browser_contrast", {
         }
       } catch {}
       const level = ratio == null ? "n/a (gradiente)" : ratio >= 7 ? "AAA" : ratio >= 4.5 ? "AA" : ratio >= 3 ? "AA-large" : "FAIL";
-      return devOut({ status: "success", summary: latin1Clean(`Contraste por pixel ${ratio == null ? "indisponivel (gradiente)" : `${ratio}:1 (${level})`} — ${selector ? `[${selector}] ` : "viewport "}${contrastHex(outer)} x ${contrastHex(inner)} (deltaE ${delta}, ${outer.samples}+${inner.samples} px${warnings.length ? `, ${warnings.length} aviso(s)` : ""})`), data: { ratio, level, limiares: { AA: 4.5, AAA: 7 }, anel: { hex: contrastHex(outer), amostras: outer.samples, alpha: outer.a }, miolo: { hex: contrastHex(inner), amostras: inner.samples, alpha: inner.a }, deltaE_oklab: delta, clip: m.clip || null, imagem: { width: img.width, height: img.height, channels: img.channels }, domCheck, warnings }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_browser_screenshot", reason: "Confirmar o que foi medido" }] });
-    } catch (e) { return fail(`contrast falhou: ${/dica acionavel/.test(String(e?.message || "")) ? e.message : `${e.message} — dica acionavel: confira o selector com n_browser_snapshot, CHROME_BIN/porta CDP, ou meça sem selector`}`); }
+      return devOut({ status: "success", summary: latin1Clean(`Contraste por pixel ${ratio == null ? "indisponivel (gradiente)" : `${ratio}:1 (${level})`} — ${selector ? `[${selector}] ` : "viewport "}${contrastHex(outer)} x ${contrastHex(inner)} (deltaE ${delta}, ${outer.samples}+${inner.samples} px${warnings.length ? `, ${warnings.length} aviso(s)` : ""})`), data: { ratio, level, limiares: { AA: 4.5, AAA: 7 }, anel: { hex: contrastHex(outer), amostras: outer.samples, alpha: outer.a }, miolo: { hex: contrastHex(inner), amostras: inner.samples, alpha: inner.a }, deltaE_oklab: delta, clip: m.clip || null, imagem: { width: img.width, height: img.height, channels: img.channels }, domCheck, warnings }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_browser_screenshot", reason: "Confirmar o que foi medido" }] });
+    } catch (e) { return fail(`contrast falhou: ${/dica acionavel/.test(String(e?.message || "")) ? e.message : `${e.message} — dica acionavel: confira o selector com cv_browser_snapshot, CHROME_BIN/porta CDP, ou meça sem selector`}`); }
   },
 });

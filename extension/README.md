@@ -14,7 +14,7 @@ A extensão se atualiza **sozinha**: o worker compara o `manifest.json` do disco
 carregado a cada ~60s idle e se recarrega quando a versão muda (content script já se
 auto-reinjeta; `mon/wa-hook.js` lêem do disco a cada injeção). **Convenção: bump na
 `version` do manifest a cada mudança na extensão** — é o gatilho do auto-update.
-`n_ubrowser_status` mostra `bg`/`ub` rodando (se diferente do disco, o reload vem sozinho).
+`cv_ubrowser_status` mostra `bg`/`ub` rodando (se diferente do disco, o reload vem sozinho).
 Manual só em 2 casos: migração de pasta (esta seção) ou `act {action:"reload-extension"}` p/ forçar na hora.
 
 ## Arquivos

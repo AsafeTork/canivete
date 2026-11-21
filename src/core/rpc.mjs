@@ -1,11 +1,10 @@
 // canivete core/rpc — dispatch JSON-RPC compartilhado (zero deps).
 // Antes: server.mjs (stdio) e remote.mjs (HTTP) duplicavam
 // initialize/ping/tools-list/tools-call + annotations.
-// Diferenças intencionais preservadas via opções:
-// - stdio: ordenado, com annotations, descrição completa.
-// - http: ordem de registro, descrição fatiada em 120 chars, sem annotations.
-const READ_ONLY_RE = /read|list|glob|grep|search|fetch|status|tabs|snapshot/i;
-const DESTRUCTIVE_RE = /write|edit|patch|bash|delete|send|fill|type/i;
+// O catálogo MCP entra no contexto da IA. Envie descrições curtas por padrão;
+// cv_help {query,detail:true} fornece a instrução integral quando necessária.
+const READ_ONLY_RE = /read|list|glob|grep|search|fetch|status|tabs|snapshot|lookup|inspect|help|context|_todo$/i;
+const DESTRUCTIVE_RE = /write|edit|patch|bash|delete|send|fill|type|lifecycle|connect|login|task_start|task_mailbox|alerts|report|screencast|exec|todowrite|orchestrate|resolve|whatsapp|skill/i;
 const DESTRUCTIVE_ACT_RE = /(^|_)act(_|$)/i;
 
 export function annotationsFor(name = "") {
@@ -15,13 +14,31 @@ export function annotationsFor(name = "") {
   return { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
 }
 
-export function buildToolsList(TOOLS, { sorted = true, annotations = false, descLen = 0 } = {}) {
-  const vals = [...TOOLS.values()];
+function brief(s, limit) {
+  const clean = String(s ?? "").replace(/\s+/g, " ").trim();
+  if (clean.length <= limit) return clean;
+  const sentence = clean.match(/^.*?[.!?](?=\s|$)/)?.[0];
+  if (sentence && sentence.length <= limit) return sentence;
+  return clean.slice(0, limit - 1).trimEnd() + "…";
+}
+
+function slimSchema(value) {
+  if (Array.isArray(value)) return value.map(slimSchema);
+  if (!value || typeof value !== "object") return value;
+  // Per-field prose is available through cv_help on demand. Keeping the JSON
+  // constraints while omitting it avoids paying that token cost on every turn.
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => key !== "description")
+    .map(([key, item]) => [key, slimSchema(item)]));
+}
+
+export function buildToolsList(TOOLS, { sorted = true, annotations = false, descLen = 220 } = {}) {
+  const vals = [...TOOLS.values()].filter((tool) => tool.public !== false);
   if (sorted) vals.sort((a, b) => a.name.localeCompare(b.name));
   return vals.map((t) => ({
     name: t.name,
-    description: descLen ? String(t.description).slice(0, descLen) : t.description,
-    inputSchema: t.inputSchema,
+    description: brief(t.description, descLen),
+    inputSchema: slimSchema(t.inputSchema),
     ...(annotations ? { annotations: annotationsFor(t.name) } : {}),
   }));
 }
@@ -40,7 +57,7 @@ export async function dispatchStdio(msg, TOOLS, sendToHost) {
   if (msg.method === "tools/call") {
     const { name, arguments: args } = msg.params || {};
     const tool = TOOLS.get(name);
-    if (!tool) return { id: msg.id, result: { content: [{ type: "text", text: `unknown tool: ${name} — dica: n_find_tools/n_tools_info` }], isError: true } };
+    if (!tool) return { id: msg.id, result: { content: [{ type: "text", text: `unknown tool: ${name} — dica: cv_help` }], isError: true } };
     try {
       return { id: msg.id, result: await tool.run(args || {}) };
     } catch (e) {
@@ -58,12 +75,12 @@ export async function dispatchHttpItem(m, TOOLS) {
   }
   if (m.method === "ping") return { jsonrpc: "2.0", id: m.id, result: {} };
   if (m.method === "tools/list") {
-    return { jsonrpc: "2.0", id: m.id, result: { tools: buildToolsList(TOOLS, { sorted: false, annotations: false, descLen: 120 }) } };
+    return { jsonrpc: "2.0", id: m.id, result: { tools: buildToolsList(TOOLS, { sorted: false, annotations: false }) } };
   }
   if (m.method === "tools/call") {
     const { name: tn, arguments: args } = m.params || {};
     const tool = TOOLS.get(tn);
-    if (!tool) return { jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: `unknown tool: ${tn} — dica: n_find_tools/n_tools_info` }], isError: true } };
+    if (!tool) return { jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: `unknown tool: ${tn} — dica: cv_help` }], isError: true } };
     try {
       return { jsonrpc: "2.0", id: m.id, result: await tool.run(args || {}) };
     } catch (e) {

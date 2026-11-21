@@ -1,12 +1,12 @@
 // canivete — web: fetch enxuto + search multi-backend + cache TTL
 // ENV: nenhum CANIVETE_* lido neste arquivo — knobs são args/valores fixos abaixo.
-//   - CANIVETE_SEARCH_MAX: NÃO existe (removido após paginação page/perPage; ver n_websearch).
-//   - cache TTLs: n_webfetch 15min (15*60*1000, só ok sem err); n_websearch 10min (10*60*1000); fresh:true pula leitura mas regrava via cacheSet.
+//   - CANIVETE_SEARCH_MAX: NÃO existe (removido após paginação page/perPage; ver cv_websearch).
+//   - cache TTLs: cv_webfetch 15min (15*60*1000, só ok sem err); cv_websearch 10min (10*60*1000); fresh:true pula leitura mas regrava via cacheSet.
 //   - cache cap (core/cache.mjs): size>300 → poda expirados até <=200, senão evict FIFO (keys().next()).
-//   - timeouts: n_webfetch arg timeout default 60000 clamp 5000-120000 (AbortController); httpJson default 30000 (ctx.mjs), overrides: News 12000 / DDG-instant 10000 / WikiExtract 12000 / Wiki 12000 / HN 12000 / GitHub 10000 (+GitHub-novos 10000, auth via gh.mjs: env GITHUB_TOKEN/GH_TOKEN > conta gh ativa, token em memória 30min) / Lemmy 12000 / npm 10000 / arXiv 15000 / DDG-html 12000. Reddit: 403 keyless (Cloudflare) — lacuna declarada, só com OAuth de script.
-//   - retry: n_webfetch 2 tentativas sleep 1000 (429/5xx/rede); fetchRetry(tries=2, delays 1000+2000) p/ status 0/429/5xx, httpJson nunca lança (rede=status 0).
+//   - timeouts: cv_webfetch arg timeout default 60000 clamp 5000-120000 (AbortController); httpJson default 30000 (ctx.mjs), overrides: News 12000 / DDG-instant 10000 / WikiExtract 12000 / Wiki 12000 / HN 12000 / GitHub 10000 (+GitHub-novos 10000, auth via gh.mjs: env GITHUB_TOKEN/GH_TOKEN > conta gh ativa, token em memória 30min) / Lemmy 12000 / npm 10000 / arXiv 15000 / DDG-html 12000. Reddit: 403 keyless (Cloudflare) — lacuna declarada, só com OAuth de script.
+//   - retry: cv_webfetch 2 tentativas sleep 1000 (429/5xx/rede); fetchRetry(tries=2, delays 1000+2000) p/ status 0/429/5xx, httpJson nunca lança (rede=status 0).
 //   - paginação: numResults POR FONTE default 8 clamp 1-20 (News/HN/GitHub/GitHub-novos/Reddit/npm/arXiv fixos em 4, Wiki/DDG-html usam n); page default 1 clamp 1..totalPages; perPage default 30 clamp 1-200 (pós-dedupe).
-//   - caps texto: n_webfetch maxChars default 12000 clamp 500-60000; links máx 40; S()=240 / probeMeta=160 / desc=300 / h1=200; trimOut default MAX_OUT=30000 (ctx.mjs).
+//   - caps texto: cv_webfetch maxChars default 12000 clamp 500-60000; links máx 40; S()=240 / probeMeta=160 / desc=300 / h1=200; trimOut default MAX_OUT=30000 (ctx.mjs).
 import { reg, out, trimOut, httpJson, escapeRe, UA, exec } from "./ctx.mjs";
 import { ghTok, listAccounts } from "./gh.mjs"; // search autenticado: conta gh ativa = 30 req/min na Search API (anon = 10 compartilhadas)
 import { writeFileSync, unlinkSync } from "node:fs";
@@ -80,7 +80,7 @@ function extractPriceAndJsonld(html) {
   return { price, offers, currency };
 }
 
-// ── webfetch: n_webfetch (cache 15min, timeout 60s, retry 2x) ──
+// ── webfetch: cv_webfetch (cache 15min, timeout 60s, retry 2x) ──
 // PDF (report rmw0tbndj): URL de PDF não vira sopa de bytes — baixa como buffer e extrai
 // o texto LOCAL (pdftotext no disco; nada sai da máquina). Escaneado/sem camada de texto
 // → erro explícito e acionável (não "sucesso vazio").
@@ -96,17 +96,17 @@ async function pdfExtract(res, url) {
     ]);
     const pages = (info.so.match(/Pages:\s+(\d+)/) || [])[1] || null;
     const txt = pt.code === 0 && pt.so.trim() ? pt.so.replace(/\n{3,}/g, "\n\n").trim() : "";
-    if (!txt) return { err: `PDF baixado (${pages ? `${pages} páginas, ` : ""}${buf.length}B) mas SEM camada de texto (escaneado/imagem?) — alternativa: n_browser_pdf {url:"${url}"} arquia o PDF em /tmp, ou pdftotext manual via n_bash` };
+    if (!txt) return { err: `PDF baixado (${pages ? `${pages} páginas, ` : ""}${buf.length}B) mas SEM camada de texto (escaneado/imagem?) — alternativa: cv_browser_pdf {url:"${url}"} arquia o PDF em /tmp, ou pdftotext manual via cv_bash` };
     return { text: `PDF${pages ? ` ${pages} páginas` : ""} — texto extraído LOCAL (pdftotext; nenhum byte enviado):\n\n${txt}`, title: null, header: "", price: null, currency: null, spa: false, empty: false, pdf: true };
   } catch (e) {
-    return { err: `PDF baixado mas extração falhou: ${e.message} — alternativa: n_browser_pdf {url:"${url}"}` };
+    return { err: `PDF baixado mas extração falhou: ${e.message} — alternativa: cv_browser_pdf {url:"${url}"}` };
   } finally {
     try { unlinkSync(tmp); } catch {}
   }
 }
 
-reg("n_webfetch", {
-  description: "Baixa URL SEM JS e extrai texto principal + og:price/JSON-LD (tenta <article>/<main>). PDF: detecta e extrai o texto LOCAL (pdftotext). Retorna título, preço e links. SPA shell/vazio/JS/login-wall/preço dinâmico? NÃO use este — vá de n_browser_navigate (renderiza JS) ou n_ubrowser_* (logado). Erro/DNS vira isError; HTTP>=400 não cacheia.",
+reg("cv_webfetch", {
+  description: "Baixa URL SEM JS e extrai texto principal + og:price/JSON-LD (tenta <article>/<main>). PDF: detecta e extrai o texto LOCAL (pdftotext). Retorna título, preço e links. SPA shell/vazio/JS/login-wall/preço dinâmico? NÃO use este — vá de cv_browser_navigate (renderiza JS) ou cv_ubrowser_* (logado). Erro/DNS vira isError; HTTP>=400 não cacheia.",
   inputSchema: {
     type: "object",
     properties: {
@@ -154,8 +154,8 @@ reg("n_webfetch", {
             }
           }
           if (!res) return { err: `fetch failed: ${lastErr || "unknown"}` };
-          if (res.status === 429) return { err: `HTTP 429 from ${url} — rate-limit. Aguarde 60s ou reduza frequência. Alternativa: use n_browser_navigate ${url}.\n${String(raw).slice(0, 1500)}` };
-          if (res.status >= 400) return { err: `HTTP ${res.status} from ${url} — verifique a URL ou autenticação. Alternativa: use n_browser_navigate ${url} para conteúdo JS-renderizado.\n${String(raw).slice(0, 1500)}` };
+          if (res.status === 429) return { err: `HTTP 429 from ${url} — rate-limit. Aguarde 60s ou reduza frequência. Alternativa: use cv_browser_navigate ${url}.\n${String(raw).slice(0, 1500)}` };
+          if (res.status >= 400) return { err: `HTTP ${res.status} from ${url} — verifique a URL ou autenticação. Alternativa: use cv_browser_navigate ${url} para conteúdo JS-renderizado.\n${String(raw).slice(0, 1500)}` };
         const isHtml = /html/i.test(res.headers.get("content-type") || "");
         if (!isHtml) return { text: trimOut(raw, cap) };
         const core = mainContent(raw);
@@ -205,7 +205,7 @@ reg("n_webfetch", {
           if (items.length) linksTxt = `\nLinks (${items.length}):\n${items.join("\n")}`;
         }
         const title = probeMeta(raw);
-        const head = `${title ? title + "\n" : ""}${header ? header + "\n" : ""}${priceStr}${offersStr}${empty ? `página vazia/JS/login-wall — use n_browser_navigate ${url}\n` : spa ? `página 100% JS — use n_browser_navigate ${url}\n` : ""}`;
+        const head = `${title ? title + "\n" : ""}${header ? header + "\n" : ""}${priceStr}${offersStr}${empty ? `página vazia/JS/login-wall — use cv_browser_navigate ${url}\n` : spa ? `página 100% JS — use cv_browser_navigate ${url}\n` : ""}`;
         return { text: `${head}${fmt === "html" ? core : body}${linksTxt}`.slice(0, cap), title, header, price, currency, spa, empty };
       } catch (e) {
         return { err: `fetch failed: ${e.message}` };
@@ -216,7 +216,7 @@ reg("n_webfetch", {
       (v) => !v.err
     );
     if (result.err) return out(result.err, true);
-    return out(`URL ${url} (200)${result.title ? ` — ${result.title}` : ""}${result.header ? `\nHeader: ${result.header}` : ""}${result.price ? `\nPreço: ${result.price}${result.currency ? ` ${result.currency}` : ""}` : ""}${result.empty ? `\npágina vazia/JS/login-wall — use n_browser_navigate ${url}` : result.spa ? `\npágina 100% JS — use n_browser_navigate ${url}` : ""}\n${trimOut(result.text, cap)}`);
+    return out(`URL ${url} (200)${result.title ? ` — ${result.title}` : ""}${result.header ? `\nHeader: ${result.header}` : ""}${result.price ? `\nPreço: ${result.price}${result.currency ? ` ${result.currency}` : ""}` : ""}${result.empty ? `\npágina vazia/JS/login-wall — use cv_browser_navigate ${url}` : result.spa ? `\npágina 100% JS — use cv_browser_navigate ${url}` : ""}\n${trimOut(result.text, cap)}`);
   },
 });
 
@@ -619,9 +619,9 @@ function dedupeItems(groups, query = "") {
 // Retry com backoff p/ 429/5xx/rede (status 0): ver core/retry.mjs
 // (web: 2 tentativas 1s+2s; httpJson nunca lança — rede=status 0).
 
-// ── websearch: n_websearch (cache 10min, numResults/fonte + page/perPage pós-dedupe) ──
-reg("n_websearch", {
-  description: "Busca web multi-backend (News, DDG, Wikipedia, HN, GitHub, GitHub-novos, Lemmy/fediverso, npm, arXiv; cache 10min, dedupe por URL). GitHub-novos = repos criados nos últimos 90d ordenados por stars — acha o que ACABOU de lançar (sem since usa essa janela; com since, usa a data). Quando usar: pesquisar doc/bug/biblioteca/novidade. Filtros: site, since (YYYY-MM-DD), fresh (pula cache). Limite: numResults é por fonte; paginação page/perPage sobre o total pós-dedupe; preço pode estar desatualizado — confirme com n_browser_navigate.",
+// ── websearch: cv_websearch (cache 10min, numResults/fonte + page/perPage pós-dedupe) ──
+reg("cv_websearch", {
+  description: "Busca web multi-backend (News, DDG, Wikipedia, HN, GitHub, GitHub-novos, Lemmy/fediverso, npm, arXiv; cache 10min, dedupe por URL). GitHub-novos = repos criados nos últimos 90d ordenados por stars — acha o que ACABOU de lançar (sem since usa essa janela; com since, usa a data). Quando usar: pesquisar doc/bug/biblioteca/novidade. Filtros: site, since (YYYY-MM-DD), fresh (pula cache). Limite: numResults é por fonte; paginação page/perPage sobre o total pós-dedupe; preço pode estar desatualizado — confirme com cv_browser_navigate.",
   inputSchema: {
     type: "object",
     properties: {
@@ -736,8 +736,8 @@ reg("n_websearch", {
       const pub = publishDateStr(it.snippet) || publishDateStr(it.title);
       return `${startIdx + i + 1}. ${it.title}\n   ${it.url}\n   ${it.snippet}${pub ? `\n   publish_date: ${pub}` : ""}\n   fontes: [${it.fontes.join(", ")}]\n`;
     }).join("");
-    const nextLine = pg < totalPages ? `...[página ${pg}/${totalPages} — next: n_websearch({query:${JSON.stringify(q)}, page:${pg + 1}, perPage:${pp}})]\n` : "";
-    return out(`${total} results for "${q}" (${cacheTag}, sources: ${srcs}${siteNorm ? `, site:${siteNorm}` : ""}${sinceDate ? `, since:${sinceDate}` : ""}${omitTag})\npor backend: ${counts} | mostrando ${shown.length}/${total} (página ${pg}/${totalPages}, perPage ${pp})\n` + quickBlock + blocks + nextLine + `\nAviso: preço em snippet pode estar desatualizado, confirme com n_browser_navigate.\nTip: use n_webfetch to read a page's main content (maxChars caps token cost).`);
+    const nextLine = pg < totalPages ? `...[página ${pg}/${totalPages} — next: cv_websearch({query:${JSON.stringify(q)}, page:${pg + 1}, perPage:${pp}})]\n` : "";
+    return out(`${total} results for "${q}" (${cacheTag}, sources: ${srcs}${siteNorm ? `, site:${siteNorm}` : ""}${sinceDate ? `, since:${sinceDate}` : ""}${omitTag})\npor backend: ${counts} | mostrando ${shown.length}/${total} (página ${pg}/${totalPages}, perPage ${pp})\n` + quickBlock + blocks + nextLine + `\nAviso: preço em snippet pode estar desatualizado, confirme com cv_browser_navigate.\nTip: use cv_webfetch to read a page's main content (maxChars caps token cost).`);
   },
 });
 

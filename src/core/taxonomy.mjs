@@ -1,22 +1,21 @@
-// canivete core/taxonomy — UMA definição de grupos (zero deps).
-// Antes: tabelas copiadas em server.mjs n_tools_info vs n_find_tools (drift).
-// has() filtra tools não registradas (ex: família n_task* desligada).
+// Public task-oriented groups. Legacy executors are hidden from tools/list.
 export const TOOL_GROUPS = [
-  { title: "Filesystem + execução", hint: "ler/listar/criar/editar/patch/shell/glob/grep", names: ["n_read", "n_list", "n_write", "n_edit", "n_apply_patch", "n_bash", "n_glob", "n_grep"] },
-  { title: "Web + APIs públicas sem chave", hint: "fetch enxuto, search 7 backends, currency/cep/cnpj/ip/weather/github/npm", names: ["n_webfetch", "n_websearch", "n_currency", "n_cep", "n_cnpj", "n_ipinfo", "n_weather", "n_github", "n_npm"] },
-  { title: "Browser headless", hint: "CDP zero-deps: navegar com JS, snapshot, agir, screenshot, pdf, screencast", names: ["n_browser_navigate", "n_browser_snapshot", "n_browser_act", "n_browser_screenshot", "n_browser_screencast", "n_browser_pdf"] },
-  { title: "Mídia local (ffprobe/ffmpeg)", hint: "análise de áudio no disco: duração, loudness LUFS, mapa de silêncios — zero upload", names: ["n_audio_analyze"] },
-  { title: "Navegador LOGADO do dono", hint: "via extensão local: status, abas, ler, snapshot, agir, print, vigia de avisos", names: ["n_ubrowser_status", "n_ubrowser_tabs", "n_ubrowser_read", "n_ubrowser_snapshot", "n_ubrowser_act", "n_ubrowser_shot", "n_ubrowser_alerts"] },
-  { title: "Android (ADB)", hint: "WiFi rápido (perfil + reconexão auto), extração da tela em 1 RTT, agir (tap por texto), screenshot", names: ["n_adb_status", "n_adb_connect", "n_adb_extract", "n_adb_act", "n_adb_screen"] },
-  { title: "Reports de elemento (site)", hint: "marcação humana na página viva: listar reports abertos por site e resolver com prova", names: ["n_elemreports_list", "n_elemreports_resolve"] },
-  { title: "Orquestração", hint: "todos in-memory (+ família n_task* só com CANIVETE_TASK_ENABLE=1)", names: ["n_task", "n_task_wait", "n_task_status", "n_task_send", "n_task_recv", "n_task_peek", "n_task_tail", "n_task_notifications", "n_task_delete", "n_list_models", "n_todowrite", "n_todo"], dynamicTitle: true },
-  { title: "DevEngine AI-Native", hint: "arquitetura sem varrer, investigar causa (12→1), impacto, patch AST, testes afetados, bg proc, UI state, DAG", names: ["n_get_architecture_summary", "n_investigate_issue", "n_analyze_change_impact", "n_apply_semantic_patch", "n_execute_targeted_tests", "n_manage_background_process", "n_inspect_ui_state", "n_orchestrate_task"] },
-  { title: "Meta", hint: "catálogo, pergunta humana, skill, plan, report, contexto", names: ["n_tools_info", "n_question", "n_skill", "n_plan", "n_report", "n_ctx_status"] },
-  { title: "WhatsApp dedicado", hint: "state|chats|open|read|send no Chrome logado", names: ["n_whatsapp"] },
+  { title: "Arquivos e comandos", hint: "Ler, encontrar e alterar arquivos; cv_bash para comandos", names: ["cv_file_read", "cv_file_write", "cv_bash"] },
+  { title: "Web e consultas", hint: "Buscar páginas, ler URLs e consultar dados públicos", names: ["cv_websearch", "cv_webfetch", "cv_lookup"] },
+  { title: "Browser headless", hint: "Ler, localizar controles, agir e capturar páginas públicas", names: ["cv_browser_read", "cv_browser_snapshot", "cv_browser_act", "cv_browser_capture", "cv_browser_screencast"] },
+  { title: "Chrome logado do dono", hint: "Inspecionar a sessão; agir e ler alertas ficam separados", names: ["cv_owner_inspect", "cv_owner_act", "cv_owner_alerts"] },
+  { title: "Android", hint: "Inspecionar, conectar e agir no aparelho", names: ["cv_android_inspect", "cv_android_connect", "cv_android_act"] },
+  { title: "Codespaces", hint: "Consultar, controlar ciclo de vida, autenticar e executar comandos", names: ["cv_codespace_status", "cv_codespace_lifecycle", "cv_codespace_login", "cv_codespace_exec"] },
+  { title: "Desenvolvimento", hint: "Entender o código, editar, verificar e controlar processos", names: ["cv_code_inspect", "cv_code_edit", "cv_code_verify", "cv_manage_background_process", "cv_orchestrate_task"] },
+  { title: "Orquestração", hint: "Lista de tarefas e subagentes, quando habilitados", names: ["cv_todo", "cv_todowrite", "cv_task_start", "cv_task_progress", "cv_task_mailbox", "cv_task_delete"], dynamicTitle: true },
+  { title: "Meta", hint: "Ajuda, contexto, skills e feedback", names: ["cv_help", "cv_ctx_status", "cv_skill", "cv_report"] },
+  { title: "Reports de elemento", hint: "Listar e resolver marcações feitas na página", names: ["cv_elemreports_list", "cv_elemreports_resolve"] },
+  { title: "Mídia local", hint: "Análise de áudio local via ffprobe/ffmpeg", names: ["cv_audio_analyze"] },
+  { title: "WhatsApp", hint: "Consultar e agir via gateway ou Chrome logado", names: ["cv_whatsapp"] },
 ];
 
 export function orchestrationTitle(has, hasTask) {
-  if (!has) return hasTask ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)";
+  if (!has) return "Todos (subagentes desativados)";
   return hasTask ? "Orquestração paralela monitorada" : "Todos (subagentes desativados)";
 }
 

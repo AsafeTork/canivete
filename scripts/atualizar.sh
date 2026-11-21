@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # canivete — atualização em 1 comando: bash scripts/atualizar.sh (ou npm run atualizar)
-# Pode vir de: terminal do dono (tork), root (cai pro tork) ou n_bash de qualquer CLI
+# Pode vir de: terminal do dono (tork), root (cai pro tork) ou cv_bash de qualquer CLI
 # (roda dentro do daemon — por isso o restart é agendado via systemd-run, fora do cgroup
 # do serviço: reiniciar o daemon de dentro dele mataria a própria chamada).
 set -e

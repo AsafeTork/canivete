@@ -98,5 +98,5 @@ export function needConfirm(a = {}) {
 //   riskOf({url:"https://www.magalu.com.br", action:"click", text:"produto"}) → "low" (allowlist)
 //   riskOf({text:"Pix Total"}) → "low" (informativo, não pix transacional)
 //   riskOf({text:"pagar via Pix"}) → "high" (transacional)
-//   riskOf({cmd:"rm -rf /", action:"n_bash"}) → "high" (bloqueio real mantido)
+//   riskOf({cmd:"rm -rf /", action:"cv_bash"}) → "high" (bloqueio real mantido)
 //   riskOf({action:"click", selector:"text=excluir conta"}) → "high" (bloqueio real mantido)

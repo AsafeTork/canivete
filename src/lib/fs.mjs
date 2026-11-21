@@ -1,13 +1,13 @@
 // canivete — filesystem + execução (read/list/write/edit/patch/bash/glob/grep)
 // Índice (tools neste arquivo):
-// - n_read: lê arquivo texto numerado ou lista diretório simples.
-// - n_list: lista árvore de diretório com tamanhos.
-// - n_write: cria/sobrescreve (ou anexa) arquivo.
-// - n_edit: troca texto exato oldString→newString.
-// - n_apply_patch: aplica unified diff via git apply no repo root.
-// - n_bash: executa shell (bash -lc) no repo root.
-// - n_glob: acha arquivos por glob.
-// - n_grep: busca regex no conteúdo com rank.
+// - cv_read: lê arquivo texto numerado ou lista diretório simples.
+// - cv_list: lista árvore de diretório com tamanhos.
+// - cv_write: cria/sobrescreve (ou anexa) arquivo.
+// - cv_edit: troca texto exato oldString→newString.
+// - cv_apply_patch: aplica unified diff via git apply no repo root.
+// - cv_bash: executa shell (bash -lc) no repo root.
+// - cv_glob: acha arquivos por glob.
+// - cv_grep: busca regex no conteúdo com rank.
 import { mkdir, writeFile, unlink, stat, rename } from "node:fs/promises";
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
@@ -131,7 +131,7 @@ function listDir(p, depth, maxLines = 1500, sort = "name") {
     try {
       ents = readdirSync(dir, { withFileTypes: true });
     } catch (e) {
-      lines.push(`${"  ".repeat(lv)}! ${e.message} | dica: confira permissões; use n_glob p/ caminho alternativo`);
+      lines.push(`${"  ".repeat(lv)}! ${e.message} | dica: confira permissões; use cv_glob p/ caminho alternativo`);
       return;
     }
     const meta = new Map();
@@ -178,14 +178,14 @@ function listDir(p, depth, maxLines = 1500, sort = "name") {
   rec(p, 0);
   const head = `${p} (${lines.length}${hitCap ? "+" : ""} entries, depth=${depth}, sort=${sort})`;
   if (hitCap) {
-    lines.push(`...[truncated at ${maxLines} lines — next: n_list({path:${JSON.stringify(p)}, depth:${depth}, maxLines:${maxLines * 2}}) ou filtre com n_glob/n_grep]`);
+    lines.push(`...[truncated at ${maxLines} lines — next: cv_list({path:${JSON.stringify(p)}, depth:${depth}, maxLines:${maxLines * 2}}) ou filtre com cv_glob/cv_grep]`);
   }
   return out(`${head}\n${lines.join("\n") || "(empty)"}`);
 }
 
-// ---- n_read ----
-reg("n_read", {
-  description: "Lê arquivo texto com números de linha (offset/limit, raw, maxChars até 100k) ou lista diretório simples. Roda como o usuário do servidor (EACCES = confira `as:` do n_bash). Quando usar: inspecionar código/config antes de editar. Retorna corpo numerado (raw tira números); binário/ausente retorna isError; grande trunca com marker explícito (nunca silent). symbols:true = outline (funções/classes/tools+linha, navegação sem ler tudo).",
+// ---- cv_read ----
+reg("cv_read", {
+  description: "Lê arquivo texto com números de linha (offset/limit, raw, maxChars até 100k) ou lista diretório simples. Roda como o usuário do servidor (EACCES = confira `as:` do cv_bash). Quando usar: inspecionar código/config antes de editar. Retorna corpo numerado (raw tira números); binário/ausente retorna isError; grande trunca com marker explícito (nunca silent). symbols:true = outline (funções/classes/tools+linha, navegação sem ler tudo).",
   inputSchema: {
     type: "object",
     properties: {
@@ -207,12 +207,12 @@ reg("n_read", {
     try {
       st = await stat(p);
     } catch (e) {
-      return out(fail("n_read", `not found: ${e.message}`, "confira o filePath; use n_glob/n_list p/ achar o caminho"), true);
+      return out(fail("cv_read", `not found: ${e.message}`, "confira o filePath; use cv_glob/cv_list p/ achar o caminho"), true);
     }
     if (st.isDirectory()) return listDir(p, 1);
     const buf = readFileSync(p);
     const nul = buf.indexOf(0);
-    if (nul >= 0) return out(fail("n_read", `binary file ${p} (${humanSize(buf.length)}, ${buf.length} bytes, NUL at offset ${nul}) — conteúdo omitido`, "use n_list p/ confirmar tipo/tamanho; p/ texto use n_grep com include; bytes só via n_bash (ex: file/head) se preciso"), true);
+    if (nul >= 0) return out(fail("cv_read", `binary file ${p} (${humanSize(buf.length)}, ${buf.length} bytes, NUL at offset ${nul}) — conteúdo omitido`, "use cv_list p/ confirmar tipo/tamanho; p/ texto use cv_grep com include; bytes só via cv_bash (ex: file/head) se preciso"), true);
     const cutLong = (s) => (s.length > 2000 ? s.slice(0, 2000) + `…[+${s.length - 2000} chars]` : s);
     const fp = JSON.stringify(filePath);
     const cap = Math.max(1000, Number(maxChars) || 100000);
@@ -228,7 +228,7 @@ reg("n_read", {
         try {
           grx = new RegExp(g);
         } catch (e) {
-          return out(fail("n_read", `invalid grep regex: ${e.message}`, "valide a regex; escape caracteres especiais"), true);
+          return out(fail("cv_read", `invalid grep regex: ${e.message}`, "valide a regex; escape caracteres especiais"), true);
         }
         syms = syms.filter((s) => grx.test(`${s.kind} ${s.name}`));
       }
@@ -236,7 +236,7 @@ reg("n_read", {
       if (!syms.length) return out(`no symbols${g ? ` for /${g}/` : ""} in ${p} (${total} lines)`);
       const sStart = Math.max(1, Number(offset) || 1);
       const sLim = Number(limit) || syms.length;
-      if (sStart > syms.length) return out(fail("n_read", `offset ${sStart} beyond symbols ${syms.length} (total ${total} lines)`, `use offset 1-${syms.length} com limit`), true);
+      if (sStart > syms.length) return out(fail("cv_read", `offset ${sStart} beyond symbols ${syms.length} (total ${total} lines)`, `use offset 1-${syms.length} com limit`), true);
       const sEnd = Math.min(syms.length, sStart + sLim - 1);
       const sHead = `${p} (symbols: ${syms.length} in ${total} lines, showing ${sStart}-${sEnd})`;
       let sUsed = sHead.length + 1;
@@ -247,7 +247,7 @@ reg("n_read", {
         sBody.push(s);
         sUsed += s.length + 1;
       }
-      if (sStart + sBody.length - 1 < syms.length) sBody.push(`...[truncated — next: n_read({filePath:${fp}, symbols:true, offset:${sStart + sBody.length}, limit:${sLim}})]`);
+      if (sStart + sBody.length - 1 < syms.length) sBody.push(`...[truncated — next: cv_read({filePath:${fp}, symbols:true, offset:${sStart + sBody.length}, limit:${sLim}})]`);
       return out(`${sHead}\n${sBody.join("\n")}`);
     }
     const fmt = (n, l) => (raw ? cutLong(l) : `${n}: ${cutLong(l)}`);
@@ -261,14 +261,14 @@ reg("n_read", {
         try {
           grx = new RegExp(grep);
         } catch (e) {
-          return out(fail("n_read", `invalid grep regex: ${e.message}`, "valide a regex; escape caracteres especiais"), true);
+          return out(fail("cv_read", `invalid grep regex: ${e.message}`, "valide a regex; escape caracteres especiais"), true);
         }
         kept = kept.filter((e) => grx.test(e.l));
       }
       if (!kept.length) return out(`no matches for /${grep || ""}/ in ${p} (${total} lines)`);
       const start = Math.max(1, Number(offset) || 1);
       const lim = Number(limit) || kept.length;
-      if (start > kept.length) return out(fail("n_read", `offset ${start} beyond filtered ${kept.length} lines (total ${total})`, `use offset 1-${kept.length} com limit; sem filtro o arquivo tem ${total} lines`), true);
+      if (start > kept.length) return out(fail("cv_read", `offset ${start} beyond filtered ${kept.length} lines (total ${total})`, `use offset 1-${kept.length} com limit; sem filtro o arquivo tem ${total} lines`), true);
       const endIdx = Math.min(kept.length, start + lim - 1);
       const mode = `${hasTail ? `tail=${Number(tail)} ` : ""}${hasGrep ? `grep=/${grep}/ ` : ""}`;
       const head = `${p} (${mode}${kept.length}/${total} lines, showing filtered ${start}-${endIdx})`;
@@ -279,7 +279,7 @@ reg("n_read", {
         const s = fmt(kept[i].n, kept[i].l);
         if (used + s.length + 1 > cap && body.length) break;
         if (!body.length && used + s.length + 1 > cap) {
-          body.push(s.slice(0, Math.max(0, cap - used)) + `\n...[truncated — next: n_read({filePath:${fp}, offset:${start + 1}, limit:${lim}})]`);
+          body.push(s.slice(0, Math.max(0, cap - used)) + `\n...[truncated — next: cv_read({filePath:${fp}, offset:${start + 1}, limit:${lim}})]`);
           shown = 1;
           return out(`${head}\n${body.join("\n")}`);
         }
@@ -288,11 +288,11 @@ reg("n_read", {
         shown++;
       }
       const nextOff = start + shown;
-      if (nextOff <= kept.length) body.push(`...[truncated — next: n_read({filePath:${fp}, offset:${nextOff}, limit:${lim}})]`);
+      if (nextOff <= kept.length) body.push(`...[truncated — next: cv_read({filePath:${fp}, offset:${nextOff}, limit:${lim}})]`);
       return out(`${head}\n${body.join("\n")}`);
     }
     const start = Math.max(1, Number(offset) || 1);
-    if (start > total) return out(fail("n_read", `offset ${start} beyond EOF (${total} lines in ${p})`, `use offset 1-${total} com limit; ex: {offset:${Math.max(1, total - 50)}, limit:50} p/ o fim ou tail:100 p/ logs`), true);
+    if (start > total) return out(fail("cv_read", `offset ${start} beyond EOF (${total} lines in ${p})`, `use offset 1-${total} com limit; ex: {offset:${Math.max(1, total - 50)}, limit:50} p/ o fim ou tail:100 p/ logs`), true);
     const lim = Number(limit) || 4000;
     const end = Math.min(total, start + lim - 1);
     const head = offset == null && limit == null ? `${p} (${total} lines)` : `${p} lines ${start}-${end} of ${total}`;
@@ -303,7 +303,7 @@ reg("n_read", {
       const s = fmt(i, lines[i - 1]);
       if (used + s.length + 1 > cap && body.length) break;
       if (!body.length && used + s.length + 1 > cap) {
-        body.push(s.slice(0, Math.max(0, cap - used)) + `\n...[truncated — next: n_read({filePath:${fp}, offset:${start + 1}, limit:${lim}})]`);
+        body.push(s.slice(0, Math.max(0, cap - used)) + `\n...[truncated — next: cv_read({filePath:${fp}, offset:${start + 1}, limit:${lim}})]`);
         shown = 1;
         return out(`${head}\n${body.join("\n")}`);
       }
@@ -312,14 +312,14 @@ reg("n_read", {
       shown++;
     }
     const lastShown = start + shown - 1;
-    if (lastShown < total) body.push(`...[truncated — next: n_read({filePath:${fp}, offset:${lastShown + 1}, limit:${lim}})]`);
+    if (lastShown < total) body.push(`...[truncated — next: cv_read({filePath:${fp}, offset:${lastShown + 1}, limit:${lim}})]`);
     return out(`${head}\n${body.join("\n")}`);
   },
 });
 
-// ---- n_list ----
-reg("n_list", {
-  description: "Lista árvore de diretório com tamanhos (depth 1-6, maxLines 1500). Quando usar: mapear módulo/pasta antes de glob/read; ver features, functions, arquivos grandes. Retorna 'nome/ + arquivo + tamanho'. Ex: {path:\"src/features\", depth:1}. Para topologia sem varrer, prefira n_get_architecture_summary (~85% tokens).",
+// ---- cv_list ----
+reg("cv_list", {
+  description: "Lista árvore de diretório com tamanhos (depth 1-6, maxLines 1500). Quando usar: mapear módulo/pasta antes de glob/read; ver features, functions, arquivos grandes. Retorna 'nome/ + arquivo + tamanho'. Ex: {path:\"src/features\", depth:1}. Para topologia sem varrer, prefira cv_get_architecture_summary (~85% tokens).",
   inputSchema: {
     type: "object",
     properties: {
@@ -333,9 +333,9 @@ reg("n_list", {
   run: async ({ path, depth, maxLines, sort }) => listDir(fpath(path || CWD), Math.min(Number(depth) || 2, 6), Math.max(1, Number(maxLines) || 1500), ["name", "size", "mtime"].includes(sort) ? sort : "name"),
 });
 
-// ---- n_write ----
-reg("n_write", {
-  description: "Cria/sobrescreve arquivo (cria pastas) como o usuário do servidor (veja `as:` no output; confira com `as:` do n_bash antes de misturar com shell). Quando usar: arquivo novo ou rewrite total; para troca pontual prefira n_edit/n_apply_semantic_patch (AST). Retorna bytes escritos. Ex: {filePath:\"/tmp/x.txt\", content:\"...\"}.",
+// ---- cv_write ----
+reg("cv_write", {
+  description: "Cria/sobrescreve arquivo (cria pastas) como o usuário do servidor (veja `as:` no output; confira com `as:` do cv_bash antes de misturar com shell). Quando usar: arquivo novo ou rewrite total; para troca pontual prefira cv_edit/cv_apply_semantic_patch (AST). Retorna bytes escritos. Ex: {filePath:\"/tmp/x.txt\", content:\"...\"}.",
   inputSchema: {
     type: "object",
     properties: {
@@ -365,14 +365,14 @@ reg("n_write", {
       }
       return out(`${append ? "appended" : "wrote"} ${p} (${bytes} bytes, as ${RUN_AS})${backup ? " backup=.bak" : ""}${ownNote}`);
     } catch (e) {
-      return out(fail("n_write", `write failed: ${e.message}`, "confira permissões e o filePath; use n_list p/ validar a pasta"), true);
+      return out(fail("cv_write", `write failed: ${e.message}`, "confira permissões e o filePath; use cv_list p/ validar a pasta"), true);
     }
   },
 });
 
-// ---- n_edit ----
-reg("n_edit", {
-  description: "Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). Roda como o usuário do servidor (EACCES = confira `as:` do n_bash; n_write tem `owner` p/ ajustar dono). Quando usar: edição pontual com contexto; para validar sintaxe use n_apply_semantic_patch. Limite: default substitui TODAS as ocorrências; ambíguo só falha com replaceAll=false; 0 matches sempre falha.",
+// ---- cv_edit ----
+reg("cv_edit", {
+  description: "Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). Roda como o usuário do servidor (EACCES = confira `as:` do cv_bash; cv_write tem `owner` p/ ajustar dono). Quando usar: edição pontual com contexto; para validar sintaxe use cv_apply_semantic_patch. Limite: default substitui TODAS as ocorrências; ambíguo só falha com replaceAll=false; 0 matches sempre falha.",
   inputSchema: {
     type: "object",
     properties: {
@@ -392,7 +392,7 @@ reg("n_edit", {
     try {
       text = readFileSync(p, "utf8");
     } catch (e) {
-      return out(fail("n_edit", `edit failed: ${e.message}`, "confira filePath/permissões; leia antes com n_read"), true);
+      return out(fail("cv_edit", `edit failed: ${e.message}`, "confira filePath/permissões; leia antes com cv_read"), true);
     }
     let count;
     let updated;
@@ -401,19 +401,19 @@ reg("n_edit", {
       try {
         rxG = new RegExp(oldString, "g");
       } catch (e) {
-        return out(fail("n_edit", `invalid regex: ${e.message}`, "valide a regex de oldString; escape caracteres especiais"), true);
+        return out(fail("cv_edit", `invalid regex: ${e.message}`, "valide a regex de oldString; escape caracteres especiais"), true);
       }
       count = (text.match(rxG) || []).length;
-      if (count === 0) return out(fail("n_edit", `oldString not found in ${p}`, "leia com n_read e copie o trecho exato; confira espaços/quebras"), true);
+      if (count === 0) return out(fail("cv_edit", `oldString not found in ${p}`, "leia com cv_read e copie o trecho exato; confira espaços/quebras"), true);
       if (count > 1 && replaceAll === false)
-        return out(fail("n_edit", `oldString found ${count} times — use replaceAll=true or more context`, "passe replaceAll=true ou amplie o contexto de oldString"), true);
+        return out(fail("cv_edit", `oldString found ${count} times — use replaceAll=true or more context`, "passe replaceAll=true ou amplie o contexto de oldString"), true);
       const rx = new RegExp(oldString, replaceAll === false ? "" : "g");
       updated = text.replace(rx, newString);
     } else {
       count = text.split(oldString).length - 1;
-      if (count === 0) return out(fail("n_edit", `oldString not found in ${p}`, "leia com n_read e copie o trecho exato; confira espaços/quebras"), true);
+      if (count === 0) return out(fail("cv_edit", `oldString not found in ${p}`, "leia com cv_read e copie o trecho exato; confira espaços/quebras"), true);
       if (count > 1 && replaceAll === false)
-        return out(fail("n_edit", `oldString found ${count} times — use replaceAll=true or more context`, "passe replaceAll=true ou amplie o contexto de oldString"), true);
+        return out(fail("cv_edit", `oldString found ${count} times — use replaceAll=true or more context`, "passe replaceAll=true ou amplie o contexto de oldString"), true);
       updated = replaceAll === false ? text.replace(oldString, newString) : text.split(oldString).join(newString);
     }
     if (dryRun) return out(`matches=${count} count=${count}`);
@@ -421,14 +421,14 @@ reg("n_edit", {
       if (backup) await writeFile(`${p}.bak`, text, "utf8");
       await atomicWriteFile(p, updated, "utf8"); // atômico: ENOSPC não zera o original (#49)
     } catch (e) {
-      return out(fail("n_edit", `edit failed: ${e.message}`, "confira permissões/disco; use n_read p/ validar o arquivo"), true);
+      return out(fail("cv_edit", `edit failed: ${e.message}`, "confira permissões/disco; use cv_read p/ validar o arquivo"), true);
     }
     return out(`edited ${p} (${count} occurrence${count > 1 ? "s" : ""}) count=${count}`);
   },
 });
 
-// ---- n_apply_patch ----
-reg("n_apply_patch", {
+// ---- cv_apply_patch ----
+reg("cv_apply_patch", {
   description: "Aplica unified diff via `git apply` NO REPO ROOT (multi-arquivo, reverse opcional). Quando usar: patch gerado por agente/review. Limite: só paths relativos ao repo; fora do repo falha; usa temp file interno.",
   inputSchema: {
     type: "object",
@@ -450,7 +450,7 @@ reg("n_apply_patch", {
         const r = await exec("git", ["apply", "--check", "--whitespace=nowarn", ...rev, tmp], { cwd: CWD });
         return r.code === 0
           ? out(`patch check ok (${Buffer.byteLength(patch)} bytes)`)
-          : out(fail("n_apply_patch", `patch check failed (exit ${r.code}):\n${trimOut(r.se, 3000)}`, "rode com stat:true p/ ver arquivos; confira paths relativos ao repo"), true);
+          : out(fail("cv_apply_patch", `patch check failed (exit ${r.code}):\n${trimOut(r.se, 3000)}`, "rode com stat:true p/ ver arquivos; confira paths relativos ao repo"), true);
       }
       let summary = "";
       if (stat) {
@@ -460,7 +460,7 @@ reg("n_apply_patch", {
       const r = await exec("git", ["apply", "--whitespace=nowarn", ...rev, tmp], { cwd: CWD });
       return r.code === 0
         ? out(`${summary}patch applied (${Buffer.byteLength(patch)} bytes)`)
-        : out(fail("n_apply_patch", `${summary}git apply failed (exit ${r.code}):\n${trimOut(r.se, 3000)}`, "confira o diff (paths relativos, contexto); rode check:true antes"), true);
+        : out(fail("cv_apply_patch", `${summary}git apply failed (exit ${r.code}):\n${trimOut(r.se, 3000)}`, "confira o diff (paths relativos, contexto); rode check:true antes"), true);
     } finally {
       try {
         await unlink(tmp);
@@ -471,9 +471,9 @@ reg("n_apply_patch", {
   },
 });
 
-// ---- n_bash ----
-reg("n_bash", {
-  description: "Executa shell (bash -lc) no repo root: git, npm, node, curl. Roda como o usuário do servidor (veja `as:` no output; file tools rodam como o mesmo usuário — confira `as:` em n_write). Retorna exit+stdout (cap 20k, até 100k via maxOutput)+stderr. Colapsa repetições consecutivas ([xN]) e barras de progresso (tail/stderr integrais; sem repetição sai idêntico). Quando usar: comandos/validação/git; p/ ler arquivos prefira n_read/n_grep. Timeout 120s (até 600s); tarefa longa use n_manage_background_process. Suporta env/retries/workdir. sleep PROIBIDO (regra global: não espere, monitore — polling de status/log).",
+// ---- cv_bash ----
+reg("cv_bash", {
+  description: "Executa shell (bash -lc) no repo root: git, npm, node, curl. Roda como o usuário do servidor (veja `as:` no output; file tools rodam como o mesmo usuário — confira `as:` em cv_write). Retorna exit+stdout (cap 20k, até 100k via maxOutput)+stderr. Colapsa repetições consecutivas ([xN]) e barras de progresso (tail/stderr integrais; sem repetição sai idêntico). Quando usar: comandos/validação/git; p/ ler arquivos prefira cv_read/cv_grep. Timeout 120s (até 600s); tarefa longa use cv_manage_background_process. Suporta env/retries/workdir. sleep PROIBIDO (regra global: não espere, monitore — polling de status/log).",
   inputSchema: {
     type: "object",
     properties: {
@@ -482,22 +482,22 @@ reg("n_bash", {
       workdir: { type: "string", description: "Alias de cwd (mesma coisa; prefira cwd). Working directory (default: repo root)" },
       env: { type: "object", description: "Vars extras de ambiente (merge com process.env). Ex: {\"NODE_ENV\":\"test\"}" },
       retries: { type: "number", description: "0-2, re-tenta se exit!=0. Ex: 1 p/ comandos flaky" },
-      timeout: { type: "number", description: "Timeout ms (default 120000, máx 600000). Ex: 30000 p/ comandos rápidos, 600000 p/ npm install/build; p/ mais que isso rode em background com n_manage_background_process" },
+      timeout: { type: "number", description: "Timeout ms (default 120000, máx 600000). Ex: 30000 p/ comandos rápidos, 600000 p/ npm install/build; p/ mais que isso rode em background com cv_manage_background_process" },
       maxOutput: { type: "number", description: "Max chars of stdout (default 20000, máx 100000). Ex: 100000 p/ saídas grandes (diff, logs)" },
     },
     required: ["command"],
   },
   run: async ({ command, cwd, workdir, env, retries, timeout, maxOutput }) => {
     if (typeof command !== "string" || !command.trim())
-      return out(fail("n_bash", "command is required (string, non-empty)", "passe um comando shell válido; ex: {command:\"git status --porcelain\"}"), true);
+      return out(fail("cv_bash", "command is required (string, non-empty)", "passe um comando shell válido; ex: {command:\"git status --porcelain\"}"), true);
     if (SLEEP_RE.test(command)) // sleep proibido (regra do dono, global): erro LOCAL instantâneo, antes do bash
-      return out(fail("n_bash", "sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE", "dispare a ação e confirme com polling curto (tarefa longa: n_manage_background_process {action:\"start\"} + read_logs, ou nohup cmd > log 2>&1 & e tail do log; para BUSCAR a palavra sleep no código use n_grep)"), true);
+      return out(fail("cv_bash", "sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE", "dispare a ação e confirme com polling curto (tarefa longa: cv_manage_background_process {action:\"start\"} + read_logs, ou nohup cmd > log 2>&1 & e tail do log; para BUSCAR a palavra sleep no código use cv_grep)"), true);
     const dirArg = workdir ?? cwd;
     let base;
     try {
       base = dirArg ? fpath(dirArg) : CWD;
     } catch (e) {
-      return out(fail("n_bash", `invalid workdir/cwd: ${e.message}`, "use caminho relativo ao repo ou absoluto válido"), true);
+      return out(fail("cv_bash", `invalid workdir/cwd: ${e.message}`, "use caminho relativo ao repo ou absoluto válido"), true);
     }
     const extraEnv =
       env && typeof env === "object" && !Array.isArray(env)
@@ -521,7 +521,7 @@ reg("n_bash", {
     const collapsed = collapseBash(r.so); // RLE [xN] + progresso→last; tail/stderr integrais; sem repetição = idêntico
     const soSrc = collapsed.text;
     const collapseNote = collapsed.saved > 0 ? `, collapsed ${r.so.length}→${soSrc.length}` : "";
-    const so = soSrc.length > cap ? soSrc.slice(0, cap) + `\n...[truncated ${soSrc.length - cap} chars; run again with maxOutput=${cap} (máx 100000) ou use n_read/n_grep p/ arquivos]` : soSrc;
+    const so = soSrc.length > cap ? soSrc.slice(0, cap) + `\n...[truncated ${soSrc.length - cap} chars; run again with maxOutput=${cap} (máx 100000) ou use cv_read/cv_grep p/ arquivos]` : soSrc;
     const se = r.se.length > capErr ? r.se.slice(0, capErr) + `\n...[truncated ${r.se.length - capErr} chars]` : r.se;
     let msg = `exit=${r.error ? `spawn-error: ${r.error} (cwd=${base})` : r.killed ? "timeout" : r.code} (as ${RUN_AS}, ${elapsed}s, ${r.so.length} chars stdout${collapseNote})\n--- stdout ---\n${so}\n--- stderr ---\n${se}`;
     if (tries > 0) msg += `\n(tentativa ${attempt + 1}/${tries + 1})`;
@@ -529,18 +529,18 @@ reg("n_bash", {
       msg += `\n--- progresso antes do timeout (${elapsed}s / ${Math.round(timeoutMs / 1000)}s, ${r.so.length} chars) ---\n${r.so.length ? r.so.slice(-800) : "(sem stdout)"}`;
       // #50: host (opencode) corta a RESPOSTA em ~170s — timeout maior que isso nunca volta sync.
       msg += timeoutMs > 165000
-        ? `\nHOST-GUARD: timeout pedido (${Math.round(timeoutMs / 1000)}s) passa do teto de resposta do host (~170s) — sync NUNCA volta acima disso. Rode em background: n_manage_background_process({action:"start", command:"..."}) + read_logs/stop.`
-        : `\ntimeout em ${Math.round(timeoutMs / 1000)}s — aumente com timeout até 600000 (10min) ou rode a tarefa longa em background sem bloquear: n_manage_background_process({action:"start", command:"..."}) e acompanhe com {action:"read_logs"}/{action:"stop"}; encadeie comandos dependentes com &&`;
+        ? `\nHOST-GUARD: timeout pedido (${Math.round(timeoutMs / 1000)}s) passa do teto de resposta do host (~170s) — sync NUNCA volta acima disso. Rode em background: cv_manage_background_process({action:"start", command:"..."}) + read_logs/stop.`
+        : `\ntimeout em ${Math.round(timeoutMs / 1000)}s — aumente com timeout até 600000 (10min) ou rode a tarefa longa em background sem bloquear: cv_manage_background_process({action:"start", command:"..."}) e acompanhe com {action:"read_logs"}/{action:"stop"}; encadeie comandos dependentes com &&`;
     }
     const isErr = !!(r.error || r.killed || r.code !== 0);
     // dica curta e só em falha (nunca em sucesso; no timeout o bloco acima já orienta — sem duplicar)
-    return out(isErr ? fail("n_bash", msg, r.killed ? "" : "timeout até 600000 p/ tarefa longa ou background via n_manage_background_process; && p/ dependentes; p/ arquivos use n_read/n_grep") : msg, isErr);
+    return out(isErr ? fail("cv_bash", msg, r.killed ? "" : "timeout até 600000 p/ tarefa longa ou background via cv_manage_background_process; && p/ dependentes; p/ arquivos use cv_read/cv_grep") : msg, isErr);
   },
 });
 
-// ---- n_glob ----
-reg("n_glob", {
-  description: "Acha arquivos por glob (** suportado, até 500). Quando usar: descobrir arquivos de um módulo/teste antes de n_read. Ex: {pattern:\"src/**/*.test.js\"}. Para topologia geral prefira n_get_architecture_summary.",
+// ---- cv_glob ----
+reg("cv_glob", {
+  description: "Acha arquivos por glob (** suportado, até 500). Quando usar: descobrir arquivos de um módulo/teste antes de cv_read. Ex: {pattern:\"src/**/*.test.js\"}. Para topologia geral prefira cv_get_architecture_summary.",
   inputSchema: {
     type: "object",
     properties: {
@@ -592,9 +592,9 @@ reg("n_glob", {
   },
 });
 
-// ---- n_grep ----
-reg("n_grep", {
-  description: "Busca regex no conteúdo (path:line:trecho ≤300 chars, maxResults 100, include glob, ignoreCase). Quando usar: localizar símbolo/uso antes de n_analyze_change_impact; achar config/erro. Rank por relevância: nome do arquivo > conteúdo, match exato > parcial (mesmo nº de hits, melhores primeiro). Para causa raiz com ranking use n_investigate_issue (12→1). Ex: {pattern:\"syncAll\", path:\"src\"}.",
+// ---- cv_grep ----
+reg("cv_grep", {
+  description: "Busca regex no conteúdo (path:line:trecho ≤300 chars, maxResults 100, include glob, ignoreCase). Quando usar: localizar símbolo/uso antes de cv_analyze_change_impact; achar config/erro. Rank por relevância: nome do arquivo > conteúdo, match exato > parcial (mesmo nº de hits, melhores primeiro). Para causa raiz com ranking use cv_investigate_issue (12→1). Ex: {pattern:\"syncAll\", path:\"src\"}.",
   inputSchema: {
     type: "object",
     properties: {
@@ -613,14 +613,14 @@ reg("n_grep", {
     try {
       rx = new RegExp(pattern, ignoreCase ? "i" : "");
     } catch (e) {
-      return out(fail("n_grep", `invalid regex: ${e.message}`, "valide a regex; escape caracteres especiais"), true);
+      return out(fail("cv_grep", `invalid regex: ${e.message}`, "valide a regex; escape caracteres especiais"), true);
     }
     const p = fpath(path || CWD);
     let st;
     try {
       st = await stat(p);
     } catch (e) {
-      return out(fail("n_grep", `path not found: ${e.message}`, "confira o path; use n_glob/n_list p/ achar o caminho"), true);
+      return out(fail("cv_grep", `path not found: ${e.message}`, "confira o path; use cv_glob/cv_list p/ achar o caminho"), true);
     }
     const cap = maxResults || 100;
     const ctx = Math.min(Math.max(Number(context) || 0, 0), 10);

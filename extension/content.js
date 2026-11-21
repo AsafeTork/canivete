@@ -1753,7 +1753,7 @@ function ubShortWarn(chars, raw) {
     let domLen = 0;
     try { domLen = (((document.body && document.body.textContent) || "").replace(/\s+/g, " ").trim()).length; } catch {}
     if (chars >= 200 || domLen <= 2000) return "";
-    return `texto curto (${chars} chars) p/ pagina grande — tente ${raw ? "n_ubrowser_snapshot" : 'mode:"raw" ou n_ubrowser_snapshot'}`;
+    return `texto curto (${chars} chars) p/ pagina grande — tente ${raw ? "cv_ubrowser_snapshot" : 'mode:"raw" ou cv_ubrowser_snapshot'}`;
   } catch { return ""; }
 }
 // ---- read principal: container principal sem nav/footer/ads/scripts + links com texto (máx 15) ----
@@ -2646,7 +2646,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         reply({ ok: true, data: o });
         return;
       }
-      // #64b: selector escopa a leitura a um container (paridade com n_browser_screenshot).
+      // #64b: selector escopa a leitura a um container (paridade com cv_browser_screenshot).
       let scopeEl = null;
       if (a.selector) {
         scopeEl = findEl(String(a.selector));

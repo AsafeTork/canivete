@@ -1,76 +1,48 @@
-# TOOLS — catálogo gerado a partir do código
+# TOOLS — catálogo MCP público do Canivete
 
 > GERADO AUTOMATICAMENTE por `node scripts/gen-catalog.mjs` — NÃO EDITE MANUALMENTE.
-> Fonte: parse estático de `reg("n_*", { description: ... })` em `src/lib/*.mjs` + `src/server.mjs` (sem importar o servidor — importar `src/server.mjs` registra tudo e mantém o processo vivo via watch/readline).
-> Total: 56 tools ativos (+10 n_task* com CANIVETE_TASK_ENABLE=1 = 66). Gerado em 2026-10-29.
+> Fonte: `tools/list` construído pelo registro real do servidor (`node src/server.mjs --catalog`). Executores antigos podem continuar como aliases ocultos para compatibilidade.
+> Total: 36 tools ativas; 40 com a família opcional de tarefas habilitada. Gerado em 2026-11-21.
 
-| nome | arquivo | descrição (1ª frase) |
-|---|---|---|
-| `n_analyze_change_impact` | `src/lib/devengine.mjs` | DevEngine: impacto de editar símbolo — callers + tests_affected. |
-| `n_apply_patch` | `src/lib/fs.mjs` | Aplica unified diff via `git apply` NO REPO ROOT (multi-arquivo, reverse opcional). |
-| `n_apply_semantic_patch` | `src/lib/devengine.mjs` | DevEngine: edição AST-validada (node --check, skip JSX). |
-| `n_bash` | `src/lib/fs.mjs` | Executa shell (bash -lc) no repo root: git, npm, node, curl. |
-| `n_browser_act` | `src/lib/tools-browser.mjs` | Interage via CDP: goto/back/forward/reload/click/fill/press/scroll/wait/wait_selector/evaluate. |
-| `n_browser_contrast` | `src/lib/tools-browser.mjs` | Contraste REAL medido em PIXEL (nao no DOM): captura o clip do elemento, decodifica o PNG em JS puro e compara a mediana do anel da borda com a do miolo -> razao WCAG 2.1. |
-| `n_browser_navigate` | `src/lib/tools-browser.mjs` | Navega com Chrome headless (renderiza JS/SPA) e retorna título+texto+links. |
-| `n_browser_pdf` | `src/lib/tools-browser.mjs` | Gera PDF da página via Chrome headless. |
-| `n_browser_screenshot` | `src/lib/tools-browser.mjs` | Captura PNG da página ou só de um elemento (selector CSS via clip). |
-| `n_browser_snapshot` | `src/lib/tools-browser.mjs` | Lista elementos interativos da página (ref, tag, texto, selector) para usar em n_browser_act. |
-| `n_cep` | `src/lib/apis.mjs` | Busca CEP brasileiro (ViaCEP, cache 7 dias, com retry). |
-| `n_cnpj` | `src/lib/apis.mjs` | Consulta CNPJ (ReceitaWS, cache 7 dias, rate-limited, com retry). |
-| `n_codespace_create` | `src/lib/tools-codespace.mjs` | Cria codespace do ambiente de testes (default basicLinux32gb 2-core/8GB; idle-timeout mata ócio e economiza cota). |
-| `n_codespace_delete` | `src/lib/tools-codespace.mjs` | APAGA codespace (estado+arquivos não commitados somem — commit antes!). |
-| `n_codespace_exec` | `src/lib/tools-codespace.mjs` | Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. |
-| `n_codespace_list` | `src/lib/tools-codespace.mjs` | Lista contas gh logadas + codespaces do ambiente de testes universal (2-core/8GB grátis 60h/mês via cota GitHub). |
-| `n_codespace_login` | `src/lib/tools-codespace.mjs` | Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. |
-| `n_codespace_login_status` | `src/lib/tools-codespace.mjs` | Confere o job do n_codespace_login: a conta esperada virou válida? |
-| `n_codespace_stop` | `src/lib/tools-codespace.mjs` | Para codespace (congela; storage continua a contar, compute parado de grátis). |
-| `n_ctx_status` | `src/server.mjs` | A LLM manipula o próprio contexto: mostra gasto da sessão (calls, chars, ~tokens por tool) vs orçamento CANIVETE_CTX_BUDGET. |
-| `n_currency` | `src/lib/apis.mjs` | Taxa de câmbio/conversão (ECB/Frankfurter, diário, cache 1h). |
-| `n_edit` | `src/lib/fs.mjs` | Troca texto exato (oldString→newString, replaceAll default true, dryRun conta matches). |
-| `n_elemreports_list` | `src/lib/elemreports.mjs` | Reports persistentes de ELEMENTO de um site (marcações que o dono fez na página viva via extensão, com anotação do que está errado). |
-| `n_elemreports_resolve` | `src/lib/elemreports.mjs` | Move UM report de elemento no ciclo de vida com PROVA: "em_resolução" (trabalho iniciado) ou "resolvido" (default; exige proof = antes/depois) — resolvido some do highlight na página (a extensão re-synca sozinha) e vira histórico, nunca apaga. |
-| `n_execute_targeted_tests` | `src/lib/devengine.mjs` | DevEngine: executa testes com detecção de runner (vitest/jest/mocha via devDependencies). |
-| `n_find_tools` | `src/server.mjs` | Busca local de tools por keyword (tool-search enxuto). |
-| `n_get_architecture_summary` | `src/lib/devengine.mjs` | DevEngine: topologia leve do projeto (package.json + scans de features/functions, sem ler arquivos inteiros). |
-| `n_github` | `src/lib/apis.mjs` | API do GitHub (REST, somente leitura). |
-| `n_glob` | `src/lib/fs.mjs` | Acha arquivos por glob (** suportado, até 500). |
-| `n_grep` | `src/lib/fs.mjs` | Busca regex no conteúdo (path:line:trecho ≤300 chars, maxResults 100, include glob, ignoreCase). |
-| `n_inspect_ui_state` | `src/lib/devengine.mjs` | DevEngine: checagem HTTP da UI (status + conteúdo). |
-| `n_investigate_issue` | `src/lib/devengine.mjs` | DevEngine: busca keyword OR (12 hits→3) com score por proximidade (mesma linha > mesmo arquivo) + bônus nome-arquivo/símbolo + penalidade vendor + porquê 1 linha. |
-| `n_ipinfo` | `src/lib/apis.mjs` | Geolocalização de IP (ip-api.com, 45 req/min, cache 10min, com retry). |
-| `n_list` | `src/lib/fs.mjs` | Lista árvore de diretório com tamanhos (depth 1-6, maxLines 1500). |
-| `n_list_models` | `src/lib/tasks.mjs` | PASSO 1 antes de n_task: lista modelos disponíveis. |
-| `n_manage_background_process` | `src/lib/devengine.mjs` | DevEngine: start/stop/restart/status/read_logs de servidores sem bloquear. |
-| `n_npm` | `src/lib/apis.mjs` | Info do pacote npm (cache 1h, com retry). |
-| `n_orchestrate_task` | `src/lib/devengine.mjs` | DevEngine: DAG de tarefas com checkpoint/resume/rollback (git stash). |
-| `n_plan` | `src/lib/tasks.mjs` | Plan mode cannot be toggled from an MCP server; use /plan in the TUI. |
-| `n_question` | `src/lib/tasks.mjs` | Registra pergunta p/ o usuário. |
-| `n_read` | `src/lib/fs.mjs` | Lê arquivo texto com números de linha (offset/limit, raw, maxChars até 100k) ou lista diretório simples. |
-| `n_report` | `src/lib/feedback.mjs` | Reporta refinação p/ a ferramenta (inbox global). |
-| `n_skill` | `src/lib/tasks.mjs` | Carrega SKILL.md por nome. |
-| `n_task` | `src/lib/tasks.mjs` | Subagente isolado. |
-| `n_task_delete` | `src/lib/tasks.mjs` | Exclui task(s)+mailbox p/ organizar. |
-| `n_task_notifications` | `src/lib/tasks.mjs` | Lê notifs de tasks + correio dormindo. |
-| `n_task_peek` | `src/lib/tasks.mjs` | Espia mailbox SEM esvaziar. |
-| `n_task_recv` | `src/lib/tasks.mjs` | Lê e esvazia mailbox (destrutivo). |
-| `n_task_send` | `src/lib/tasks.mjs` | Envia msg p/ mailbox (não-bloqueante). |
-| `n_task_status` | `src/lib/tasks.mjs` | Lista subagentes (id\|status\|tools\|elapsed\|modelo) ou detalha 1. |
-| `n_task_tail` | `src/lib/tasks.mjs` | Mostra o que o subagente está GERANDO agora (transcrição parcial ao vivo via arquivo de saída). |
-| `n_task_wait` | `src/lib/tasks.mjs` | Aguarda subagentes e retorna resultados. |
-| `n_todo` | `src/lib/tasks.mjs` | Read the in-memory task list. |
-| `n_todowrite` | `src/lib/tasks.mjs` | Substitui (replace, padrão) ou mescla (append por content igual) a lista in-memory. |
-| `n_tools_info` | `src/server.mjs` | Catálogo agrupado do canivete: filesystem+exec, web/APIs sem chave, orquestração, DevEngine, browsers e meta. |
-| `n_ubrowser_act` | `src/lib/tools-owner.mjs` | AUTOMAÇÃO no Chrome LOGADO do dono (só quando ele pedir; NUNCA destrutivo sem pedido; alto risco exige confirm; FECHAR ABAS DO DONO PROIBIDO). Limitação na página (CSP, clique/fill sintético ignorado, shadow DOM/iframe) → `cdp` (Runtime.evaluate imune a CSP, Input trusted). |
-| `n_ubrowser_read` | `src/lib/tools-owner.mjs` | Lê aba do dono COM login (texto+links). |
-| `n_ubrowser_shot` | `src/lib/tools-owner.mjs` | Print da aba VISÍVEL do dono (imagem + arquivo). |
-| `n_ubrowser_snapshot` | `src/lib/tools-owner.mjs` | Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). |
-| `n_ubrowser_status` | `src/lib/tools-owner.mjs` | Status da ponte com o Chrome LOGADO do dono (extensão local). |
-| `n_ubrowser_tabs` | `src/lib/tools-owner.mjs` | Abas do Chrome do dono (id, janela, ativa?, anônima?, título, url; cada aba traz profile/label — sempre). |
-| `n_weather` | `src/lib/apis.mjs` | Previsão do tempo (Open-Meteo, cache 30min, lat/lon, 1-7 dias, com retry). |
-| `n_webfetch` | `src/lib/web.mjs` | Baixa URL SEM JS e extrai texto principal + og:price/JSON-LD (tenta <article>/<main>). |
-| `n_websearch` | `src/lib/web.mjs` | Busca web multi-backend (News, DDG, Wikipedia, HN, GitHub; cache 10min, dedupe por URL). |
-| `n_whatsapp` | `src/lib/tools-whatsapp.mjs` | WhatsApp DEDICADO: via gateway Baileys (WebSocket, sem browser) com fallback p/ Chrome logado. |
-| `n_write` | `src/lib/fs.mjs` | Cria/sobrescreve arquivo (cria pastas) como o usuário do servidor (veja `as:` no output; confira com `as:` do n_bash antes de misturar com shell). |
+| nome | grupo | descrição | modos/parâmetros |
+|---|---|---|---|
+| `cv_android_act` | Android | Age no Android conectado: toque, texto, teclas e operações de app. Uninstall/clear exigem confirmação. | serial, action, x, y, x2, y2, ms, text, key, pkg, local, remote, confirm |
+| `cv_android_connect` | Android | Pareia/conecta ADB e salva o perfil Wi-Fi do Android. | ip, port, pairPort, code |
+| `cv_android_inspect` | Android | Consulta o Android conectado: estado, hierarquia da tela ou captura. Escolha action. Para parear use cv_android_connect; para tocar ou digitar use cv_android_act. | status: ; extract: serial, max, fields; screen: serial |
+| `cv_audio_analyze` | Mídia local | Analisa áudio LOCAL p/ montagem de vídeo (ffprobe+ffmpeg no disco — NADA sai da máquina): duração, codec/canais, loudness LUFS (ebur128) e mapa de silêncios = pontos de corte naturais. | path, silenceDb, minSilence |
+| `cv_bash` | Arquivos e comandos | Executa shell (bash -lc) no repo root: git, npm, node, curl. | command, cwd, workdir, env, retries, timeout, maxOutput |
+| `cv_browser_act` | Browser headless | Interage via CDP: goto/back/forward/reload/click/fill/press/scroll/wait/wait_selector/evaluate. | action, url, selector, text, ref, key, js, ms, direction, submit, waitMs, console |
+| `cv_browser_capture` | Browser headless | Captura a página headless como imagem/PDF ou mede contraste. Escolha action; screencast com sequência de ações continua em cv_browser_screencast. | screenshot: url, width, height, fullPage, selector, scale; pdf: url, output; contrast: url, selector, points |
+| `cv_browser_read` | Browser headless | Abre uma página no Chrome headless e lê seu conteúdo. detail=summary retorna texto e links; detail=full extrai tabelas, formulários, listas e metadados. Use snapshot para achar controles e cv_browser_act para agir. | summary: url, waitMs, cookies; full: url, selector, maxChars, maxTables, maxLinks, maxImages, maxForms |
+| `cv_browser_screencast` | Browser headless | Grava a página headless DURANTE uma interação (Page.startScreencast + ações input-trusted): frames com timestamps reais → WebM/MP4 via ffmpeg (sem ffmpeg = só frames) + meta.json. | url, width, height, scale, format, actions |
+| `cv_browser_snapshot` | Browser headless | Lista elementos interativos da página (ref, tag, texto, selector) para usar em cv_browser_act. compact:true retorna só ref\|tag\|texto sem selector (~60% menos tokens). Ex: {compact:true}. | url, max, compact |
+| `cv_code_edit` | Desenvolvimento | Altera código. Escolha action=diff para unified diff ou action=semantic para patch AST validado. | diff: patch, reverse, check, stat; semantic: file_path, dry_run, create_if_missing, edits |
+| `cv_code_inspect` | Desenvolvimento | Entende o código do projeto: arquitetura, causa provável ou impacto de uma mudança. Escolha action. | architecture: depth, focus_module; issue: symptom, stack_trace, max_depth, include, exclude_dirs, context_lines; impact: symbol_id, file_path, include, top, direction |
+| `cv_code_verify` | Desenvolvimento | Verifica o projeto ou uma UI. Escolha action=tests para executar testes direcionados ou action=ui para inspecionar estado HTTP. | tests: scope, target_path; ui: url, viewport, actions, expect, retries |
+| `cv_codespace_exec` | Codespaces | Roda comando bash DENTRO do codespace (build, npm test, smoke, git): gh codespace ssh. | name, cmd, timeoutSec, account |
+| `cv_codespace_lifecycle` | Codespaces | Cria, para ou apaga um Codespace. Escolha action; delete exige confirmação. Para comandos use cv_codespace_exec. | create: repo, branch, machine, idleMin, devcontainerPath, account; stop: name, all, account; delete: name, confirm, account |
+| `cv_codespace_login` | Codespaces | Gera Agora um LINK de 1 clique p/ logar/adicionar conta gh (scopes incl. | user, scopes, profile, manual |
+| `cv_codespace_status` | Codespaces | Consulta contas e Codespaces ou confere o resultado de um login. Escolha action=list ou action=login_status. | list: account; login_status: loginId, cancel |
+| `cv_ctx_status` | Meta | A LLM manipula o próprio contexto: mostra gasto da sessão (calls, chars, ~tokens por tool) vs orçamento CANIVETE_CTX_BUDGET. Quando usar: antes de dumps grandes; se estourar, prefira destilados/compact/max menores. | sem parâmetros |
+| `cv_elemreports_list` | Reports de elemento | Reports persistentes de ELEMENTO de um site (marcações que o dono fez na página viva via extensão, com anotação do que está errado). | base_url, status, area, grupo, q, limit, full |
+| `cv_elemreports_resolve` | Reports de elemento | Move UM report de elemento no ciclo de vida com PROVA: "em_resolução" (trabalho iniciado) ou "resolvido" (default; exige proof = antes/depois) — resolvido some do highlight na página (a extensão re-synca sozinha) e vira… | id, status, proof, por |
+| `cv_file_read` | Arquivos e comandos | Lê um arquivo, lista uma árvore ou encontra arquivos/trechos. Escolha action; para alterar conteúdo use cv_file_write; para comandos use cv_bash. | read: offset, limit, raw, maxChars, tail, grep, symbols, mode, path; tree: path, depth, maxLines, sort; search_files: pattern, cwd, maxResults, ignore, only_files; search_text: pattern, path, include, ignoreCase, maxResults, context, files_with_matches |
+| `cv_file_write` | Arquivos e comandos | Cria ou troca o conteúdo de um arquivo. Escolha action=write para criar/sobrescrever ou action=replace para uma troca textual. Para patch de código use cv_code_edit. | write: content, mkdirs, append, backup, dryRun, owner, path; replace: oldString, newString, replaceAll, dryRun, regex, backup, path |
+| `cv_help` | Meta | Ajuda do Canivete. Sem query lista capacidades por categoria; com query encontra a tool certa. detail=true mostra parâmetros e schema. | query, limit, detail |
+| `cv_lookup` | Web e consultas | Consulta uma fonte pública. Escolha source; os campos necessários mudam conforme a fonte (câmbio, CEP, CNPJ, IP, clima, GitHub ou npm). | currency: from, to, amount, invert; cep: cep; cnpj: cnpj; ipinfo: ip; weather: latitude, longitude, days, alert; github: owner, repo, kind, limit, user, path, q, scope, account; npm: package, scope |
+| `cv_manage_background_process` | Desenvolvimento | DevEngine: start/stop/restart/status/read_logs de servidores sem bloquear. | action, command, process_id, env, cwd, tail |
+| `cv_orchestrate_task` | Desenvolvimento | DevEngine: DAG de tarefas com checkpoint/resume/rollback (git stash). | action, task_id, plan, confirm |
+| `cv_owner_act` | Chrome logado do dono | Age numa aba do Chrome logado do dono. Ação separada das consultas para manter visível a fronteira de segurança. | action, off, tabId, tab, url, selector, text, profile, ref, name, container, confirmLogin, value, timeoutMs, steps, key, js, ms, x, y, click, trusted, hover, hoverMs, force, noEscalate, direction, submit, waitMs, snap, filter, limit, clear, pages, durationMs, urlPrefix, mode, expectUrl, expectText, expectGone, focused, confirm |
+| `cv_owner_alerts` | Chrome logado do dono | Lê e consome alertas pendentes da sessão Chrome do dono. | since |
+| `cv_owner_inspect` | Chrome logado do dono | Consulta o Chrome logado do dono: status, abas, texto, controles ou imagem. Escolha action. Para clicar/preencher use cv_owner_act; para consumir alertas use cv_owner_alerts. | status: open, profile, wait; tabs: filter, max, profile; read: tabId, tab, maxChars, maxLinks, mode, outline, selector; snapshot: tabId, tab, max, offset, compact, find, layer; screenshot: tabId, tab, scale |
+| `cv_report` | Meta | Reporta refinação p/ a ferramenta (inbox global). | kind, where, expected, got, repro, blockedBy, suggestedCapability, dryRun |
+| `cv_skill` | Meta | Carrega SKILL.md por nome. refresh:true só lista skills (re-scan p/ recém-criadas). | name, refresh |
+| `cv_todo` | Orquestração | Read the in-memory task list. | sem parâmetros |
+| `cv_todowrite` | Orquestração | Substitui (replace, padrão) ou mescla (append por content igual) a lista in-memory. Volátil (morre com o processo). | todos, mode |
+| `cv_webfetch` | Web e consultas | Baixa URL SEM JS e extrai texto principal + og:price/JSON-LD (tenta <article>/<main>). | url, format, maxChars, timeout, links |
+| `cv_websearch` | Web e consultas | Busca web multi-backend (News, DDG, Wikipedia, HN, GitHub, GitHub-novos, Lemmy/fediverso, npm, arXiv; cache 10min, dedupe por URL). | query, numResults, site, since, fresh, page, perPage |
+| `cv_whatsapp` | WhatsApp | WhatsApp DEDICADO: via gateway Baileys (WebSocket, sem browser) com fallback p/ Chrome logado. | action, tabId, tab, name, to, phone, text, pages, limit, data-testid |
+
+Os modos usam enums explícitos e campos específicos por operação. Para a descrição completa, use `cv_help {query, detail:true}`.
 
 _Regenerar: `node scripts/gen-catalog.mjs` · Validar: `node --check scripts/gen-catalog.mjs`_

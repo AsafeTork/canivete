@@ -42,7 +42,7 @@ try {
 } catch {}
 
 const UB_EXPECTED = "15"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
-// Versão do próprio worker (manifest): reportada no /hello + tab.diag → n_ubrowser_status
+// Versão do próprio worker (manifest): reportada no /hello + tab.diag → cv_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
 // Identidade persistente deste perfil/instância da extensão — permite à ponte
@@ -324,7 +324,7 @@ async function handle(cmd, a = {}) {
     for (const t of all) { const s = ubTabScore(needle, t); if (s !== null) scored.push({ t, s }); }
     scored.sort((x, y) => y.s - x.s);
     const found = scored.length ? scored[0].t : null;
-    if (!found) throw new Error(`aba "${a.tab}" não encontrada — veja n_ubrowser_tabs`);
+    if (!found) throw new Error(`aba "${a.tab}" não encontrada — veja cv_ubrowser_tabs`);
     a.tabId = found.id;
   }
   if (cmd === "ping") return { pong: true, url: settings.url };
@@ -956,7 +956,7 @@ async function ubTrustedClick(tabId, x, y, opts) {
   }
   if (cmd === "tab.monstate") {
     // Leitura do estado do mon-hook — func serializada pelo Chrome: CSP da página
-    // NÃO bloqueia (fecha o gap do eval-string; ver n_report rmvhj6chw).
+    // NÃO bloqueia (fecha o gap do eval-string; ver cv_report rmvhj6chw).
     const id = a.tabId || (await activeTabId());
     const [mr] = await withTimeout(chrome.scripting.executeScript({
       target: { tabId: id }, world: "MAIN",

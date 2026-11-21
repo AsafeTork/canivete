@@ -7,7 +7,7 @@
 import { createServer } from "node:http";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { TOOLS } from "./lib/ctx.mjs";
+import { TOOLS, toolCount } from "./lib/ctx.mjs";
 import { dispatchHttpItem } from "./core/rpc.mjs";
 import "./lib/fs.mjs";
 import "./lib/web.mjs";
@@ -45,7 +45,7 @@ export async function serveHttp(port, token) {
       const u = new URL(req.url || "/", "http://127.0.0.1");
       if (u.pathname === "/health" && req.method === "GET") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, tools: TOOLS.size }));
+        res.end(JSON.stringify({ ok: true, tools: toolCount() }));
         return;
       }
       if (u.pathname !== "/mcp") { res.writeHead(404); res.end("not found"); return; }
@@ -83,6 +83,6 @@ export async function serveHttp(port, token) {
     srv.on("error", rej);
     srv.listen(port, "127.0.0.1", res);
   });
-  process.stderr.write(`[canivete] remoto em http://127.0.0.1:${port}/mcp (${TOOLS.size} tools)\n`);
+  process.stderr.write(`[canivete] remoto em http://127.0.0.1:${port}/mcp (${toolCount()} tools)\n`);
   return srv;
 }

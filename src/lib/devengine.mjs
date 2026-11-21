@@ -90,7 +90,7 @@ function bgKill(entry, sig = "SIGTERM") {
 
 // ---- DevEngine tools ----
 
-reg("n_get_architecture_summary", {
+reg("cv_get_architecture_summary", {
   description: "DevEngine: topologia leve do projeto (package.json + scans de features/functions, sem ler arquivos inteiros). Quando usar: entender arquitetura antes de qualquer tarefa. Retorna stack, entrypoints, features, EFs e padrões.",
   inputSchema: {
     type: "object",
@@ -122,7 +122,7 @@ reg("n_get_architecture_summary", {
     if (deps.typescript) stack.lang = `typescript ${deps.typescript}`;
     if (deps.vitest) stack.test = `vitest ${deps.vitest}`;
     if (deps.tailwindcss) stack.css = `tailwindcss ${deps.tailwindcss}`;
-    if (!Object.keys(stack).length) stack.note = "sem deps JS reconhecíveis em package.json — use n_list para mapear";
+    if (!Object.keys(stack).length) stack.note = "sem deps JS reconhecíveis em package.json — use cv_list para mapear";
     const entrypoints = ["src/main.jsx", "src/App.jsx", "src/routes/routes.jsx", "supabase/functions", "server.cjs"].filter((e) => existsSync(join(CWD, e)));
     const patterns = [];
     if (deps.dexie || existsSync(join(CWD, "src/lib/dexie.js"))) patterns.push("offline-first (Dexie IndexedDB)");
@@ -144,14 +144,14 @@ reg("n_get_architecture_summary", {
       summary: `Arquitetura ${pkg.name || basename(CWD)} v${pkg.version || "?"}: ${feats.length} features, ${fns.length} edge functions`,
       data,
       telemetry: { tokens_saved: Math.max(0, tradTokens - devTokens), execution_time_ms: Date.now() - t0, trad_tokens_est: tradTokens, dev_tokens: devTokens },
-      next: [{ tool: "n_investigate_issue", reason: "Localizar causa raiz sem varredura manual" }],
+      next: [{ tool: "cv_investigate_issue", reason: "Localizar causa raiz sem varredura manual" }],
       refs: entrypoints.slice(0, 3).map((e) => `${e}:1`),
     });
   },
 });
 
-reg("n_investigate_issue", {
-  description: "DevEngine: busca keyword OR (12 hits→3) com score por proximidade (mesma linha > mesmo arquivo) + bônus nome-arquivo/símbolo + penalidade vendor + porquê 1 linha. Quando usar: bug/erro com symptom. Retorna candidatos ranqueados. Limite: NÃO é grafo de chamadas nem busca semântica — para caso simples prefira n_grep.",
+reg("cv_investigate_issue", {
+  description: "DevEngine: busca keyword OR (12 hits→3) com score por proximidade (mesma linha > mesmo arquivo) + bônus nome-arquivo/símbolo + penalidade vendor + porquê 1 linha. Quando usar: bug/erro com symptom. Retorna candidatos ranqueados. Limite: NÃO é grafo de chamadas nem busca semântica — para caso simples prefira cv_grep.",
   inputSchema: {
     type: "object",
     properties: {
@@ -379,13 +379,13 @@ reg("n_investigate_issue", {
       summary: hits.length ? `Causa provável em ${hits[0].file}:${hits[0].line} (${hits.length} candidatos)` : `Nenhum candidato para "${String(symptom).slice(0, 80)}"`,
       data: { symptom, candidates: hits.slice(0, 3), total_scanned: files.length },
       telemetry: { tokens_saved: Math.max(0, files.length * 120 - hits.length * 80), execution_time_ms: Date.now() - t0 },
-      next: hits.length ? [{ tool: "n_analyze_change_impact", reason: "Verificar impacto antes de editar" }] : [{ tool: "n_get_architecture_summary", reason: "Mapear módulos relevantes" }],
+      next: hits.length ? [{ tool: "cv_analyze_change_impact", reason: "Verificar impacto antes de editar" }] : [{ tool: "cv_get_architecture_summary", reason: "Mapear módulos relevantes" }],
       refs,
     });
   },
 });
 
-reg("n_analyze_change_impact", {
+reg("cv_analyze_change_impact", {
   description: "DevEngine: impacto de editar símbolo — callers + tests_affected. Quando usar: ANTES de editar função/componente. Suporta include (glob), top (default 15, máx 50) e direction callers|callees (callees = imports do arquivo via import/require, top 10). Ex: {symbol_id:\"src/lib/sync.js#syncAll\"}. Evita regressões.",
   inputSchema: {
     type: "object",
@@ -469,7 +469,7 @@ reg("n_analyze_change_impact", {
         summary: `${callees.length} dependência(s) importada(s) por ${targetFile}`,
         data: { target, file: targetFile, direction: dir, callees, include: include || null, files_scanned: 1 },
         telemetry: { tokens_saved: 0, execution_time_ms: Date.now() - t0 },
-        next: [{ tool: "n_apply_semantic_patch", reason: "Aplicar edição validada por AST" }],
+        next: [{ tool: "cv_apply_semantic_patch", reason: "Aplicar edição validada por AST" }],
         refs: [`${targetFile}:1`],
       });
     }
@@ -478,7 +478,7 @@ reg("n_analyze_change_impact", {
     try {
       rx = new RegExp(`\\b${escapeRe(sym)}\\b`);
     } catch {
-      return devOut({ status: "error", summary: `símbolo inválido: "${sym}" (recebido: "${target}") — dica: n_analyze_change_impact symbol_id="src/lib/sync.js#syncAll" ou file_path="src/..."`, data: { target, symbol: sym }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ status: "error", summary: `símbolo inválido: "${sym}" (recebido: "${target}") — dica: cv_analyze_change_impact symbol_id="src/lib/sync.js#syncAll" ou file_path="src/..."`, data: { target, symbol: sym }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const files = [];
     walkFiles(CWD, files);
@@ -505,14 +505,14 @@ reg("n_analyze_change_impact", {
       summary: `${callers.length} referência(s) a "${sym}" | ${tests.length} teste(s) afetado(s)`,
       data: { target, symbol: sym, direction: dir, include: include || null, top: topN, callers: callerRefs, tests_affected: tests.slice(0, 10), public_api: callerRefs.filter((c) => c.includes("export")).slice(0, 5), files_scanned: files.length, capped: files.length >= WALK_CAP ? `cap ${WALK_CAP} — refine path p/ precisão` : false },
       telemetry: { tokens_saved: Math.max(0, callerRefs.length * 60), execution_time_ms: Date.now() - t0 },
-      next: [{ tool: "n_apply_semantic_patch", reason: "Aplicar edição validada por AST" }],
+      next: [{ tool: "cv_apply_semantic_patch", reason: "Aplicar edição validada por AST" }],
       refs: callerRefs.slice(0, 3).map((c) => c.split(":").slice(0, 2).join(":")),
     });
   },
 });
 
-reg("n_apply_semantic_patch", {
-  description: "DevEngine: edição AST-validada (node --check, skip JSX). Quando usar: trocar função/constante; quer validação sintática. Suporta dry_run:true (valida sem escrever) e create_if_missing:true (cria com mkdirs). Ex: {file_path, edits:[{target_symbol, new_code}]}. Mais seguro que n_edit p/ código.",
+reg("cv_apply_semantic_patch", {
+  description: "DevEngine: edição AST-validada (node --check, skip JSX). Quando usar: trocar função/constante; quer validação sintática. Suporta dry_run:true (valida sem escrever) e create_if_missing:true (cria com mkdirs). Ex: {file_path, edits:[{target_symbol, new_code}]}. Mais seguro que cv_edit p/ código.",
   inputSchema: {
     type: "object",
     properties: {
@@ -574,7 +574,7 @@ reg("n_apply_semantic_patch", {
           diffs.push(`symbol:${e.target_symbol}`);
         } else {
           const cnt = nextText.split(oldS).length - 1;
-          if (cnt === 0) return devOut({ status: "error", summary: `oldString não encontrado em ${file_path} — dica: n_read filePath="${file_path}" e copie trecho exato`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
+          if (cnt === 0) return devOut({ status: "error", summary: `oldString não encontrado em ${file_path} — dica: cv_read filePath="${file_path}" e copie trecho exato`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
           if (cnt > 1) return devOut({ status: "error", summary: `oldString ambíguo (${cnt}x) — use mais contexto`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
           nextText = nextText.replace(oldS, newS);
           diffs.push(`exact:${oldS.slice(0, 40)}`);
@@ -600,7 +600,7 @@ reg("n_apply_semantic_patch", {
         summary: `Dry-run OK em ${file_path} (${(edits || []).length} hunk(s)) — AST válido, nada escrito`,
         data: { file: file_path, hunks: diffs, preview, dry_run: true, created_would_be: isNew, bytes: Buffer.byteLength(nextText) },
         telemetry: { tokens_saved: 0, execution_time_ms: Date.now() - t0 },
-        next: [{ tool: "n_execute_targeted_tests", reason: "Validar apenas testes afetados" }],
+        next: [{ tool: "cv_execute_targeted_tests", reason: "Validar apenas testes afetados" }],
         refs: [`${file_path}:1`],
       });
     }
@@ -608,19 +608,19 @@ reg("n_apply_semantic_patch", {
       if (isNew) await mkdir(dirname(p), { recursive: true });
       await atomicWriteFile(p, nextText, "utf8"); // atômico: ENOSPC não zera o original (#49)
     } catch (e) {
-      return devOut({ status: "error", summary: `write failed em ${file_path}: ${e.message} — dica: n_read filePath="${file_path}" + retry n_apply_semantic_patch {create_if_missing:true}`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ status: "error", summary: `write failed em ${file_path}: ${e.message} — dica: cv_read filePath="${file_path}" + retry cv_apply_semantic_patch {create_if_missing:true}`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     return devOut({
       summary: isNew ? `Arquivo criado em ${file_path} (${(edits || []).length} hunk(s)) — AST OK` : `Patch semântico aplicado em ${file_path} (${edits.length} hunk(s)) — AST OK`,
       data: { file: file_path, hunks: diffs, preview, bytes: Buffer.byteLength(nextText), created: isNew },
       telemetry: { tokens_saved: estTokens(text) - estTokens(nextText), execution_time_ms: Date.now() - t0 },
-      next: [{ tool: "n_execute_targeted_tests", reason: "Validar apenas testes afetados" }],
+      next: [{ tool: "cv_execute_targeted_tests", reason: "Validar apenas testes afetados" }],
       refs: [`${file_path}:1`],
     });
   },
 });
 
-reg("n_execute_targeted_tests", {
+reg("cv_execute_targeted_tests", {
   description: "DevEngine: executa testes com detecção de runner (vitest/jest/mocha via devDependencies). Quando usar: validar mudança. diff_only usa script test:changed ou flag --changed do runner; module roda 1 arquivo (target_path); full roda a suíte. Erro claro se nenhum runner detectado. Retorna exit+stdout com contagem pass/fail por runner.",
   inputSchema: {
     type: "object",
@@ -691,13 +691,13 @@ reg("n_execute_targeted_tests", {
       summary,
       data: { scope: sc, runner, comando: cmd, exit: r.code, passed, failed, stdout: trimOut(r.so, 6000), stderr: trimOut(r.se, 2000) },
       telemetry: { tokens_saved: sc === "diff_only" ? 3500 : 0, execution_time_ms: Date.now() - t0 },
-      next: r.code !== 0 ? [{ tool: "n_investigate_issue", reason: "Investigar falha estruturada" }] : [{ tool: "n_orchestrate_task", reason: "Checkpoint DAG" }],
+      next: r.code !== 0 ? [{ tool: "cv_investigate_issue", reason: "Investigar falha estruturada" }] : [{ tool: "cv_orchestrate_task", reason: "Checkpoint DAG" }],
       refs: target_path ? [target_path] : ["vitest.config.js:1"],
     });
   },
 });
 
-reg("n_manage_background_process", {
+reg("cv_manage_background_process", {
   description: "DevEngine: start/stop/restart/status/read_logs de servidores sem bloquear. Quando usar: dev server, build watch, worker. Ex: {action:\"start\", command:\"npm run dev\", cwd:\"/proj/app\"}. restart reusa command+cwd. read_logs aceita tail (chars). Tracker reanexa processo vivo após restart do servidor (logs anteriores indisponíveis). Limite: stdin ignore — send NÃO escreve stdin; use env no start/restart.",
   inputSchema: {
     type: "object",
@@ -715,7 +715,7 @@ reg("n_manage_background_process", {
     const t0 = Date.now();
     const startOne = (cmd, extraEnv, cwdArg) => {
       if (SLEEP_RE.test(String(cmd || ""))) // sleep proibido (regra do dono, global): erro local antes do spawn
-        return { error: `sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE: dispare a ação e confirme com polling (read_logs/status; p/ eventos use n_task_wait, nunca espera cega)` };
+        return { error: `sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE: dispare a ação e confirme com polling (read_logs/status; p/ eventos use cv_task_wait, nunca espera cega)` };
       const id = `bg${Date.now().toString(36)}`;
       let base = CWD;
       if (cwdArg) {
@@ -740,7 +740,7 @@ reg("n_manage_background_process", {
       if (env !== undefined && (typeof env !== "object" || env === null || Array.isArray(env))) return devOut({ status: "error", summary: "env deve ser objeto string→string (ex: {PORT:\"3001\"})", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
       const s = startOne(command, env, cwd);
       if (s.error) return devOut({ status: "error", summary: s.error, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-      return devOut({ summary: `Processo ${s.id} iniciado: ${command} (PID ${s.child.pid}, cwd ${s.cwd})`, data: { process_id: s.id, pid: s.child.pid, command, cwd: s.cwd, env: env || {} }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_inspect_ui_state", reason: "Validar UI em runtime" }], refs: [] });
+      return devOut({ summary: `Processo ${s.id} iniciado: ${command} (PID ${s.child.pid}, cwd ${s.cwd})`, data: { process_id: s.id, pid: s.child.pid, command, cwd: s.cwd, env: env || {} }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_inspect_ui_state", reason: "Validar UI em runtime" }], refs: [] });
     }
     if (action === "status") {
       const all = [...bgProcs.entries()].map(([id, v]) => ({ id, pid: v.child ? v.child.pid : v.pid, killed: v.child ? v.child.killed : undefined, exitCode: v.child ? v.child.exitCode : undefined, command: v.command, cwd: v.cwd, reattached: !!v.reattached, startedAt: v.startedAt }));
@@ -752,7 +752,7 @@ reg("n_manage_background_process", {
     const id = process_id;
     let entry = bgProcs.get(id) || bgReattach(id);
     const wasReattached = !!entry?.reattached;
-    if (!entry) return devOut({ status: "error", summary: `processo ${id} não encontrado (nem vivo no registro) — veja n_manage_background_process({action:\"status\"})`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!entry) return devOut({ status: "error", summary: `processo ${id} não encontrado (nem vivo no registro) — veja cv_manage_background_process({action:\"status\"})`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (action === "stop") {
       bgKill(entry);
       bgProcs.delete(id);
@@ -792,7 +792,7 @@ reg("n_manage_background_process", {
   },
 });
 
-reg("n_inspect_ui_state", {
+reg("cv_inspect_ui_state", {
   description: "DevEngine: checagem HTTP da UI (status + conteúdo). Quando usar: validar se front está no ar e se contém texto esperado antes de teste manual/E2E. expect verifica substring no body (curl -s + grep, FOUND/MISSING); retries (0-3) repete com intervalo de 2s.",
   inputSchema: {
     type: "object",
@@ -834,10 +834,10 @@ reg("n_inspect_ui_state", {
     const ok = reachable && expectOk;
     const expectTxt = want ? ` expect:${found} (${want.slice(0, 80)})` : "";
     return devOut({
-      summary: ok ? `UI ${u} (${vp}) alcançável (HTTP ${code})${expectTxt} em ${attempts} tentativa(s)` : `UI ${u} offline (curl ${code || "?"}${want ? ` ${found}` : ""}) após ${attempts} tentativa(s) — inicie com n_manage_background_process`,
-      data: { url: u, viewport: vp, reachable, http_code: code, expect: want, expect_result: want ? found : "SKIP", retries: rt, attempts, hint: "n_manage_background_process({action:'start', command:'npm run dev'})" },
+      summary: ok ? `UI ${u} (${vp}) alcançável (HTTP ${code})${expectTxt} em ${attempts} tentativa(s)` : `UI ${u} offline (curl ${code || "?"}${want ? ` ${found}` : ""}) após ${attempts} tentativa(s) — inicie com cv_manage_background_process`,
+      data: { url: u, viewport: vp, reachable, http_code: code, expect: want, expect_result: want ? found : "SKIP", retries: rt, attempts, hint: "cv_manage_background_process({action:'start', command:'npm run dev'})" },
       telemetry: { execution_time_ms: Date.now() - t0 },
-      next: ok ? [{ tool: "n_investigate_issue", reason: "Se overflow/bug visual detectado, investigar símbolo" }] : [{ tool: "n_manage_background_process", reason: "Subir dev server" }],
+      next: ok ? [{ tool: "cv_investigate_issue", reason: "Se overflow/bug visual detectado, investigar símbolo" }] : [{ tool: "cv_manage_background_process", reason: "Subir dev server" }],
       refs: ["src/App.jsx:1", "playwright.config.ts:1"],
     });
   },
@@ -848,7 +848,7 @@ reg("n_inspect_ui_state", {
 // em /tmp/opencode-chrome-profile, porta 19322. Cobre: SPA com JS, snapshot de
 // elementos, click/fill/press/scroll, screenshot PNG (com imagem no retorno) e PDF.
 
-reg("n_orchestrate_task", {
+reg("cv_orchestrate_task", {
   description: "DevEngine: DAG de tarefas com checkpoint/resume/rollback (git stash). Quando usar: multi-step com rollback garantido. Ex: {action:\"init\", plan:{steps:[...]}}. rollback lista git stash list ANTES e exige confirm:true para executar.",
   inputSchema: {
     type: "object",
@@ -868,20 +868,20 @@ reg("n_orchestrate_task", {
       const entry = { id, plan: plan || {}, status: "running", startedAt: new Date().toISOString(), checkpoints: [] };
       tasks.set(id, { ...entry, description: plan?.title || "DevEngine DAG", agent: "devengine" });
       await persistTask({ id, agent: "devengine", description: plan?.title || "DAG", status: "running", startedAt: entry.startedAt, finishedAt: null, exitCode: null, tools: [], error: null, result: JSON.stringify(plan || {}) });
-      return devOut({ summary: `DAG ${id} iniciado`, data: { task_id: id, plan }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_get_architecture_summary", reason: "Mapear antes de delegar" }], refs: [] });
+      return devOut({ summary: `DAG ${id} iniciado`, data: { task_id: id, plan }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_get_architecture_summary", reason: "Mapear antes de delegar" }], refs: [] });
     }
     if (act === "checkpoint") {
       const t = resolveTask(task_id);
       if (!t) return devOut({ status: "error", summary: `task ${task_id} não encontrada`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
       const snap = await exec("bash", ["-lc", "git stash push -m \"devengine-checkpoint\" --keep-index 2>&1 | tail -5"], { timeout: 15000 });
-      return devOut({ summary: `Checkpoint ${task_id} salvo (git stash)`, data: { task_id, stash: trimOut(snap.so, 600) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_analyze_change_impact", reason: "Validar antes do próximo hunk" }], refs: [] });
+      return devOut({ summary: `Checkpoint ${task_id} salvo (git stash)`, data: { task_id, stash: trimOut(snap.so, 600) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_analyze_change_impact", reason: "Validar antes do próximo hunk" }], refs: [] });
     }
     if (act === "rollback") {
       const lst = await exec("bash", ["-lc", "git stash list 2>&1 | head -n 20"], { timeout: 15000 });
       const preview = trimOut(lst.so, 2000).trim();
       if (!preview) return devOut({ status: "error", summary: "nada a restaurar: git stash list vazio — nenhum checkpoint salvo", data: { preview: "" }, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (confirm !== true) {
-        return devOut({ status: "error", summary: `Rollback NÃO executado: passe confirm:true para restaurar o topo do stash. Prévia abaixo`, data: { preview, stash_list: preview, dica: 'n_orchestrate_task({action:"rollback", confirm:true})' }, telemetry: { execution_time_ms: Date.now() - t0 } });
+        return devOut({ status: "error", summary: `Rollback NÃO executado: passe confirm:true para restaurar o topo do stash. Prévia abaixo`, data: { preview, stash_list: preview, dica: 'cv_orchestrate_task({action:"rollback", confirm:true})' }, telemetry: { execution_time_ms: Date.now() - t0 } });
       }
       const rb = await exec("bash", ["-lc", "git stash pop 2>&1 | tail -10"], { timeout: 15000 });
       return devOut({ summary: `Rollback executado`, data: { preview, result: trimOut(rb.so, 800) }, telemetry: { execution_time_ms: Date.now() - t0 } });

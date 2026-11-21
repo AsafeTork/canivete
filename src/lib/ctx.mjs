@@ -96,24 +96,23 @@ try {
 let CWD = envStr("CANIVETE_CWD", process.cwd());
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "coverage", ".next", ".cache"]);
 const MAX_OUT = 30000;
-const UA = "Mozilla/5.0 (X11; Linux x86_64) FinanciaNative/1.0";
+const UA = "Mozilla/5.0 (X11; Linux x86_64) Canivete/1.0";
 
 // REGRA DO DONO (global): sleep é PROIBIDO — NÃO ESPERA, MONITORE. Nenhum caminho de comando
 // pode esperar cego (bash local, gh/codespace remoto, background): dispare a ação e confirme
 // com polling curto de status/log. Fonte única: SLEEP_RE + SLEEP_BLOCK (exportados; guard nas
 // entradas dos tools + rede no funil exec()).
 export const SLEEP_RE = /\bsleep\b/i;
-export const SLEEP_BLOCK = "sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE: dispare a ação e confirme com polling curto de status/log (ex: n_manage_background_process read_logs, tail do log via exec curta; tarefa longa: nohup cmd > log 2>&1 & e leia o log em chamada nova). Para BUSCAR a palavra \"sleep\" em código, use n_grep (não bash).";
+export const SLEEP_BLOCK = "sleep PROIBIDO (regra do dono, global) — NÃO ESPERA, MONITORE: dispare a ação e confirme com polling curto de status/log (ex: cv_manage_background_process read_logs, tail do log via exec curta; tarefa longa: nohup cmd > log 2>&1 & e leia o log em chamada nova). Para BUSCAR a palavra \"sleep\" em código, use cv_grep (não bash).";
 
 const TOOLS = new Map();
 
 const CTX = { calls: 0, chars: 0, byTool: new Map(), t0: Date.now() };
 const CTX_BUDGET = envNum("CANIVETE_CTX_BUDGET", 200000); // chars de saída nesta sessão
-// DOOM-GUARD: mesma signature (nome + hash(args) + hash(result.slice(0,500))) 3x consecutivas → prefixe guard.
-// Base: OpenRouter doom-loop (observe@2/block@3), NiteAgent ToolCallSignature, PraisonAI poll_no_progress. Leve: Map cap 50.
-const DOOM_POLL = new Set(["n_task_wait", "n_task_status", "n_task_tail", "n_task_recv"]);
-const DOOM_SEEN = new Map(); // sig -> streak consecutiva
+// Chamadas idênticas com resultado idêntico não precisam reenviar o mesmo texto
+// ao contexto da IA na terceira repetição. Só vale para resposta puramente textual.
 let DOOM_LAST = "";
+let DOOM_STREAK = 0;
 function doomHash(s) {
   s = String(s ?? "");
   let h = 5381;
@@ -121,12 +120,7 @@ function doomHash(s) {
   return h.toString(36);
 }
 function doomSig(name, args, resultText) {
-  return `${name}:${doomHash(JSON.stringify(args ?? null))}:${doomHash(String(resultText ?? "").slice(0, 500))}`;
-}
-function isDoomPoll(name, args) {
-  if (DOOM_POLL.has(name)) return true;
-  if (name === "n_manage_background_process" && args?.action === "read_logs") return true;
-  return false;
+  return `${name}:${doomHash(JSON.stringify(args ?? null))}:${doomHash(resultText)}`;
 }
 function reg(name, definition) {
   const orig = definition.run;
@@ -134,43 +128,29 @@ function reg(name, definition) {
     const r = await orig(args);
     try {
       // FIX 2: catálogo ganha lista de params por tool (ver annotateToolLines) — ANTES do cap p/ o teto valer no texto enriquecido.
-      if (name === "n_tools_info" && r?.content?.[0] && typeof r.content[0].text === "string") {
+      if (name === "cv_tools_info" && r?.content?.[0] && typeof r.content[0].text === "string") {
         r.content[0].text = capOut(annotateToolLines(r.content[0].text));
       }
     } catch {}
+    try {
+      if (r?.content?.length === 1 && r.content[0]?.type === "text") {
+        const resultText = String(r.content[0].text ?? "");
+        const sig = doomSig(name, args, resultText);
+        DOOM_STREAK = sig === DOOM_LAST ? DOOM_STREAK + 1 : 1;
+        DOOM_LAST = sig;
+        if (DOOM_STREAK >= 3) {
+          r.content[0].text = `[REPETIÇÃO ${DOOM_STREAK}×] ${name} devolveu o mesmo resultado para os mesmos argumentos. Consulte a resposta anterior ou mude a consulta.`;
+        }
+      } else { DOOM_LAST = ""; DOOM_STREAK = 0; }
+    } catch { DOOM_LAST = ""; DOOM_STREAK = 0; }
     try {
       CTX.calls++;
       CTX.chars += JSON.stringify(r).length;
       CTX.byTool.set(name, (CTX.byTool.get(name) || 0) + 1);
     } catch {}
-    try {
-      if (!isDoomPoll(name, args)) {
-        let resultText = "";
-        try {
-          resultText = r?.content?.[0]?.text ?? JSON.stringify(r);
-        } catch {
-          resultText = String(r ?? "");
-        }
-        const sig = doomSig(name, args, resultText);
-        const streak = sig === DOOM_LAST ? (DOOM_SEEN.get(sig) || 1) + 1 : 1;
-        DOOM_SEEN.set(sig, streak);
-        DOOM_LAST = sig;
-        if (DOOM_SEEN.size > 50) {
-          for (const k of DOOM_SEEN.keys()) {
-            if (k !== sig) {
-              DOOM_SEEN.delete(k);
-              break;
-            }
-          }
-        }
-        if (streak >= 3 && r?.content?.[0] && typeof r.content[0].text === "string") {
-          r.content[0].text = `[REPETITION GUARD] mesma chamada 3x com mesmo resultado — PARE, mude args ou abordagem\n${r.content[0].text}`;
-        }
-      }
-    } catch {}
     return r;
   };
-  TOOLS.set(name, { name, ...definition });
+  TOOLS.set(name, { name, ...definition, public: definition.public !== false, _run: orig });
 }
 
 function out(text, error) {
@@ -332,32 +312,33 @@ function hintPrefix(hint) {
   }
   return lines.length ? `${lines.join("\n")}\n` : "";
 }
-// Alternativa de recuperação pronta p/ espalhar no devOut: devOut({ status:"error", summary:..., ...fallbackHint("use n_browser_snapshot") }).
+// Alternativa de recuperação pronta p/ espalhar no devOut: devOut({ status:"error", summary:..., ...fallbackHint("use cv_browser_snapshot") }).
 function fallbackHint(alt) {
   const items = Array.isArray(alt) ? alt : [alt];
   return { hint: items.map((s) => String(s ?? "").trim()).filter(Boolean) };
 }
 
 function devOut({ status = "success", summary = "", data = {}, telemetry = {}, next = [], refs = [], hint = [] }) {
+  const usefulTelemetry = Object.fromEntries(Object.entries(telemetry).filter(([key, value]) =>
+    key !== "execution_time_ms" && !(key === "tokens_saved" && !value)));
   const payload = {
     status,
     summary,
-    data,
-    telemetry: { tokens_saved: telemetry.tokens_saved || 0, execution_time_ms: telemetry.execution_time_ms || 0, ...telemetry },
-    next_suggested_actions: next,
-    context_refs: refs,
+    ...(data && Object.keys(data).length ? { data } : {}),
+    ...(next.length ? { next_suggested_actions: next } : {}),
+    ...(refs.length ? { context_refs: refs } : {}),
+    ...(Object.keys(usefulTelemetry).length ? { telemetry: usefulTelemetry } : {}),
   };
-  // hint NÃO entra no JSON (schema estável): só nas linhas leading — ver hintPrefix.
-  return out(hintPrefix(hint) + JSON.stringify(payload, null, 2), status === "error");
+  return out(hintPrefix(hint) + JSON.stringify(payload), status === "error");
 }
 
-// FIX 2: signature truncada no harness some com o catálogo — cada tool do n_tools_info lista seus params.
-// n_x [a|b|c] — desc : property names top-level do inputSchema, na ordem de declaração.
+// FIX 2: signature truncada no harness some com o catálogo — cada tool do cv_tools_info lista seus params.
+// cv_x [a|b|c] — desc : property names top-level do inputSchema, na ordem de declaração.
 // Cap por contagem (nenhum nome é cortado); tool sem params fica byte-idêntica.
 const HINT_PREFIX = "\u2192 DICA: "; // → DICA:
 const TOOL_LINE_SEP = " \u2014 "; // mesmo separador de server.mjs g(): `${t.name} — ${first(desc)}`
 const PARAM_SEP = "|";
-const PARAMS_PER_LINE = 12; // cobre toda tool real (maior schema: 42 em n_ubrowser_act → corta só a cauda)
+const PARAMS_PER_LINE = 12; // cobre toda tool real (maior schema: 42 em cv_ubrowser_act → corta só a cauda)
 function paramNames(inputSchema) {
   const props = inputSchema && typeof inputSchema === "object" ? inputSchema.properties : null;
   if (!props || typeof props !== "object" || Array.isArray(props)) return [];
@@ -403,7 +384,7 @@ function sendToHost(obj) {
 }
 
 // Rotação de JSONL (cap de linhas, descarta as mais antigas) — ÚNICA impl (inbox do
-// n_report e mon-log da ponte; elemreports tem variante própria p/ preservar abertos).
+// cv_report e mon-log da ponte; elemreports tem variante própria p/ preservar abertos).
 // Atômica: disco cheio NUNCA trunca o original (#49).
 export function pruneJsonl(p, cap) {
   try {
@@ -414,4 +395,7 @@ export function pruneJsonl(p, cap) {
     if (lines.length >= cap) atomicWriteFile(p, lines.slice(-(cap - 1)).join("\n") + "\n", "utf8");
   } catch {}
 }
-export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, fallbackHint, PARAMS_PER_LINE, estTokens, ctxStatusText, WALK_CAP, isSkippable, CTX, CTX_BUDGET, atomicWriteFile };
+const visibleTools = () => [...TOOLS.values()].filter((tool) => tool.public !== false);
+const toolCount = () => visibleTools().length;
+
+export { HOME, CWD, SKIP_DIRS, MAX_OUT, UA, TOOLS, reg, out, trimOut, fpath, escapeRe, walkFiles, humanSize, exec, httpJson, sendToHost, devOut, fallbackHint, PARAMS_PER_LINE, estTokens, ctxStatusText, WALK_CAP, isSkippable, CTX, CTX_BUDGET, atomicWriteFile, visibleTools, toolCount };

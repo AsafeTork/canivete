@@ -22,19 +22,19 @@ claude mcp add canivete -- node /caminho/para/canivete/src/server.mjs
 #     "CANIVETE_BROWSER_TIMEOUT_MS": "40000",
 #     "CANIVETE_CDP_TIMEOUT": "25000",
 #     "CANIVETE_MAX_BODY": "2097152",     # teto do POST no modo remoto --http
-#     "CANIVETE_CTX_BUDGET": "200000"     # orçamento p/ n_ctx_status
+#     "CANIVETE_CTX_BUDGET": "200000"     # orçamento p/ cv_ctx_status
 #   }
-#   NOTA: subagentes (n_task*) desativados por RAM — reative com CANIVETE_TASK_ENABLE=1.
+#   NOTA: subagentes (cv_task*) desativados por RAM — reative com CANIVETE_TASK_ENABLE=1.
 #   Runner legado (só vale com a família task ativa): CANIVETE_RUNNER + CANIVETE_RUN_TEMPLATE.
 
 # Tarefas longas (com progresso, sem sleep cego):
-#   shell ≤10min:   n_bash({command:"npm install", timeout:600000})
-#   servidor fundo: n_manage_background_process({action:"start", command:"npm run dev"})
-#                   n_manage_background_process({action:"read_logs", process_id:"bg..."})
-#                   n_inspect_ui_state({url:"http://localhost:5173", expect:"<texto>", retries:3})
+#   shell ≤10min:   cv_bash({command:"npm install", timeout:600000})
+#   servidor fundo: cv_manage_background_process({action:"start", command:"npm run dev"})
+#                   cv_manage_background_process({action:"read_logs", process_id:"bg..."})
+#                   cv_code_verify {action:"ui"}({url:"http://localhost:5173", expect:"<texto>", retries:3})
 
 # Erros comuns (ver README "Erros comuns"):
-#   SPA vazio (n_webfetch é SEM JS) → n_browser_navigate
+#   SPA vazio (cv_webfetch é SEM JS) → cv_browser_read
 #   429 / no results → aguarde 60s; search com fresh:false (cache 10min)
-#   EXTENSAO_OFFLINE → n_ubrowser_status (janela normal + popup ATIVO + token)
+#   EXTENSAO_OFFLINE → cv_owner_inspect {action:"status"} (janela normal + popup ATIVO + token)
 #   SSRF intranet → CANIVETE_BROWSER_ALLOW_PRIVATE=1

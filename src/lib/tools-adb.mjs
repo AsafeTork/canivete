@@ -62,7 +62,7 @@ async function ensureDevice(serial) {
   return { ok: true, dev: hit, devs, reconnected };
 }
 
-const PAIR_HINT = "conecte: (a) cabo USB com depuração USB ativa (Opções do desenvolvedor) OU (b) WiFi: Opções do desenvolvedor → Depuração por WiFi → Parear dispositivo com código → n_adb_connect {ip, pairPort, code} (o pairPort é o do diálogo de PAREAMENTO, ≠ porta de conexão) OU cabo→WiFi com n_adb_connect {} (sem args: converte USB→WiFi sozinho)";
+const PAIR_HINT = "conecte: (a) cabo USB com depuração USB ativa (Opções do desenvolvedor) OU (b) WiFi: Opções do desenvolvedor → Depuração por WiFi → Parear dispositivo com código → cv_adb_connect {ip, pairPort, code} (o pairPort é o do diálogo de PAREAMENTO, ≠ porta de conexão) OU cabo→WiFi com cv_adb_connect {} (sem args: converte USB→WiFi sozinho)";
 
 // uiautomator XML → elementos [{t,d,cls,id,b:[x,y,w,h],cx,cy,click,scroll,focus}] (cap por max)
 function parseUiXml(xml, max) {
@@ -89,9 +89,9 @@ function parseUiXml(xml, max) {
   return els;
 }
 
-// ---- n_adb_status: devices + versão + perfil WiFi + estado de conexão ----
-reg("n_adb_status", {
-  description: "Android: devices ADB (USB/WiFi), versão do adb, perfil WiFi salvo e estado de conexão — reconecta sozinho se o perfil existir. Sem device? erro traz os passos de pareamento. Antes de n_adb_extract/act/screen; pareamento WiFi novo via n_adb_connect.",
+// ---- cv_adb_status: devices + versão + perfil WiFi + estado de conexão ----
+reg("cv_adb_status", {
+  description: "Android: devices ADB (USB/WiFi), versão do adb, perfil WiFi salvo e estado de conexão — reconecta sozinho se o perfil existir. Sem device? erro traz os passos de pareamento. Antes de cv_adb_extract/act/screen; pareamento WiFi novo via cv_adb_connect.",
   inputSchema: { type: "object", properties: {}, required: [] },
   run: async () => {
     const t0 = Date.now();
@@ -99,12 +99,12 @@ reg("n_adb_status", {
     const prof = loadProfile();
     const ver = await adbRun(["version"], 8000).catch(() => ({ so: "" }));
     if (!g.ok) return devOut({ status: "error", summary: g.summary, data: { profile: prof.ip ? prof : null, version: (ver.so || "").split("\n")[0] || null }, telemetry: { execution_time_ms: Date.now() - t0 } });
-    return devOut({ summary: `${g.devs.length} device(s): ${g.devs.map((d) => `${d.model || "?"}(${d.serial.slice(0, 12)}, ${d.state}${d.usb ? ", usb" : ""})`).join(" · ")}${g.reconnected ? " — reconectado pelo perfil WiFi" : ""}${prof.ip ? ` · perfil: ${prof.ip}:${prof.port || 5555}` : " · sem perfil WiFi"}`, data: { devices: g.devs, profile: prof.ip ? prof : null, version: (ver.so || "").split("\n")[0] || null }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_adb_extract", reason: "Extrair TUDO da tela em 1 call" }] });
+    return devOut({ summary: `${g.devs.length} device(s): ${g.devs.map((d) => `${d.model || "?"}(${d.serial.slice(0, 12)}, ${d.state}${d.usb ? ", usb" : ""})`).join(" · ")}${g.reconnected ? " — reconectado pelo perfil WiFi" : ""}${prof.ip ? ` · perfil: ${prof.ip}:${prof.port || 5555}` : " · sem perfil WiFi"}`, data: { devices: g.devs, profile: prof.ip ? prof : null, version: (ver.so || "").split("\n")[0] || null }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_adb_extract", reason: "Extrair TUDO da tela em 1 call" }] });
   },
 });
 
-// ---- n_adb_connect: USB→WiFi (sem args), pareamento com código, ou reconnect manual ----
-reg("n_adb_connect", {
+// ---- cv_adb_connect: USB→WiFi (sem args), pareamento com código, ou reconnect manual ----
+reg("cv_adb_connect", {
   description: "Conecta ADB por WiFi e SALVA o perfil (reconexão automática dali em diante). {} sem args: device em USB → tcpip 5555 → conecta pelo WiFi da rede (desligue o cabo depois). {ip, port}: conecta direto (port padrão 5555). {ip, pairPort, code}: pareamento com código do diálogo Depuração WiFi (pairPort ≠ port de conexão). Destrutivo não — tcpip reinicia o adbd, tela pisca.",
   inputSchema: { type: "object", properties: { ip: { type: "string", description: "IP do celular na rede (aparece no diálogo Depuração WiFi)" }, port: { type: "number", description: "porta de CONEXÃO (5555 após tcpip; a do diálogo de pareamento NÃO serve aqui)" }, pairPort: { type: "number", description: "porta de PAREAMENTO (diálogo 'Parear dispositivo com código', ex: 37xxx) — só com code" }, code: { type: "string", description: "código de pareamento de 6 dígitos" } }, required: [] },
   run: async ({ ip, port, pairPort, code }) => {
@@ -123,7 +123,7 @@ reg("n_adb_connect", {
       const devs = await adbDevices();
       if (okMsg && devs.some((d) => d.state === "device")) {
         saveProfile({ ip, port: port || 5555, ts: new Date().toISOString() });
-        return devOut({ summary: `conectado por WiFi em ${ip}:${port || 5555} — perfil salvo (reconexão automática nas próximas calls)`, data: { ip, port: port || 5555, devices: devs }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_adb_extract", reason: "Extrair a tela inteira em 1 call" }] });
+        return devOut({ summary: `conectado por WiFi em ${ip}:${port || 5555} — perfil salvo (reconexão automática nas próximas calls)`, data: { ip, port: port || 5555, devices: devs }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_adb_extract", reason: "Extrair a tela inteira em 1 call" }] });
       }
       return devOut({ status: "error", summary: `connect falhou: ${c.so || c.se || "timeout"} — celular e máquina na MESMA rede? depuração por WiFi ligada? firewall?`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
@@ -145,15 +145,15 @@ reg("n_adb_connect", {
     const devs = await adbDevices();
     if (devs.some((d) => d.state === "device" && d.serial.includes(":"))) {
       saveProfile({ ip: mip, port: 5555, ts: new Date().toISOString() });
-      return devOut({ summary: `USB→WiFi pronto: ${mip}:5555 conectado, perfil salvo — pode DESCONECTAR o cabo (reconexão automática dali em diante)`, data: { ip: mip, port: 5555, devices: devs }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_adb_extract", reason: "Extrair a tela inteira em 1 call" }] });
+      return devOut({ summary: `USB→WiFi pronto: ${mip}:5555 conectado, perfil salvo — pode DESCONECTAR o cabo (reconexão automática dali em diante)`, data: { ip: mip, port: 5555, devices: devs }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_adb_extract", reason: "Extrair a tela inteira em 1 call" }] });
     }
     return devOut({ status: "error", summary: `tcpip ok mas connect ${mip}:5555 falhou (${c.so || c.se || "timeout"}) — rede bloqueando? espere 2s e repita {ip:"${mip}"}`, data: { ip: mip }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 
-// ---- n_adb_extract: 1 RTT = tela inteira (uiautomator + dumpsys) ----
-reg("n_adb_extract", {
-  description: "EXTRAÇÃO COMPLETA do Android em 1 call (o n_browser_extract do celular): hierarquia da TELA ATUAL (elementos com texto/desc/coords/centro/clickable — pronto p/ n_adb_act tap), app em foco, resolução, bateria/plugado, apps de usuário, notificações; extras opt-in: media (galeria), files (Downloads), logcat (erros recentes), clipboard (API 29+). Navega? open no act. O toque do adb É o input de usuário real.",
+// ---- cv_adb_extract: 1 RTT = tela inteira (uiautomator + dumpsys) ----
+reg("cv_adb_extract", {
+  description: "EXTRAÇÃO COMPLETA do Android em 1 call (o cv_browser_extract do celular): hierarquia da TELA ATUAL (elementos com texto/desc/coords/centro/clickable — pronto p/ cv_adb_act tap), app em foco, resolução, bateria/plugado, apps de usuário, notificações; extras opt-in: media (galeria), files (Downloads), logcat (erros recentes), clipboard (API 29+). Navega? open no act. O toque do adb É o input de usuário real.",
   inputSchema: { type: "object", properties: { serial: { type: "string", description: "serial/modelo do device (vários conectados? padrão = primeiro)" }, max: { type: "number", default: 150, description: "cap de elementos de UI (30-400)" }, fields: { type: "string", description: "csv de extras: media,files,logcat,clipboard (ui+status+apps+notifications sempre vêm)" } }, required: [] },
   run: async ({ serial, max, fields }) => {
     const t0 = Date.now();
@@ -178,7 +178,7 @@ reg("n_adb_extract", {
       ...extra,
     ].join("; ");
     const r = await adbRun([...S, "shell", cmd], ADB_TMO() + 15000);
-    if (!r.so) return devOut({ status: "error", summary: `adb shell sem resposta: ${r.se || r.killed ? "timeout" : "device sumiu?"} — n_adb_status p/ conferir conexão`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!r.so) return devOut({ status: "error", summary: `adb shell sem resposta: ${r.se || r.killed ? "timeout" : "device sumiu?"} — cv_adb_status p/ conferir conexão`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const pegar = (tag) => { const mk = "__" + tag + "__"; const i = r.so.indexOf(mk); if (i < 0) return ""; const j = r.so.indexOf("__", i + mk.length); return r.so.slice(i + mk.length, j < 0 ? undefined : j); };
     const xml = pegar("CUI");
     const els = parseUiXml(xml, Math.min(Math.max(Number(max) || 150, 30), 400));
@@ -193,13 +193,13 @@ reg("n_adb_extract", {
     if (want.includes("files")) out.files = pegar("FILES").split("\n").filter(Boolean).slice(0, 14);
     if (want.includes("logcat")) out.logcat = pegar("LOG").split("\n").filter(Boolean).slice(0, 30);
     if (want.includes("clipboard")) out.clipboard = pegar("CLIP").slice(0, 400) || null;
-    return devOut({ summary: `${out.model || g.dev.serial} · ${out.screen.app || "app?"} · ${els.length} elemento(s) na tela${out.battery.level != null ? ` · bateria ${out.battery.level}%` : ""}${apps.length ? ` · ${apps.length} apps` : ""}${notif.length ? ` · ${notif.length} notificações` : ""}${g.reconnected ? " (reconectado WiFi)" : ""} — extraído em 1 call`, data: out, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_adb_act", reason: "tocar por texto/coords na tela extraída" }] });
+    return devOut({ summary: `${out.model || g.dev.serial} · ${out.screen.app || "app?"} · ${els.length} elemento(s) na tela${out.battery.level != null ? ` · bateria ${out.battery.level}%` : ""}${apps.length ? ` · ${apps.length} apps` : ""}${notif.length ? ` · ${notif.length} notificações` : ""}${g.reconnected ? " (reconectado WiFi)" : ""} — extraído em 1 call`, data: out, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_adb_act", reason: "tocar por texto/coords na tela extraída" }] });
   },
 });
 
-// ---- n_adb_act: controle (tap por texto!, text, key, swipe, open, pull/push, install...) ----
-reg("n_adb_act", {
-  description: "AGE no Android: tap (por x/y OU text=\"rótulo\" — acha na tela e toca o centro, 1 call), text (digita, espaços viram %s), key (BACK/HOME/ENTER/DEL/VOLUP/…), swipe {x,y,x2,y2,ms}, open {pkg}, install/uninstall/clear {pkg, confirm:\"<frase>\"} (DESTRUTIVO exige confirm ≥4 chars), pull/push {local, remote}, wake. Depois: n_adb_extract p/ ver o efeito (delta). O toque do adb É o input de usuário real.",
+// ---- cv_adb_act: controle (tap por texto!, text, key, swipe, open, pull/push, install...) ----
+reg("cv_adb_act", {
+  description: "AGE no Android: tap (por x/y OU text=\"rótulo\" — acha na tela e toca o centro, 1 call), text (digita, espaços viram %s), key (BACK/HOME/ENTER/DEL/VOLUP/…), swipe {x,y,x2,y2,ms}, open {pkg}, install/uninstall/clear {pkg, confirm:\"<frase>\"} (DESTRUTIVO exige confirm ≥4 chars), pull/push {local, remote}, wake. Depois: cv_adb_extract p/ ver o efeito (delta). O toque do adb É o input de usuário real.",
   inputSchema: { type: "object", properties: { serial: { type: "string" }, action: { type: "string", enum: ["tap", "text", "key", "swipe", "open", "install", "uninstall", "clear", "pull", "push", "wake"], description: "tap x/y ou text=\"rótulo\" · text {text} · key {key: BACK|HOME|ENTER|DEL|TAB|VOLUP|VOLDOWN|POWER} · swipe {x,y,x2,y2,ms} · open {pkg} · install {local, confirm} · uninstall/clear {pkg, confirm} · pull/push {local, remote} · wake" }, x: { type: "number" }, y: { type: "number" }, x2: { type: "number" }, y2: { type: "number" }, ms: { type: "number", description: "duração do swipe (padrão 300)" }, text: { type: "string", description: "tap: rótulo na tela (texto ou content-desc) · text: string a digitar" }, key: { type: "string" }, pkg: { type: "string" }, local: { type: "string" }, remote: { type: "string" }, confirm: { type: "string", description: "frase ≥4 chars p/ destrutivo (install/uninstall/clear)" } }, required: ["action"] },
   run: async (a) => {
     const t0 = Date.now();
@@ -217,7 +217,7 @@ reg("n_adb_act", {
           const els = parseUiXml(d.so, 300);
           const alvo = a.text.toLowerCase();
           const hit = els.find((e) => (e.t || "").toLowerCase().includes(alvo) || (e.d || "").toLowerCase().includes(alvo));
-          if (!hit) return devOut({ status: "error", summary: `nenhum elemento com "${a.text}" na tela — n_adb_extract lista o que existe (texto pode mudar após scroll; content-desc às vezes é o rótulo)`, data: { elementos: els.length }, telemetry: { execution_time_ms: Date.now() - t0 } });
+          if (!hit) return devOut({ status: "error", summary: `nenhum elemento com "${a.text}" na tela — cv_adb_extract lista o que existe (texto pode mudar após scroll; content-desc às vezes é o rótulo)`, data: { elementos: els.length }, telemetry: { execution_time_ms: Date.now() - t0 } });
           a.x = hit.cx; a.y = hit.cy;
           data.hit = { t: hit.t || hit.d, b: hit.b, cls: hit.cls };
         }
@@ -242,7 +242,7 @@ reg("n_adb_act", {
         await sh(`input swipe ${Math.round(a.x)} ${Math.round(a.y)} ${Math.round(a.x2)} ${Math.round(a.y2)} ${Math.round(Number(a.ms) || 300)}`);
         summary = `swipe ${Math.round(a.x)},${Math.round(a.y)} → ${Math.round(a.x2)},${Math.round(a.y2)} enviado`;
       } else if (a.action === "open") {
-        if (!a.pkg) return devOut({ status: "error", summary: "open precisa {pkg} — lista em n_adb_extract (apps)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+        if (!a.pkg) return devOut({ status: "error", summary: "open precisa {pkg} — lista em cv_adb_extract (apps)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
         const r = await sh(`monkey -p ${String(a.pkg).replace(/[^A-Za-z0-9._]/g, "")} -c android.intent.category.LAUNCHER 1`, 20000);
         summary = `open ${a.pkg} — ${/Events injected: 1/i.test(r.so) ? "aberto" : `falhou: ${(r.so || r.se).split("\n")[0] || "rc " + r.code}`}`;
       } else if (a.action === "install") {
@@ -268,12 +268,12 @@ reg("n_adb_act", {
     } finally {
       try { await adbRun([...S, "shell", "rm -f /sdcard/.cv-ui.xml"], 5000); } catch {}
     }
-    return devOut({ summary, data, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_adb_extract", reason: "Ver o efeito na tela (delta)" }] });
+    return devOut({ summary, data, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_adb_extract", reason: "Ver o efeito na tela (delta)" }] });
   },
 });
 
-// ---- n_adb_screen: screenshot → PNG no disco (agente lê a imagem e VÊ a tela) ----
-reg("n_adb_screen", {
+// ---- cv_adb_screen: screenshot → PNG no disco (agente lê a imagem e VÊ a tela) ----
+reg("cv_adb_screen", {
   description: "Screenshot do Android → PNG no disco (leia o arquivo p/ VER a tela; o extract dá a estrutura, a imagem dá o visual). Ex: {} · {serial}. Destrutivo não — cria arquivo só nosso em /sdcard e remove em seguida.",
   inputSchema: { type: "object", properties: { serial: { type: "string" } }, required: [] },
   run: async ({ serial }) => {
@@ -284,11 +284,11 @@ reg("n_adb_screen", {
     const rem = "/sdcard/.cv-shot.png";
     const f = join(tmpdir(), `opencode-adb-${Date.now().toString(36)}.png`);
     const cap = await adbRun([...S, "shell", `screencap -p ${rem}`], 20000);
-    if (cap.code !== 0) return devOut({ status: "error", summary: `screencap falhou: ${cap.se || "sem resposta"} — tela bloqueada não impede, mas device sumido sim (n_adb_status)`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (cap.code !== 0) return devOut({ status: "error", summary: `screencap falhou: ${cap.se || "sem resposta"} — tela bloqueada não impede, mas device sumido sim (cv_adb_status)`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const pull = await adbRun([...S, "pull", rem, f], 30000);
     try { await adbRun([...S, "shell", `rm -f ${rem}`], 5000); } catch {}
     if (pull.code !== 0) return devOut({ status: "error", summary: `pull falhou: ${pull.se || pull.so || "timeout"} — tente de novo (WiFi lento?)`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const bytes = (await import("node:fs")).statSync(f).size;
-    return devOut({ summary: `screenshot ${bytes}B → ${f} — leia o arquivo p/ ver a tela`, data: { file: f, bytes, serial: g.dev.serial }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "n_adb_extract", reason: "Estrutura dos elementos da tela" }] });
+    return devOut({ summary: `screenshot ${bytes}B → ${f} — leia o arquivo p/ ver a tela`, data: { file: f, bytes, serial: g.dev.serial }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_adb_extract", reason: "Estrutura dos elementos da tela" }] });
   },
 });

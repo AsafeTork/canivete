@@ -1,6 +1,6 @@
 // canivete core/symbols — extração de símbolos (zero deps, puro).
 // Duas formas com propósitos diferentes (NÃO unificar o formato — mudaria resultados):
-// - extractFileSymbols(text, rel): estilo fs.mjs p/ n_read (linha n + kind + name; JS/TS/Py/Md + reg("n_")).
+// - extractFileSymbols(text, rel): estilo fs.mjs p/ cv_read (linha n + kind + name; JS/TS/Py/Md + reg("cv_")).
 // - indexSymbols(text, rel): estilo devengine.mjs p/ índice (name + file + line).
 const SYM_KW = new Set(["if", "for", "while", "switch", "catch", "with", "else", "do", "try", "finally", "return", "import", "export", "function", "class", "const", "let", "var", "new", "typeof", "await", "async", "yield", "case", "break", "continue", "throw", "delete", "in", "of", "instanceof", "void"]);
 

@@ -3,7 +3,7 @@
 // fica VINCULADO AO SITE (base_url = origem normalizada, vale p/ o site inteiro) e só some do
 // highlight quando EXPLICITAMENTE resolvido — histórico nunca apaga.
 // Fluxo do agente: frase-gatilho ("no nosso site https://ex.com tem erros que reportei") →
-// n_elemreports_list (prioriza) → resolve um a um → n_elemreports_resolve com prova (antes/depois).
+// cv_elemreports_list (prioriza) → resolve um a um → cv_elemreports_resolve com prova (antes/depois).
 //
 // Fonte canônica: ~/.config/canivete/reports-elementos.jsonl (append-only; a ÚLTIMA linha por id
 // é o estado corrente — versões antigas = histórico). Screenshot opcional: reports-elementos/<id>.png.
@@ -160,7 +160,7 @@ export function erAdd(p) {
     const nota = String(p.nota || "").trim().slice(0, 2000);
     if (nota.length < 3) return { ok: false, error: "nota muito curta — descreva o que está errado (≥3 chars)" };
     // grupo = escopo digitado pelo dono na hora da marcação (texto livre, sem registry):
-    // serve p/ o agente filtrar SÓ o escopo dele em n_elemreports_list {grupo}
+    // serve p/ o agente filtrar SÓ o escopo dele em cv_elemreports_list {grupo}
     const grupo = String(p.grupo || "").trim().slice(0, 60);
     const rawEls = Array.isArray(p.elements) ? p.elements.slice(0, 10) : [];
     const elements = [];
@@ -213,10 +213,10 @@ export function erUpdate(f) {
   try {
     f = f && typeof f === "object" ? f : {};
     const id = String(f.id || "").trim();
-    if (!/^er[a-z0-9]+$/.test(id)) return { ok: false, error: "id inválido — use o id de n_elemreports_list (formato er…)" };
+    if (!/^er[a-z0-9]+$/.test(id)) return { ok: false, error: "id inválido — use o id de cv_elemreports_list (formato er…)" };
     const state = erReadState();
     const cur = state.get(id);
-    if (!cur) return { ok: false, error: `report ${id} não existe — reliste com n_elemreports_list` };
+    if (!cur) return { ok: false, error: `report ${id} não existe — reliste com cv_elemreports_list` };
     if (f.apagar === true) {
       const upd = { ...cur, apagado: true, status: "resolvido", resolucao: { proof: "apagado pelo dono na marcação", por: "dono", em: new Date().toISOString() }, atualizado_em: new Date().toISOString() };
       erAppend(upd);
@@ -292,12 +292,12 @@ export function erSetStatus(f) {
   try {
     f = f && typeof f === "object" ? f : {};
     const id = String(f.id || "").trim();
-    if (!/^er[a-z0-9]+$/.test(id)) return { ok: false, error: "id inválido — use o id de n_elemreports_list (formato er…)" };
+    if (!/^er[a-z0-9]+$/.test(id)) return { ok: false, error: "id inválido — use o id de cv_elemreports_list (formato er…)" };
     const status = String(f.status || "resolvido").trim();
     if (!ER_STATUSES.includes(status)) return { ok: false, error: `status inválido: ${status} (use ${ER_STATUSES.join("|")})` };
     const state = erReadState();
     const cur = state.get(id);
-    if (!cur) return { ok: false, error: `report ${id} não existe em ~/.config/canivete/reports-elementos.jsonl — reliste com n_elemreports_list` };
+    if (!cur) return { ok: false, error: `report ${id} não existe em ~/.config/canivete/reports-elementos.jsonl — reliste com cv_elemreports_list` };
     if (cur.status === status) return { ok: false, error: `report ${id} já está "${status}"` };
     if (cur.status === "resolvido" && status === "em_resolução") return { ok: false, error: `report ${id} já resolvido — reabra (status:"aberto") antes de voltar a em_resolução` };
     const proof = String(f.proof || "").trim().slice(0, 2000);
@@ -344,7 +344,7 @@ const erOneLine = (r) => {
   return `#${String(r.id).slice(2, 10)} ${r.status} · ${n} elemento(s) · ${r.ocorrencias}× · "${String(r.nota || "").slice(0, 120)}"`;
 };
 
-reg("n_elemreports_list", {
+reg("cv_elemreports_list", {
   description: "Reports persistentes de ELEMENTO de um site (marcações que o dono fez na página viva via extensão, com anotação do que está errado). Use QUANDO o dono disser algo como \"no nosso site https://exemplo.com tem erros que reportei\" / \"nesse site que estou desenvolvendo\": normalize a URL (aceita com path), liste os ABERTOS e resolva um a um. Cada report traz snapshot estático (seletor estável, fingerprint texto/papel, role/data-testid, outerHTML, rect) — o prompt ruim do humano não trava: o snapshot dá contexto. Sem filtro de status, só pendentes (resolvido = histórico).",
   inputSchema: {
     type: "object",
@@ -364,7 +364,7 @@ reg("n_elemreports_list", {
     const r = erListPublic({ base_url, status, area, grupo, q, limit: Math.min(Math.max(Number(limit) || 25, 1), 500), full });
     if (!r.ok) return out(`${r.error} — AÇÃO: passe base_url com esquema+host (ex: https://exemplo.com)`, true);
     const base = erNormalizeBase(base_url);
-    if (!r.count) return out(`sem reports ${status && status !== "todos" ? `"${status}"` : "pendentes"} para ${base} — se o dono marcou agora, peça para repetir a marcação (extensão: popup → Marcar problema, ou n_ubrowser_act {action:"elem_pick"})`);
+    if (!r.count) return out(`sem reports ${status && status !== "todos" ? `"${status}"` : "pendentes"} para ${base} — se o dono marcou agora, peça para repetir a marcação (extensão: popup → Marcar problema, ou cv_ubrowser_act {action:"elem_pick"})`);
     const lines = [`reports de ${base} — ${r.total} no total, ${r.count} no filtro:`, ""];
     let i = 0;
     for (const rep of r.items) {
@@ -382,17 +382,17 @@ reg("n_elemreports_list", {
       if (rep.resolucao && rep.resolucao.proof) lines.push(`   resolução: ${rep.resolucao.proof} (${rep.resolucao.por}, ${rep.resolucao.em})`);
       lines.push("");
     }
-    lines.push(`→ fluxo: ataque um a um; ao iniciar cada um: n_elemreports_resolve {id:"<id>", status:"em_resolução"} · ao terminar: n_elemreports_resolve {id:"<id>", proof:"antes→depois: o que mudou e onde"}. Resolvido some do highlight da página e vira histórico.`);
+    lines.push(`→ fluxo: ataque um a um; ao iniciar cada um: cv_elemreports_resolve {id:"<id>", status:"em_resolução"} · ao terminar: cv_elemreports_resolve {id:"<id>", proof:"antes→depois: o que mudou e onde"}. Resolvido some do highlight da página e vira histórico.`);
     return out(lines.join("\n"));
   },
 });
 
-reg("n_elemreports_resolve", {
-  description: "Move UM report de elemento no ciclo de vida com PROVA: \"em_resolução\" (trabalho iniciado) ou \"resolvido\" (default; exige proof = antes/depois) — resolvido some do highlight na página (a extensão re-synca sozinha) e vira histórico, nunca apaga. Reabrir: status:\"aberto\". Use depois de n_elemreports_list; marque resolvido SÓ com a correção verificada na página.",
+reg("cv_elemreports_resolve", {
+  description: "Move UM report de elemento no ciclo de vida com PROVA: \"em_resolução\" (trabalho iniciado) ou \"resolvido\" (default; exige proof = antes/depois) — resolvido some do highlight na página (a extensão re-synca sozinha) e vira histórico, nunca apaga. Reabrir: status:\"aberto\". Use depois de cv_elemreports_list; marque resolvido SÓ com a correção verificada na página.",
   inputSchema: {
     type: "object",
     properties: {
-      id: { type: "string", description: "id do report (er…) de n_elemreports_list" },
+      id: { type: "string", description: "id do report (er…) de cv_elemreports_list" },
       status: { type: "string", enum: ER_STATUSES, default: "resolvido", description: "estado de destino" },
       proof: { type: "string", description: "OBRIGATÓRIO p/ resolvido: antes/depois (o que mudou, onde — arquivo:linha/commit/print). ≥10 chars." },
       por: { type: "string", description: "quem resolveu (default: agente)" },
@@ -404,7 +404,7 @@ reg("n_elemreports_resolve", {
     if (!r.ok) return out(`${r.error}`, true);
     const rep = r.report;
     const shotNote = rep.shot ? ` · screenshot ${rep.shot}` : "";
-    if (rep.status === "resolvido") return out(`report ${rep.id} RESOLVIDO — some do highlight e vira histórico${shotNote}. prova: "${String(rep.resolucao?.proof || "").slice(0, 300)}". Se a página ainda mostra o contorno, a extensão re-synca sozinha em ≤60s (ou n_ubrowser_act {action:"elem_pick", off:true} + recarregue).`);
+    if (rep.status === "resolvido") return out(`report ${rep.id} RESOLVIDO — some do highlight e vira histórico${shotNote}. prova: "${String(rep.resolucao?.proof || "").slice(0, 300)}". Se a página ainda mostra o contorno, a extensão re-synca sozinha em ≤60s (ou cv_ubrowser_act {action:"elem_pick", off:true} + recarregue).`);
     if (rep.status === "em_resolução") return out(`report ${rep.id} em resolução — termine e marque resolvido com prova (antes/depois). ${erOneLine(rep)}`);
     return out(`report ${rep.id} reaberto — volte ao trabalho e resolva com prova. ${erOneLine(rep)}`);
   },
