@@ -14,7 +14,7 @@ O catálogo é gerado do registro real em [docs/TOOLS.md](docs/TOOLS.md). Em run
 | Ler uma página pública com JS | `cv_browser_read` | `detail`: `summary` ou `full` |
 | Capturar página/medir contraste | `cv_browser_capture` | `action`: `screenshot`, `pdf`, `contrast` |
 | Usar o Chrome autenticado do dono | `cv_owner_inspect` e `cv_owner_act` | consulta e ação têm modos próprios; o agente pode operar em qualquer guia escolhida |
-| Entender uma página autenticada | `cv_owner_inspect {action:"overview"}`, `cv_owner_act {action:"panel"}` | mapa compacto, progresso e marcações visuais |
+| Consultar o Chrome autenticado | `cv_owner_inspect {action:"tabs"}` lista abas (somente leitura); `cv_owner_inspect {action:"overview"}` mapeia a página | `cv_owner_act` altera páginas; `panel` acompanha progresso |
 | Inspecionar/agir em Android | `cv_android_inspect`, `cv_android_act` | parear com `cv_android_connect` |
 | Consultar e editar código | `cv_code_inspect`, `cv_code_edit`, `cv_code_verify` | use o `action` descrito por `cv_help` |
 | Entender o próprio Canivete | `cv_help`, `cv_ctx_status`, `cv_report` | descoberta, consumo de contexto e relato de falha |
@@ -35,7 +35,7 @@ node src/server.mjs   # fala MCP via stdio; o token da extensão é gerado sozin
 
 Comece por `cv_owner_inspect {action:"overview", tab:"Gmail"}` para obter um mapa compacto com títulos, regiões, formulários e controles apontados por seletores. `max` e `offset` paginam a lista; use `nextOffset` para continuar. Para texto corrido, use `action:"read"`; para controles e refs de clique, `action:"snapshot"`.
 
-`cv_owner_act {action:"goto", tab:"Gmail", url:"https://…"}` navega para outro site na mesma guia. Ativação e interações trazem a janela do Chrome à frente; `focus:false` preserva a janela que estava em foco. Guias criadas com `action:"new"` entram no grupo **Canivete · agente**. O agente continua podendo escolher guias existentes de qualquer grupo.
+`cv_owner_act {action:"goto", tab:"Gmail", url:"https://…"}` navega para outro site na mesma guia. As ações preservam o app, foco e cursor atuais; use `focus:true` para trazer o Chrome à frente. Guias criadas com `action:"new"` entram em segundo plano no grupo **Canivete · agente** (`active:true` seleciona). O agente continua podendo escolher guias existentes de qualquer grupo.
 
 Abra o painel de progresso na página com `cv_owner_act {action:"panel", mode:"open", tab:"Gmail", message:"Conferindo o formulário"}`. Ele mostra o status da tarefa, etapas e marcações visuais. Atualize com `mode:"update"`, `steps` e `annotations:[{selector,label}]`; as marcações usam uma camada isolada, sem alterar atributos do site. O painel permanece na mesma guia ao navegar e sobrevive a recargas enquanto o Chrome estiver aberto.
 
@@ -138,7 +138,7 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 ## Segurança (doutrina do dono)
 
 - O agente pode atuar nas guias incluídas no pedido. Guias criadas por ele ficam no grupo “Canivete · agente”; guias existentes continuam acessíveis.
-- A janela do Chrome alvo ganha foco ao ativar uma guia ou interagir; `focus:false` preserva o foco atual.
+- O Chrome preserva o foco e o cursor atuais por padrão; `focus:true` traz a janela à frente. `action:"new"` abre guias em segundo plano por padrão; `active:true` seleciona a nova guia.
 - Alto risco (pagamento, senha/2FA, excluir conta, apagar tudo, fechar guias em lote) exige `confirm="<frase do dono>"`.
 - Ponte local (`127.0.0.1:19422`) + token (`~/.config/canivete/token.txt`, gerado sozinho, `0600`, no `.gitignore`).
 - Kill switch: pause na extensão = acesso zero.

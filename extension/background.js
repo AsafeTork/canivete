@@ -42,7 +42,7 @@ try {
   });
 } catch {}
 
-const UB_EXPECTED = "23"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "24"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 // Versão do próprio worker (manifest): reportada no /hello + tab.diag → cv_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
@@ -292,8 +292,8 @@ function ubTabScore(needle, t) {
 }
 
 async function handle(cmd, a = {}) {
-  // Ativa a aba e traz a janela do Chrome à frente por padrão. focused:false mantém
-  // o foco do sistema onde estava; foco explicitamente selecionável pelo agente.
+  // Seleciona a aba alvo sem roubar foco do sistema por padrão. A janela do Chrome
+  // só vem à frente quando o chamador pede focus:true/focused:true.
   if (cmd === "tab.activate") {
     const all = (await chrome.tabs.query({})).filter((t) => Number.isInteger(t.id));
     let t = null;
@@ -319,7 +319,7 @@ async function handle(cmd, a = {}) {
       if (isNoTabErr(e)) throw new Error("aba fechou no meio da ação — reliste tabs");
       throw new Error("ativar aba falhou: " + String(e?.message || e).slice(0, 120));
     }
-    const focused = a.focused !== false && a.focus !== false;
+    const focused = a.focused === true || a.focus === true;
     if (focused) {
       try {
         await chrome.windows.update(t.windowId, { focused: true });
@@ -340,7 +340,7 @@ async function handle(cmd, a = {}) {
     a.tabId = found.id;
   }
   const foregroundActions = new Set(["tab.goto", "tab.back", "tab.forward", "tab.reload", "tab.click", "tab.fill", "tab.type", "tab.press", "tab.select", "tab.scroll", "tab.cursor", "tab.tooltip", "tab.cdp", "tab.flow", "tab.panel"]);
-  if (foregroundActions.has(cmd) && a.focus !== false) {
+  if (foregroundActions.has(cmd) && a.focus === true) {
     const id = a.tabId || (await activeTabId());
     const target = await getTabOrThrow(id);
     await chrome.tabs.update(id, { active: true });
@@ -357,7 +357,7 @@ async function handle(cmd, a = {}) {
     await ubElemApplyToTabs(origin, reports);
     return { origin, reports: reports.filter((r) => r && r.status !== "resolvido").length };
   }
-  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, focusRule: "tab.activate ativa a aba e foca a janela por padrão; focused:false preserva o foco atual" };
+  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, focusRule: "ações preservam o foco do sistema por padrão; use focus:true para trazer o Chrome à frente" };
   if (cmd === "tabs.list") {
     const [tabs, wins, incog] = await Promise.all([
       chrome.tabs.query({}),
@@ -411,9 +411,9 @@ async function handle(cmd, a = {}) {
     return await ask(id, "state", {}); // dieta: só título+url (leia explícito se precisar do texto)
   }
   if (cmd === "tab.new") {
-    const t = await chrome.tabs.create({ url: a.url || "about:blank", ...(a.windowId != null ? { windowId: Number(a.windowId) } : {}), active: a.active !== false });
+    const t = await chrome.tabs.create({ url: a.url || "about:blank", ...(a.windowId != null ? { windowId: Number(a.windowId) } : {}), active: a.active === true });
     const group = await groupCaniveteTab(t.id, t.windowId);
-    if (a.focus !== false) await chrome.windows.update(t.windowId, { focused: true });
+    if (a.focus === true) await chrome.windows.update(t.windowId, { focused: true });
     // espera carregar (por evento) pra já sair usável
     if (a.url) {
       await new Promise((res) => {
@@ -427,7 +427,7 @@ async function handle(cmd, a = {}) {
         chrome.tabs.onUpdated.addListener(fn);
       });
     }
-    return { id: t.id, url: t.url || a.url, active: t.active, focused: a.focus !== false, group };
+    return { id: t.id, url: t.url || a.url, active: t.active, focused: a.focus === true, group };
   }
   if (cmd === "tab.close") {
     if (a.mode === "close_by_prefix") {

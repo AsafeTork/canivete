@@ -393,7 +393,7 @@ function ubEnsure() {
       }
       // ---- gestão pelo painel (127.0.0.1, mesmo nível das rotas GET de leitura) ----
       // update = overlay do dono p/ reports do cv_report · locate = leva o dono até a página
-      // numa nova guia agrupada do Canivete e traz a janela do Chrome à frente ·
+      // numa nova guia agrupada do Canivete em segundo plano ·
       // toggle = liga/desliga tool do catálogo (persiste em tools-off.json).
       const pth = u.pathname;
       if (req.method === "POST" && (pth === "/api/tools/toggle" || /^\/api\/issues\/[A-Za-z0-9_-]+\/(update|locate)$/.test(pth))) {
