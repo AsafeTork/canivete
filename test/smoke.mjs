@@ -101,7 +101,7 @@ await t("risk permite Pix Total via ubrowser (offline, sem BLOQUEIO)", 13, "cv_u
 // campos novos (compact) e receita docs verificados via fs local (node -e, sem CDP).
 await t("ubrowser snapshot offline claro", 14, "cv_ubrowser_snapshot", {}, /./, /EXTENSÃO OFFLINE/);
 await t("find snapshot acha headless", 15, "cv_find_tools", { query: "snapshot" }, /cv_browser_snapshot/);
-await t("find snapshot acha dono", 16, "cv_find_tools", { query: "snapshot" }, /cv_ubrowser_snapshot/);
+await t("find snapshot acha dono", 16, "cv_find_tools", { query: "snapshot" }, /cv_owner_inspect/);
 await t("snapshot compact registrado (tools-owner, sem CDP)", 17, "cv_bash", { command: "node -e \"import('node:fs').then(fs=>console.log(fs.readFileSync('src/lib/tools-owner.mjs','utf8').includes('compact')?'has-compact':'no-compact'))\"" }, /has-compact/);
 await t("docs receita onde-clicar (snapshot+compact+role)", 18, "cv_bash", { command: "node -e \"import('node:fs').then(fs=>{const s=fs.readFileSync('docs/SKILL.md','utf8');console.log(/snapshot/.test(s)&&/compact/.test(s)&&/role/.test(s)?'receita-ok':'receita-falta')})\"" }, /receita-ok/);
 // puros do codespace (sem gh, sem rede): parse/clamp críticos — não pode nem abrir mão nem cair em NaN sutil.
