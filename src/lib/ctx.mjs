@@ -124,8 +124,8 @@ function doomSig(name, args, resultText) {
 }
 function reg(name, definition) {
   const orig = definition.run;
-  definition.run = async (args) => {
-    const r = await orig(args);
+  definition.run = async (args, context) => {
+    const r = await orig(args, context);
     try {
       // FIX 2: catálogo ganha lista de params por tool (ver annotateToolLines) — ANTES do cap p/ o teto valer no texto enriquecido.
       if (name === "cv_tools_info" && r?.content?.[0] && typeof r.content[0].text === "string") {

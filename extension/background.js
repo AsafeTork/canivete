@@ -42,7 +42,7 @@ try {
   });
 } catch {}
 
-const UB_EXPECTED = "21"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "22"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 // Versão do próprio worker (manifest): reportada no /hello + tab.diag → cv_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
@@ -71,12 +71,12 @@ async function ubClientId() {
   }
   return UB_CLIENT_ID;
 }
-async function ubCompanionPoll(tabId) {
+async function ubCompanionPoll(tabId, agentSessionId) {
   if (!settings.enabled || !settings.token || !Number.isInteger(Number(tabId))) return [];
   try {
     const response = await fetch(settings.url + "/companion-poll", {
       method: "POST", headers: { "content-type": "application/json", "x-token": settings.token },
-      body: JSON.stringify({ profile: await ubClientId(), tabId: Number(tabId) }),
+      body: JSON.stringify({ profile: await ubClientId(), tabId: Number(tabId), agentSessionId: String(agentSessionId || "") }),
       signal: AbortSignal.timeout(2500),
     });
     if (!response.ok) return [];
@@ -1218,8 +1218,9 @@ async function ubTrustedMove(tabId, x, y) {
     const out = [];
     const showProgress = a.showProgress !== false;
     const checkInbox = a.checkInbox !== false;
+    const companionMeta = a._caniveteAgentSessionId ? { _caniveteAgentSessionId: a._caniveteAgentSessionId } : {};
     const progressSteps = steps.map((step) => ({ label: String(step.label || step.cmd || "passo").slice(0, 120), status: "pending" }));
-    if (showProgress) await ask(id, "companion", { mode: "flow", title: a.progressTitle || "Canivete em ação", message: a.progressMessage || "Executando a sequência", steps: progressSteps }).catch(() => {});
+    if (showProgress) await ask(id, "companion", { ...companionMeta, mode: "flow", title: a.progressTitle || "Canivete em ação", message: a.progressMessage || "Executando a sequência", steps: progressSteps }).catch(() => {});
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i];
       if (showProgress) {
@@ -1231,7 +1232,7 @@ async function ubTrustedMove(tabId, x, y) {
         out.push({ cmd: s.cmd, ok: true, data: r });
         progressSteps[i].status = "done";
         if (checkInbox) {
-          const messages = await ubCompanionPoll(id);
+          const messages = await ubCompanionPoll(id, a._caniveteAgentSessionId);
           if (messages.length) {
             if (showProgress) await ask(id, "companion", { mode: "step", title: a.progressTitle || "Canivete em ação", message: "Mensagem recebida · vou pausar para responder", steps: progressSteps }).catch(() => {});
             return { steps: out, interrupted: true, messages, nextStepIndex: i + 1, remainingSteps: steps.slice(i + 1), tabId: id };
@@ -1438,7 +1439,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
         const key = `ubCompanion:${tabId}`;
         await chrome.storage.session.set({ [key]: {
           active: state.active === true, collapsed: state.collapsed === true,
-          title: String(state.title || "Canivete").slice(0, 100), message: String(state.message || "").slice(0, 1000), delivery: String(state.delivery || "").slice(0, 160),
+          title: String(state.title || "Canivete").slice(0, 100), message: String(state.message || "").slice(0, 1000), delivery: String(state.delivery || "").slice(0, 160), agentSessionId: String(state.agentSessionId || "").slice(0, 120),
           steps: Array.isArray(state.steps) ? state.steps.slice(0, 30).map((step) => ({ label: String(step.label || "Passo").slice(0, 120), status: String(step.status || "pending") })) : [],
           messages: Array.isArray(state.messages) ? state.messages.slice(-50).map((item) => ({ role: item.role === "user" ? "user" : "agent", text: String(item.text || "").slice(0, 2000) })) : [],
         } });
@@ -1457,12 +1458,12 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
         const clientId = await ubClientId();
         const response = await fetch(settings.url + "/companion-message", {
           method: "POST", headers: { "content-type": "application/json", "x-token": settings.token },
-          body: JSON.stringify({ profile: clientId, tabId: tab.id, title: tab.title || "", url: tab.url || "", text }),
+          body: JSON.stringify({ profile: clientId, tabId: tab.id, title: tab.title || "", url: tab.url || "", text, agentSessionId: String(msg.__ubCompanionMessage.agentSessionId || "") }),
           signal: AbortSignal.timeout(10000),
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok || !result.ok) { reply({ ok: false, error: result.error || `ponte HTTP ${response.status}` }); return; }
-        reply({ ok: true, id: result.id });
+        reply({ ok: true, id: result.id, delivery: result.delivery || "queued" });
       } catch (error) { reply({ ok: false, error: String(error?.message || error).slice(0, 180) }); }
     })();
     return true;

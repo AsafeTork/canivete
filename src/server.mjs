@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { TOOLS, reg, out, sendToHost, CTX, CTX_BUDGET, visibleTools, toolCount } from "./lib/ctx.mjs";
 import { TOOL_GROUPS, groupOf as groupOfCore, firstSentence as firstSentenceCore } from "./core/taxonomy.mjs";
 import { installToolConsolidation } from "./core/tool-consolidation.mjs";
-import { buildToolsList, dispatchStdio } from "./core/rpc.mjs";
+import { buildToolsList, dispatchStdio, MCP_AGENT_SESSION_ID } from "./core/rpc.mjs";
 import { sweepTask, safeTaskIds, readJson, TASKS_DIR } from "./lib/tasks.mjs";
 import { ubEnsure } from "./lib/ubridge.mjs";
 import "./lib/fs.mjs";
@@ -153,7 +153,7 @@ async function proxyMcp(msg) {
   const ids = (isArray ? msg : [msg]).map((m) => (m && typeof m === "object" && "id" in m ? m.id : undefined));
   const temId = ids.some((i) => i !== undefined);
   try {
-    const r = await fetch(`http://127.0.0.1:${MCP_HTTP_PORT}/mcp`, { method: "POST", headers: { "content-type": "application/json", "x-token": getToken() }, body: JSON.stringify(msg) });
+    const r = await fetch(`http://127.0.0.1:${MCP_HTTP_PORT}/mcp`, { method: "POST", headers: { "content-type": "application/json", "x-token": getToken(), "x-canivete-agent-session": MCP_AGENT_SESSION_ID }, body: JSON.stringify(msg) });
     const j = await r.json().catch(() => null);
     if (!temId) return; // notification: daemon não devolve resposta
     const vazio = !j || (Array.isArray(j) ? j.length === 0 : Object.keys(j).length === 0);
@@ -268,6 +268,6 @@ rl.on("line", async (raw) => {
   }
   if (proxyMode) return proxyMcp(msg);
   // Dispatch compartilhado (ver core/rpc.mjs) — mesma semântica do modo remoto.
-  const resp = await dispatchStdio(msg, TOOLS, sendToHost);
+  const resp = await dispatchStdio(msg, TOOLS, sendToHost, MCP_AGENT_SESSION_ID);
   if (resp) sendToHost(resp);
 });

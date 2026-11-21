@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "21"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "22"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -2646,13 +2646,13 @@ function ubPageOverview(max = 35, offset = 0) {
   return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: controls.length, controlsOffset: start, controlsOmitted: Math.max(0, controls.length - start - pageControls.length), nextOffset: start + pageControls.length < controls.length ? start + pageControls.length : null, overlays: ubOverlayState(), hint: "Use os selectors para agir. Leia só a região relevante; snapshot/find serve para mapear detalhes." };
 }
 
-var ubCompanionState = globalThis.__ubCompanionState || { active: false, collapsed: false, messages: [], steps: [], annotations: [], title: "Canivete", message: "", delivery: "" };
+var ubCompanionState = globalThis.__ubCompanionState || { active: false, collapsed: false, messages: [], steps: [], annotations: [], title: "Canivete", message: "", delivery: "", agentSessionId: "" };
 globalThis.__ubCompanionState = ubCompanionState;
 var ubCompanionTouched = false;
 function ubCompanionPersist() {
   try {
     ubCompanionTouched = true;
-    const state = { active: ubCompanionState.active, collapsed: ubCompanionState.collapsed, title: ubCompanionState.title, message: ubCompanionState.message, delivery: ubCompanionState.delivery, steps: ubCompanionState.steps, messages: ubCompanionState.messages };
+    const state = { active: ubCompanionState.active, collapsed: ubCompanionState.collapsed, title: ubCompanionState.title, message: ubCompanionState.message, delivery: ubCompanionState.delivery, agentSessionId: ubCompanionState.agentSessionId || "", steps: ubCompanionState.steps, messages: ubCompanionState.messages };
     chrome.runtime.sendMessage({ __ubCompanionStateSet: state }).catch(() => {});
   } catch {}
 }
@@ -2740,7 +2740,7 @@ function ubCompanionRender() {
     textarea.maxLength = 4000; textarea.setAttribute("aria-label", "Mensagem para o agente"); textarea.placeholder = "Escreva para o agente…"; textarea.value = draft;
     send.type = "submit";
     form.append(textarea, send);
-    const delivery = make("small", "delivery", ubCompanionState.delivery || "O agente lê suas mensagens entre as etapas.");
+    const delivery = make("small", "delivery", ubCompanionState.delivery || "Ao abrir pelo agente, este painel fica vinculado à sessão dele.");
     composerWrap.append(form, delivery);
     body.append(status, plan, messages, composerWrap);
     const marks = make("div", "marks");
@@ -2750,13 +2750,14 @@ function ubCompanionRender() {
     ubCompanionRefreshMarks();
     minimize.onclick = () => { ubCompanionState.collapsed = !ubCompanionState.collapsed; ubCompanionPersist(); ubCompanionRender(); };
     close.onclick = () => { ubCompanionState.active = false; ubCompanionPersist(); host.remove(); };
-    form.onsubmit = async (event) => { event.preventDefault(); const text = textarea.value.trim(); if (!text) return; send.disabled = true; delivery.textContent = "Enviando…"; try { const sent = await chrome.runtime.sendMessage({ __ubCompanionMessage: { text } }); if (!sent?.ok) throw new Error(sent?.error || "não foi possível enviar"); textarea.value = ""; ubCompanionState.messages.push({ role: "user", text }); ubCompanionState.messages = ubCompanionState.messages.slice(-50); ubCompanionState.message = "Mensagem recebida · vou responder entre as etapas do trabalho."; ubCompanionState.delivery = "Enviada · o agente lê entre as etapas."; ubCompanionPersist(); ubCompanionRender(); } catch (error) { delivery.textContent = String(error?.message || error); send.disabled = false; } };
+    form.onsubmit = async (event) => { event.preventDefault(); const text = textarea.value.trim(); if (!text) return; send.disabled = true; delivery.textContent = "Enviando…"; try { const sent = await chrome.runtime.sendMessage({ __ubCompanionMessage: { text, agentSessionId: ubCompanionState.agentSessionId || "" } }); if (!sent?.ok) throw new Error(sent?.error || "não foi possível enviar"); textarea.value = ""; ubCompanionState.messages.push({ role: "user", text }); ubCompanionState.messages = ubCompanionState.messages.slice(-50); ubCompanionState.message = sent.delivery === "delivered" ? "Mensagem entregue · o agente estava aguardando." : ubCompanionState.agentSessionId ? "Mensagem na fila da sessão do agente." : "Painel sem sessão vinculada; não há agente destinatário."; ubCompanionState.delivery = sent.delivery === "delivered" ? "Agente aguardando e notificado." : ubCompanionState.agentSessionId ? "Enviada · será lida no próximo retorno de ferramenta dessa sessão." : "Sem vínculo de agente · reabra o painel pela conversa desejada."; ubCompanionPersist(); ubCompanionRender(); } catch (error) { delivery.textContent = String(error?.message || error); send.disabled = false; } };
     return { ok: true, active: true };
   } catch (error) { return { ok: false, error: String(error?.message || error).slice(0, 240) }; }
 }
 function ubCompanionCommand(args = {}) {
   const mode = String(args.mode || "open"); if (mode === "close") { ubCompanionState.active = false; ubCompanionPersist(); ubCompanionRender(); return { open: false }; }
   ubCompanionState.active = true; if (args.title) ubCompanionState.title = String(args.title).slice(0, 100);
+  if (args._caniveteAgentSessionId) ubCompanionState.agentSessionId = String(args._caniveteAgentSessionId).slice(0, 120);
   if (args.message !== undefined) { ubCompanionState.message = String(args.message).slice(0, 1000); if (String(args.message).trim() && ["open", "update", "complete"].includes(mode)) { const last = ubCompanionState.messages.at(-1); if (!last || last.role !== "agent" || last.text !== String(args.message)) ubCompanionState.messages.push({ role: "agent", text: String(args.message).slice(0, 2000) }); ubCompanionState.delivery = "Canivete respondeu."; } }
   if (Array.isArray(args.steps)) ubCompanionState.steps = args.steps.map((step) => ({ label: String(step.label || "Passo").slice(0, 120), status: ["pending", "active", "done", "error", "skipped"].includes(step.status) ? step.status : "pending" }));
   if (args.stepIndex != null && ubCompanionState.steps[Number(args.stepIndex)]) {

@@ -618,8 +618,9 @@ reg("cv_ubrowser_act", {
     },
     required: ["action"],
   },
-  run: async (a) => {
+  run: async (a, context = {}) => {
     const t0 = Date.now();
+    const agentSessionId = String(context.agentSessionId || "");
     if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | exemplos: {action:"goto", tab:"trecho", url:"https://..."} / {action:"click", ref:3} / {action:"activate", tab:"Gmail"}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     // roteamento multi-perfil: profile pedido SEM match = erro acionável (lista conectados),
     // nunca despacha em silêncio p/ outro perfil. Um só resolve vale p/ ida e retry.
@@ -639,7 +640,7 @@ reg("cv_ubrowser_act", {
       return devOut({ status: "error", summary: `BLOQUEADO (alto risco). Só com pedido EXPLÍCITO + confirm="<frase do dono>". Ação: ${a.action} ${a.selector || a.url || ""}`, data: { action: a.action, risk }, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (a.action === "companion" && ["read", "wait"].includes(a.mode)) {
       const waitMs = a.mode === "wait" ? Number(a.waitMs ?? 30000) : 0;
-      const messages = await ubCompanionRead({ profile: tgt.id, tabId: a.tabId, waitMs: Number.isFinite(waitMs) ? Math.max(0, waitMs) : 30000 });
+      const messages = await ubCompanionRead({ profile: tgt.id, tabId: a.tabId, agentSessionId, waitMs: Number.isFinite(waitMs) ? Math.max(0, waitMs) : 30000 });
       return devOut({ summary: messages.length ? `${messages.length} mensagem(ns) do usuário no navegador` : "nenhuma mensagem nova no painel do navegador", data: { messages }, telemetry: { execution_time_ms: Date.now() - t0 }, next: messages.length ? [{ tool: "cv_owner_act", reason: "Responda no painel com action=companion, mode=update" }] : [] });
     }
     // CDP do dono (porta 9222, WS persistente): tenta PRIMEIRO se o toggle estiver armado —
@@ -665,7 +666,7 @@ reg("cv_ubrowser_act", {
     if (a.action === "wait") {
       const requested = Number(a.waitMs ?? a.ms), waitMs = Number.isFinite(requested) && requested >= 0 ? requested : 2000;
       await new Promise((r) => setTimeout(r, waitMs));
-      const messages = a.checkInbox === false ? [] : await ubCompanionRead({ profile: tgt.id, tabId: a.tabId });
+      const messages = a.checkInbox === false ? [] : await ubCompanionRead({ profile: tgt.id, tabId: a.tabId, agentSessionId });
       return devOut({ summary: messages.length ? `${messages.length} mensagem(ns) do companion recebida(s) durante a espera` : "wait ok", data: { action: "wait", waitedMs: waitMs, messages }, telemetry: { execution_time_ms: Date.now() - t0 }, next: messages.length ? [{ tool: "cv_owner_act", reason: "Responda no painel com action=companion mode=update antes de continuar" }] : [] });
     }
     const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", monstate: "tab.monstate", cdp: "tab.cdp", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", companion: "tab.companion", console: "tab.console", close: "tab.close", activate: "tab.activate", elem_pick: "tab.elem_pick" };
@@ -704,7 +705,7 @@ reg("cv_ubrowser_act", {
     }, 0) : 0;
     const durationWaitMs = a.action === "flow" ? flowWaitMs : (a.action === "catchup" || a.action === "cursor" || a.action === "click" ? cursorWaitMs : 0);
     const ubTo = Math.max(UB_HEAVY_ACTIONS.has(a.action) ? ubHeavyMs() : UB_TIMEOUT_MS, Number.isFinite(durationWaitMs) ? durationWaitMs : UB_TIMEOUT_MS);
-    let r = await ubSend(map[a.action], { ...a }, ubTo, tgt.id);
+    let r = await ubSend(map[a.action], { ...a, ...(agentSessionId && ["companion", "flow"].includes(a.action) ? { _caniveteAgentSessionId: agentSessionId } : {}) }, ubTo, tgt.id);
     // #43a: evaluate null intermitente (race com JS da página) — 1 retry após 800ms antes de declarar null.
     // v14: vale a verdade mais nova — adota r2 seja ok ou erro (só pendings mantêm o antigo).
     if (a.action === "evaluate" && r && r.ok && (r.data?.value ?? null) === null && !r.data?.error) {
@@ -728,7 +729,7 @@ reg("cv_ubrowser_act", {
       return devOut({ summary: `[flow] pausado após o passo ${d.nextStepIndex || d.steps?.length || 0} para responder no companion: ${(first.text || "mensagem recebida").slice(0, 180)}`, data: { action: "flow", ...d }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Responda ao usuário no painel com action=companion mode=update; depois continue com remainingSteps do resultado." }] });
     }
     if (!['companion', 'flow'].includes(a.action) && a.checkInbox !== false) {
-      const messages = await ubCompanionRead({ profile: tgt.id, tabId: a.tabId });
+      const messages = await ubCompanionRead({ profile: tgt.id, tabId: a.tabId, agentSessionId });
       if (messages.length) return devOut({ summary: `[${a.action}] concluída · mensagem do usuário recebida no navegador`, data: { action: a.action, result: d, messages }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Responda no painel com action=companion mode=update; continue a tarefa depois da resposta." }] });
     }
     if (a.action === "activate") {

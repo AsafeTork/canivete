@@ -39,7 +39,7 @@ Comece por `cv_owner_inspect {action:"overview", tab:"Gmail"}` para obter um map
 
 Abra o painel na página com `cv_owner_act {action:"companion", mode:"open", tab:"Gmail", message:"Vou conferir o formulário e validar o resultado."}`. Ele ocupa a lateral da página com uma camada escurecida discreta; pode ser minimizado ou fechado. Atualize-o com `mode:"update"`, `steps` e `annotations:[{selector,label}]`; as marcações aparecem numa camada isolada, sem alterar atributos do site. O histórico e o painel continuam na mesma guia ao navegar para outro site e sobrevivem a recargas enquanto o Chrome estiver aberto.
 
-`action:"flow"` exibe cada passo na página e verifica mensagens entre as etapas. Se o usuário escrever enquanto o agente trabalha, o fluxo pausa após a ação atual, devolve a mensagem e os `remainingSteps`; o agente responde no painel e pode continuar. Ações avulsas do navegador também entregam mensagens pendentes no retorno. `checkInbox:false` desliga as interrupções e `showProgress:false` oculta o plano. `cv_owner_act` também aceita CDP quando a página exigir interações além dos controles DOM normais.
+`action:"flow"` exibe cada passo na página e verifica mensagens entre as etapas. Mensagens do painel são vinculadas à sessão MCP que abriu o painel e chegam no retorno de qualquer tool do Canivete nessa sessão; outras sessões não consomem essa fila. Se o host multiplexa vários agentes numa única sessão MCP, o Canivete não consegue distingui-los. Em `flow`, o fluxo pausa após a ação atual, devolve a mensagem e `remainingSteps`; o agente responde no painel e pode continuar. Se o agente encerrou o turno e não há uma chamada esperando, MCP não consegue reativar esse turno: a mensagem fica na fila até a próxima chamada da mesma sessão. `checkInbox:false` desliga as interrupções e `showProgress:false` oculta o plano. `cv_owner_act` também aceita CDP quando a página exigir interações além dos controles DOM normais.
 
 ## Config por CLI
 
@@ -197,7 +197,7 @@ a ponte guarda os clipes e um painel local mostra tudo junto do inbox `cv_report
 | `POST /elemreport?token=` | token | cria report de elemento vindo do overlay (dedupe por seletor+nota; devolve o report persistido) |
 | `POST /elemreport-update?token=` | token | edita pack existente (nota, `elements_add`/`elements_remove`, `apagar:true`) e devolve o report atualizado |
 | `POST /companion-message` | token | recebe mensagens digitadas no painel da página e entrega ao agente por uma fila em memória |
-| `POST /companion-poll` | token | entrega mensagens ao fluxo ativo entre etapas; extensão e agente consomem a mesma fila |
+| `POST /companion-poll` | token | entrega mensagens ao fluxo entre etapas, filtradas pela sessão MCP vinculada ao painel |
 
 Como o agente usa (Chrome do dono, via `cv_owner_act`):
 
@@ -209,14 +209,14 @@ act {action:"evaluate", js:"window.__ubReplay=true;dispatchEvent(new Event('ub-r
 - Painel: `http://127.0.0.1:19422/painel` — clique numa linha expande in place; "Olhar replay" monta o player rrweb.
 - Shim em app de teste: `<script src="http://127.0.0.1:19422/uierr.js"></script>` + `window.__ubTags` + `window.__ubReplay=true` (badge visual do último erro; NENHUM POST — quem envia é o mon-hook).
 - Replay grava janela de 2400 eventos (mousemove/scroll/input amostrados) e manda o clipe no erro (1 por 45s) → `~/.config/canivete/replays/<id>.json`.
-- NOTA de segurança: ponte escuta **só em 127.0.0.1**; rotas de leitura do painel são públicas na máquina local, escritas (POST) continuam token-only. Companion/overview/grupos de guias exigem extensão v1.9.9+; observabilidade usa mon-hook v4.
+- NOTA de segurança: ponte escuta **só em 127.0.0.1**; rotas de leitura do painel são públicas na máquina local, escritas (POST) continuam token-only. Companion/overview/grupos de guias exigem extensão v1.10.0+; observabilidade usa mon-hook v4.
 
 ## Solução de problemas
 
 - **Porta ocupada** (`EADDRINUSE`): duas sessões no mesmo projeto — o segundo loga e tenta de novo no primeiro uso, ou mude `CANIVETE_BRIDGE_PORT`/`CANIVETE_CDP_PORT`.
 - **Extensão offline**: Chrome aberto, janela normal, popup ATIVO, token igual ao arquivo. `cv_owner_inspect {action:"status"}` diagnostica.
-- **Painel/chat não aparece**: confirme extensão v1.9.9+ e que a página permite scripts. `chrome://`, páginas protegidas e políticas empresariais podem bloquear a injeção.
-- **Mensagem sem resposta enquanto o agente trabalha**: confirme que o servidor foi reiniciado com `/companion-poll`; o agente lê mensagens no próximo retorno de ação do navegador ou entre passos de `flow`.
+- **Painel/chat não aparece**: confirme extensão v1.10.0+ e que a página permite scripts. `chrome://`, páginas protegidas e políticas empresariais podem bloquear a injeção.
+- **Mensagem sem resposta**: a confirmação do painel distingue agente aguardando de mensagem enfileirada. A fila é vinculada à sessão MCP que abriu o painel; ela é entregue após qualquer tool dessa sessão. Se o turno terminou, o host precisa iniciar outra chamada para o mesmo agente; MCP não consegue acordar uma conversa ociosa por conta própria.
 - **Overview não mostra o controle**: pagine com `nextOffset` ou use `cv_owner_inspect {action:"snapshot",find:"texto"}` para localizar controles da página.
 - **SW dormente**: popup → Testar conexão; alarms reacordam em ~1min.
 - **`chrome://`**: Chrome bloqueia automação nessas páginas (limite dele).

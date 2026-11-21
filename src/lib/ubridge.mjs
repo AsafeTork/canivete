@@ -75,13 +75,14 @@ let ubAlertsUnread = 0;
 const ubCompanionMessages = [];
 const ubCompanionWaiters = new Set();
 function ubCompanionMatches(message, filter = {}) {
-  return (!filter.profile || message.profile === filter.profile) && (filter.tabId == null || Number(message.tabId) === Number(filter.tabId));
+  return (!filter.profile || message.profile === filter.profile) && (filter.tabId == null || Number(message.tabId) === Number(filter.tabId)) && (!filter.agentSessionId || message.agentSessionId === filter.agentSessionId);
 }
 function ubCompanionPush(input = {}) {
   const message = {
     id: `cm${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
     at: new Date().toISOString(),
     profile: String(input.profile || ""),
+    agentSessionId: String(input.agentSessionId || "").slice(0, 120),
     tabId: Number(input.tabId) || null,
     title: String(input.title || "").slice(0, 160),
     url: String(input.url || "").slice(0, 500),
@@ -90,17 +91,19 @@ function ubCompanionPush(input = {}) {
   if (!message.text) return null;
   const waiter = [...ubCompanionWaiters].find((item) => ubCompanionMatches(message, item.filter));
   if (waiter) {
+    message.delivery = "delivered";
     ubCompanionWaiters.delete(waiter);
     clearTimeout(waiter.timer);
     waiter.resolve([message]);
   } else {
+    message.delivery = "queued";
     ubCompanionMessages.push(message);
     if (ubCompanionMessages.length > 100) ubCompanionMessages.shift();
   }
   return message;
 }
-function ubCompanionRead({ profile, tabId, waitMs = 0, max = 10 } = {}) {
-  const filter = { ...(profile ? { profile: String(profile) } : {}), ...(tabId != null ? { tabId } : {}) };
+function ubCompanionRead({ profile, tabId, agentSessionId, waitMs = 0, max = 10 } = {}) {
+  const filter = { ...(profile ? { profile: String(profile) } : {}), ...(tabId != null ? { tabId } : {}), ...(agentSessionId ? { agentSessionId: String(agentSessionId) } : {}) };
   const limit = Number.isFinite(Number(max)) ? Math.max(1, Math.min(25, Math.floor(Number(max)))) : 10;
   const messages = [];
   while (messages.length < limit) {
@@ -527,12 +530,12 @@ function ubEnsure() {
           let input = {}; try { input = JSON.parse(body); } catch {}
           const message = ubCompanionPush(input);
           if (!message) { res.writeHead(400, { "content-type": "application/json" }); res.end('{"ok":false,"error":"mensagem vazia"}'); return; }
-          try { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", logger: "canivete", data: `💬 mensagem do navegador: ${message.title || message.url || `aba ${message.tabId || "?"}`} — use cv_owner_act action=companion mode=read` } }) + "\n"); } catch {}
-          res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, id: message.id })); return;
+          try { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", logger: "canivete", data: `💬 mensagem do navegador: ${message.title || message.url || `aba ${message.tabId || "?"}`} — destinada à sessão ${message.agentSessionId || "sem vínculo"}` } }) + "\n"); } catch {}
+          res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, id: message.id, delivery: message.delivery })); return;
         }
         if (u.pathname === "/companion-poll") {
           let input = {}; try { input = JSON.parse(body); } catch {}
-          const messages = await ubCompanionRead({ profile: input.profile, tabId: input.tabId });
+          const messages = await ubCompanionRead({ profile: input.profile, tabId: input.tabId, agentSessionId: input.agentSessionId });
           res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, messages })); return;
         }
         if (u.pathname === "/replay") {
