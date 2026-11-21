@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "19"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "20"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -2692,7 +2692,7 @@ if (!globalThis.__ubCompanionListeners) {
 function ubCompanionRender() {
   try {
     let host = document.getElementById("ubrowser-companion");
-    if (!ubCompanionState.active) { host?.remove(); return; }
+    if (!ubCompanionState.active) { host?.remove(); return { ok: true, active: false }; }
     if (!host) { host = document.createElement("div"); host.id = "ubrowser-companion"; document.documentElement.appendChild(host); }
     const root = host.shadowRoot || host.attachShadow({ mode: "open" });
     const make = (tag, className, text) => {
@@ -2751,7 +2751,8 @@ function ubCompanionRender() {
     minimize.onclick = () => { ubCompanionState.collapsed = !ubCompanionState.collapsed; ubCompanionPersist(); ubCompanionRender(); };
     close.onclick = () => { ubCompanionState.active = false; ubCompanionPersist(); host.remove(); };
     form.onsubmit = async (event) => { event.preventDefault(); const text = textarea.value.trim(); if (!text) return; send.disabled = true; delivery.textContent = "Enviando…"; try { const sent = await chrome.runtime.sendMessage({ __ubCompanionMessage: { text } }); if (!sent?.ok) throw new Error(sent?.error || "não foi possível enviar"); textarea.value = ""; ubCompanionState.messages.push({ role: "user", text }); ubCompanionState.messages = ubCompanionState.messages.slice(-50); ubCompanionState.message = "Mensagem recebida · vou responder entre as etapas do trabalho."; ubCompanionState.delivery = "Enviada · o agente lê entre as etapas."; ubCompanionPersist(); ubCompanionRender(); } catch (error) { delivery.textContent = String(error?.message || error); send.disabled = false; } };
-  } catch {}
+    return { ok: true, active: true };
+  } catch (error) { return { ok: false, error: String(error?.message || error).slice(0, 240) }; }
 }
 function ubCompanionCommand(args = {}) {
   const mode = String(args.mode || "open"); if (mode === "close") { ubCompanionState.active = false; ubCompanionPersist(); ubCompanionRender(); return { open: false }; }
@@ -2763,7 +2764,9 @@ function ubCompanionCommand(args = {}) {
     if (!(mode === "complete" && current.status === "error")) current.status = mode === "complete" ? "done" : "active";
   }
   if (Array.isArray(args.annotations)) ubCompanionState.annotations = args.annotations.slice(0, 30).map((item) => ({ selector: String(item.selector || "").slice(0, 500), label: String(item.label || "Alvo").slice(0, 100), color: String(item.color || "").slice(0, 30) }));
-  ubCompanionPersist(); ubCompanionRender(); return { open: true, messages: ubCompanionState.messages.length, steps: ubCompanionState.steps.length, annotations: ubCompanionState.annotations.length };
+  ubCompanionPersist();
+  const rendered = ubCompanionRender();
+  return { open: true, messages: ubCompanionState.messages.length, steps: ubCompanionState.steps.length, annotations: ubCompanionState.annotations.length, rendered: rendered?.ok === true, ...(rendered?.error ? { renderError: rendered.error } : {}) };
 }
 ubCompanionRestore();
 
