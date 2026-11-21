@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { sleep } from "../core/retry.mjs";
 import { reg, devOut, trimOut } from "./ctx.mjs";
-import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
+import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint, ubCompanionRead, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
 import { ownerCdpSend } from "./cdp.mjs";
 import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks } from "../core/snapshot.mjs";
 // recovery sem mudar protocolo: só texto de erro acionável (janela NORMAL, popup, token) + fallback headless
@@ -239,6 +239,20 @@ reg("cv_ubrowser_tabs", {
     const f = ubTabsFilterMax(slim, filter, max, offset);
     const omitNote = f.omitted ? ` (${f.omitted} restantes; offset=${offset + f.tabs.length} para continuar)` : "";
     return devOut({ summary: `${f.tabs.length} aba(s) em ${wins.length || "?"} janela(s)${omitNote}`, data: { tabs: f.tabs, profiles: ext0 ? [{ id: ext0.id, ...(ext0.profileLabel ? { label: ext0.profileLabel } : {}), windows: wins.length, tabs: (Array.isArray(tabs) ? tabs : []).length }] : [], total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_read", reason: "Ler aba ativa" }] });
+  },
+});
+
+reg("cv_ubrowser_overview", {
+  description: "Mapa compacto da aba: estrutura, regiões, títulos, formulários e controles com seletores prontos para agir. Reduz chamadas de reconhecimento; use snapshot/read só para aprofundar a região necessária.",
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL" }, max: { type: "number", default: 35, description: "quantidade de controles por página" }, offset: { type: "number", default: 0, description: "paginação de controles (use nextOffset)" }, profile: { type: "string" } }, required: [] },
+  run: async ({ tabId, tab, max = 35, offset = 0, profile } = {}) => {
+    const t0 = Date.now(), tgt = ubTarget(profile);
+    if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const r = await ubSend("tab.overview", { tabId, tab, max, offset }, UB_TIMEOUT_MS, tgt.id);
+    if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const d = r.data || {};
+    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos · ${d.forms?.length || 0} formulários`, data: d, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Use um selector do overview para agir ou marque um elemento com companion" }] });
   },
 });
 
@@ -555,11 +569,11 @@ reg("cv_ubrowser_snapshot", {
 });
 
 reg("cv_ubrowser_act", {
-  description: "Opera o Chrome autenticado em qualquer guia escolhida. Guias novas entram no grupo Canivete; as existentes seguem acessíveis. A janela-alvo ganha foco por padrão (focus:false preserva o atual). Use click/fill/type/scroll/cursor ou CDP (`cdp` + método e params). Cursor: coordenadas/selector, movimento animado e hover sem teto artificial; mousemove CDP atua na página, não move o ponteiro físico do SO. `flow` combina passos. Alto risco requer confirmação.",
+  description: "Opera o Chrome autenticado na guia escolhida; `goto` troca o site nessa mesma guia. Guias novas entram no grupo Canivete e as existentes seguem acessíveis. A janela-alvo ganha foco por padrão (`focus:false` preserva o atual). Use CDP quando necessário. `companion` abre um chat e plano visíveis na página; marcações apontam alvos sem alterar atributos do site. `flow` exibe o progresso automaticamente. Cursor: coordenadas/selector, movimento animado e hover. Alto risco requer confirmação.",
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "monstate", "cdp", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "console", "close", "activate", "elem_pick"] },
+      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "monstate", "cdp", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "companion", "console", "close", "activate", "elem_pick"] },
       off: { type: "boolean", description: "p/ elem_pick: desliga o modo de marcação" },
       tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, url: { type: "string" }, selector: { type: "string" }, text: { type: "string" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — omitir = mais recente" },
       ref: { type: "number", description: "ref do snapshot (resolve p/ selector via cache; expira se navegar — re-snapshot)" },
@@ -569,6 +583,11 @@ reg("cv_ubrowser_act", {
       value: { type: "string", description: "valor p/ select (match por texto ou value da option)" },
       timeoutMs: { type: "number", description: "tempo de espera para waittext/evaluate" },
       steps: { type: "array", description: "p/ flow: sequência de comandos [{cmd, ...args}] em uma ida-volta", items: { type: "object" } },
+      showProgress: { type: "boolean", description: "p/ flow: exibe o passo a passo no painel da página (default true)" },
+      progressTitle: { type: "string" }, progressMessage: { type: "string" },
+      mode: { type: "string", enum: ["close_by_prefix", "open", "update", "close", "read", "wait"], description: "p/ close: close_by_prefix; p/ companion: abrir/atualizar/fechar o painel, ou ler/aguardar mensagens do usuário" },
+      message: { type: "string", description: "mensagem visível no painel companion" },
+      annotations: { type: "array", description: "marcações visuais independentes do DOM do site: [{selector,label,color}]", items: { type: "object" } },
       key: { type: "string" }, js: { type: "string" }, ms: { type: "number" },
       x: { type: "number", description: "viewport X p/ cursor|tooltip" }, y: { type: "number", description: "viewport Y p/ cursor|tooltip" },
       click: { type: "boolean", description: "cursor clica ao chegar (TRUSTED via CDP por padrão; trusted:false = sintético)" },
@@ -587,7 +606,6 @@ reg("cv_ubrowser_act", {
       durationMs: { type: "number", description: "duração do movimento do cursor; janela do catchup quando action=catchup" },
       intervalMs: { type: "number", description: "intervalo entre amostras do catchup (ms)" },
       urlPrefix: { type: "string", description: "prefixo para fechar guias correspondentes; operação em lote exige confirm" },
-      mode: { type: "string", description: "p/ close: \"close_by_prefix\" fecha TODAS as abas com urlPrefix (default about:blank)" },
       expectUrl: { type: "string", description: "p/ click/fill/type/select: substring que deve aparecer na URL após settle" },
       expectText: { type: "string", description: "p/ click/fill/type/select: substring que deve aparecer no texto após settle" },
       expectGone: { type: "string", description: "p/ click/fill/type/select: selector que deve SUMIR após settle" },
@@ -618,6 +636,11 @@ reg("cv_ubrowser_act", {
     const risk = ubRisk(a);
     if (risk === "high" && !(a.confirm && a.confirm.trim().length >= 4))
       return devOut({ status: "error", summary: `BLOQUEADO (alto risco). Só com pedido EXPLÍCITO + confirm="<frase do dono>". Ação: ${a.action} ${a.selector || a.url || ""}`, data: { action: a.action, risk }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (a.action === "companion" && ["read", "wait"].includes(a.mode)) {
+      const waitMs = a.mode === "wait" ? Number(a.waitMs ?? 30000) : 0;
+      const messages = await ubCompanionRead({ profile: tgt.id, tabId: a.tabId, waitMs: Number.isFinite(waitMs) ? Math.max(0, waitMs) : 30000 });
+      return devOut({ summary: messages.length ? `${messages.length} mensagem(ns) do usuário no navegador` : "nenhuma mensagem nova no painel do navegador", data: { messages }, telemetry: { execution_time_ms: Date.now() - t0 }, next: messages.length ? [{ tool: "cv_owner_act", reason: "Responda no painel com action=companion, mode=update" }] : [] });
+    }
     // CDP do dono (porta 9222, WS persistente): tenta PRIMEIRO se o toggle estiver armado —
     // sem banner e alcança chrome://. Modo em efeito (escolha do dono): toggle OFF → o fast-fail
     // do ownerConnect recusa em ms e a extensão abaixo responde tudo (zero cliques). tab:"trecho" casa URL/título; indisponível
@@ -639,7 +662,7 @@ reg("cv_ubrowser_act", {
       }
     }
     if (a.action === "wait") { const requested = Number(a.waitMs ?? a.ms); const waitMs = Number.isFinite(requested) && requested >= 0 ? requested : 2000; await new Promise((r) => setTimeout(r, waitMs)); return devOut({ summary: "wait ok", data: { action: "wait", waitedMs: waitMs }, telemetry: { execution_time_ms: Date.now() - t0 } }); }
-    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", monstate: "tab.monstate", cdp: "tab.cdp", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", console: "tab.console", close: "tab.close", activate: "tab.activate", elem_pick: "tab.elem_pick" };
+    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", monstate: "tab.monstate", cdp: "tab.cdp", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", companion: "tab.companion", console: "tab.console", close: "tab.close", activate: "tab.activate", elem_pick: "tab.elem_pick" };
     if (!map[a.action]) return devOut({ status: "error", summary: `action "${a.action}" desconhecida — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // valida antes da ida-volta: param que a extensão joga como throw vira erro AQUI com exemplo pronto p/ colar.
     {
@@ -701,6 +724,10 @@ reg("cv_ubrowser_act", {
       const where = (tb.title || tb.url) ? `${String(tb.title || "").slice(0, 60)} — ${String(tb.url || "").slice(0, 80)}` : ((tb.tabId ?? tb.id) !== undefined ? `tabId ${tb.tabId ?? tb.id}` : (a.tab ? `"${String(a.tab).slice(0, 40)}"` : "aba alvo"));
       const actNext = [{ tool: "cv_ubrowser_snapshot", reason: "Janela em foco — mapeie controles atualizados" }];
       return devOut({ summary: `[activate] ok — aba à frente NO Chrome: ${where}${focused ? " + janela em foco" : " (foco preservado por solicitação)"}`, data: { action: "activate", risk, focused, tabId: tb.tabId ?? tb.id ?? d.id, ...(tb.title ? { title: String(tb.title).slice(0, 100) } : {}), ...(tb.url ? { url: String(tb.url).slice(0, 200) } : {}), ...(d.window ? { window: d.window } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: actNext });
+    }
+    if (a.action === "companion") {
+      const open = d.open !== false;
+      return devOut({ summary: open ? `[companion] painel aberto · ${d.steps || 0} passo(s) · ${d.annotations || 0} marcação(ões)` : "[companion] painel fechado", data: { action: "companion", ...d }, telemetry: { execution_time_ms: Date.now() - t0 }, next: open ? [{ tool: "cv_owner_act", reason: "Aguardar mensagens do usuário com action=companion, mode=wait; responder com mode=update" }] : [] });
     }
     if (a.action === "reload-extension") {
       // auto-reload remoto da extensão (aplica código novo do disco).

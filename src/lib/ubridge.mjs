@@ -72,6 +72,45 @@ function ubNextIdx(extId) {
 // Ring global (cap 30) + contador não-lidos; `console` marca lido; hint nas respostas.
 const ubAlerts = [];
 let ubAlertsUnread = 0;
+const ubCompanionMessages = [];
+const ubCompanionWaiters = new Set();
+function ubCompanionMatches(message, filter = {}) {
+  return (!filter.profile || message.profile === filter.profile) && (filter.tabId == null || Number(message.tabId) === Number(filter.tabId));
+}
+function ubCompanionPush(input = {}) {
+  const message = {
+    id: `cm${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+    at: new Date().toISOString(),
+    profile: String(input.profile || ""),
+    tabId: Number(input.tabId) || null,
+    title: String(input.title || "").slice(0, 160),
+    url: String(input.url || "").slice(0, 500),
+    text: String(input.text || "").trim().slice(0, 4000),
+  };
+  if (!message.text) return null;
+  const waiter = [...ubCompanionWaiters].find((item) => ubCompanionMatches(message, item.filter));
+  if (waiter) {
+    ubCompanionWaiters.delete(waiter);
+    clearTimeout(waiter.timer);
+    waiter.resolve([message]);
+  } else {
+    ubCompanionMessages.push(message);
+    if (ubCompanionMessages.length > 100) ubCompanionMessages.shift();
+  }
+  return message;
+}
+function ubCompanionRead({ profile, tabId, waitMs = 0 } = {}) {
+  const filter = { ...(profile ? { profile: String(profile) } : {}), ...(tabId != null ? { tabId } : {}) };
+  const idx = ubCompanionMessages.findIndex((message) => ubCompanionMatches(message, filter));
+  if (idx >= 0) return Promise.resolve([ubCompanionMessages.splice(idx, 1)[0]]);
+  const ms = Number(waitMs);
+  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    const item = { filter, resolve, timer: null };
+    item.timer = setTimeout(() => { ubCompanionWaiters.delete(item); resolve([]); }, ms);
+    ubCompanionWaiters.add(item);
+  });
+}
 // dedupe de persistência: mesmo kind|text|url dentro de 10min grava 1× só no mon-log
 // (páginas que erram em loop não lotam o painel; o ring em memória segue completo)
 const ubAlertsSeen = new Map();
@@ -471,9 +510,20 @@ function ubEnsure() {
         try { req.on("close", () => { const i = ubWaiters.findIndex((w) => w.res === res); if (i >= 0) { ubWaiters.splice(i, 1); clearTimeout(t); } }); } catch (e) { process.stderr.write(`[canivete] ub poll close-hook falhou (${e?.message || e})\n`); }
         return;
       }
-      if (req.method === "POST" && (u.pathname === "/hello" || u.pathname === "/result" || u.pathname === "/exec" || u.pathname === "/ubpush" || u.pathname === "/replay" || u.pathname === "/elemreport" || u.pathname === "/elemreport-update")) {
+      if (req.method === "POST" && (u.pathname === "/hello" || u.pathname === "/result" || u.pathname === "/exec" || u.pathname === "/ubpush" || u.pathname === "/replay" || u.pathname === "/elemreport" || u.pathname === "/elemreport-update" || u.pathname === "/companion-message")) {
+        if (u.pathname === "/companion-message") {
+          const token = req.headers["x-token"], good = ubToken();
+          if (!good || token !== good) { res.writeHead(401); res.end("bad token"); return; }
+        }
         let body = "";
         await new Promise((ok, fail) => { const ch = []; let n = 0; req.on("data", (c) => { n += c.length; if (n > 20 * 1024 * 1024) fail(new Error("body > 20MB")); else ch.push(c); }); req.on("end", () => { body = Buffer.concat(ch).toString("utf8"); ok(); }); req.on("error", fail); });
+        if (u.pathname === "/companion-message") {
+          let input = {}; try { input = JSON.parse(body); } catch {}
+          const message = ubCompanionPush(input);
+          if (!message) { res.writeHead(400, { "content-type": "application/json" }); res.end('{"ok":false,"error":"mensagem vazia"}'); return; }
+          try { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", logger: "canivete", data: `💬 mensagem do navegador: ${message.title || message.url || `aba ${message.tabId || "?"}`} — use cv_owner_act action=companion mode=read` } }) + "\n"); } catch {}
+          res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, id: message.id })); return;
+        }
         if (u.pathname === "/replay") {
           // clipe de replay (mon-hook v4 → content → background): JSON {t,url,tags,err,rrweb[]}.
           // Grava o body RAW p/ alimentar o Replayer sem re-parse/re-stringify; índice vira
@@ -662,7 +712,7 @@ export function ubListExtensions() {
 
 import { riskOf as ubRisk } from "./risk.mjs";
 
-export { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubAlertsPush, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint };
+export { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubAlertsPush, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint, ubCompanionRead };
 export function ubStats() {
   // reutiliza ubListExtensions (fonte única): id/idade/connected/profileLabel/queued/info por cliente
   const extensions = ubListExtensions();

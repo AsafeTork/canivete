@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "16"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "17"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -2631,6 +2631,80 @@ function ubElemPickStart(opts) {
     return { picker: false, error: String(e && e.message || e).slice(0, 120) };
   }
 }
+function ubPageOverview(max = 35, offset = 0) {
+  const visible = (el) => { try { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden" && Number(s.opacity) !== 0; } catch { return false; } };
+  const textOf = (el, n = 100) => String(el?.innerText || el?.value || el?.getAttribute?.("aria-label") || el?.getAttribute?.("title") || "").replace(/\s+/g, " ").trim().slice(0, n);
+  const headings = [...document.querySelectorAll("h1,h2,h3,[role=heading]")].filter(visible).map((el) => ({ level: Number(el.getAttribute("aria-level")) || Number(el.tagName.slice(1)) || 0, text: textOf(el, 140), selector: cssPath(el) }));
+  const controls = ubShadowQueryAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[contenteditable="true"]').filter(visible).map((el) => {
+    const r = el.getBoundingClientRect(), name = ubAccessibleName(el, textOf(el, 100));
+    return { tag: el.tagName.toLowerCase(), role: ubAriaRole(el), name: String(name || textOf(el, 100)).slice(0, 100), type: el.type || "", state: ubElementState(el), selector: cssPath(el), inViewport: r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth, ...(el.href ? { href: String(el.href).slice(0, 240) } : {}) };
+  });
+  const cap = Number.isFinite(Number(max)) && Number(max) > 0 ? Math.floor(Number(max)) : 35;
+  const start = Number.isFinite(Number(offset)) ? Math.max(0, Math.floor(Number(offset))) : 0;
+  const landmarks = [...document.querySelectorAll("main,nav,header,footer,aside,[role=main],[role=navigation],[role=search],[role=dialog]")].filter(visible).map((el) => ({ role: ubAriaRole(el) || el.tagName.toLowerCase(), name: textOf(el, 80), selector: cssPath(el) }));
+  const pageControls = controls.slice(start, start + cap);
+  return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: controls.length, controlsOffset: start, controlsOmitted: Math.max(0, controls.length - start - pageControls.length), nextOffset: start + pageControls.length < controls.length ? start + pageControls.length : null, overlays: ubOverlayState(), hint: "Use os selectors para agir. Leia só a região relevante; snapshot/find serve para mapear detalhes." };
+}
+
+var ubCompanionState = globalThis.__ubCompanionState || { active: false, messages: [], steps: [], annotations: [], title: "Canivete", message: "" };
+globalThis.__ubCompanionState = ubCompanionState;
+function ubCompanionRefreshMarks() {
+  try {
+    const root = document.getElementById("ubrowser-companion")?.shadowRoot;
+    const marks = root?.querySelector(".marks"); if (!marks) return;
+    marks.replaceChildren();
+    for (const item of (ubCompanionState.annotations || [])) {
+      try {
+        const el = item.selector ? findEl(String(item.selector)) : null; if (!el) continue;
+        const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue;
+        const box = document.createElement("div"); box.className = "mark";
+        if (item.color) box.style.borderColor = String(item.color).slice(0, 30);
+        Object.assign(box.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+        const tag = document.createElement("span"); tag.textContent = item.label || "Alvo"; box.appendChild(tag); marks.appendChild(box);
+      } catch {}
+    }
+  } catch {}
+}
+if (!globalThis.__ubCompanionListeners) {
+  globalThis.__ubCompanionListeners = true;
+  try { document.addEventListener("scroll", ubCompanionRefreshMarks, { capture: true, passive: true }); window.addEventListener("resize", ubCompanionRefreshMarks, { passive: true }); } catch {}
+}
+function ubCompanionRender() {
+  try {
+    let host = document.getElementById("ubrowser-companion");
+    if (!ubCompanionState.active) { host?.remove(); return; }
+    if (!host) { host = document.createElement("div"); host.id = "ubrowser-companion"; document.documentElement.appendChild(host); }
+    const root = host.shadowRoot || host.attachShadow({ mode: "open" });
+    root.innerHTML = `<style>
+      :host{all:initial}.stage{position:fixed;inset:0;z-index:2147483646;pointer-events:none;font:13px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;color:#f4f1e8}.panel{pointer-events:auto;position:fixed;right:18px;top:18px;width:min(370px,calc(100vw - 36px));max-height:min(78vh,720px);display:flex;flex-direction:column;background:#171914;border:1px solid #a9d958;border-radius:14px;box-shadow:0 18px 60px #0009;overflow:hidden}header{display:flex;align-items:center;gap:8px;padding:12px 14px;background:#22271d;border-bottom:1px solid #3c4631}header strong{flex:1;color:#d7f79a}button{font:inherit;cursor:pointer;color:inherit;background:#30372a;border:1px solid #556147;border-radius:8px;padding:6px 9px}.body{overflow:auto;padding:12px 14px;display:grid;gap:12px}.status{color:#d3d9c8;white-space:pre-wrap}.steps{list-style:none;margin:0;padding:0;display:grid;gap:5px}.steps li{display:flex;gap:8px;color:#b8beac}.steps li.active{color:#e8ffc1}.steps li.done{color:#a6d86b}.steps li.error{color:#ff9b89}.badge{width:18px;height:18px;flex:none;display:grid;place-items:center;border-radius:50%;background:#30372a;font-size:11px}.messages{display:grid;gap:7px;max-height:220px;overflow:auto}.bubble{padding:8px 10px;border-radius:10px;background:#252a21;white-space:pre-wrap;overflow-wrap:anywhere}.bubble.user{background:#293546}.bubble.agent{border-left:2px solid #b5e865}.who{font-size:10px;opacity:.7;margin-bottom:2px}.composer{display:grid;grid-template-columns:1fr auto;gap:7px}.composer textarea{resize:vertical;min-height:48px;max-height:130px;background:#10120e;color:#fff;border:1px solid #48533c;border-radius:8px;padding:8px;font:inherit}.collapsed .body{display:none}.mark{position:fixed;border:2px solid #c4ff63;border-radius:5px;background:#c4ff6318;box-shadow:0 0 0 2px #1118;pointer-events:none}.mark span{position:absolute;left:-2px;top:-24px;white-space:nowrap;background:#c4ff63;color:#111;border-radius:5px;padding:3px 7px;font-weight:700;max-width:240px;overflow:hidden;text-overflow:ellipsis}
+    </style><div class="stage"><section class="panel"><header><strong></strong><button class="min" type="button" aria-label="Minimizar">−</button><button class="close" type="button" aria-label="Fechar painel">×</button></header><div class="body"><div class="status"></div><ol class="steps"></ol><div class="messages" aria-live="polite"></div><form class="composer"><textarea maxlength="4000" aria-label="Mensagem para o agente" placeholder="Escreva para o agente…"></textarea><button type="submit">Enviar</button></form><small class="delivery">Mensagens ficam nesta sessão local.</small></div></section><div class="marks"></div></div>`;
+    root.querySelector("header strong").textContent = ubCompanionState.title || "Canivete";
+    root.querySelector(".status").textContent = ubCompanionState.message || "Conversa com o agente";
+    const panel = root.querySelector(".panel"); if (ubCompanionState.collapsed) panel.classList.add("collapsed");
+    const list = root.querySelector(".steps");
+    for (const [i, step] of (ubCompanionState.steps || []).entries()) { const li = document.createElement("li"); li.className = step.status || "pending"; const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = step.status === "done" ? "✓" : step.status === "active" ? "•" : step.status === "error" ? "!" : step.status === "skipped" ? "–" : String(i + 1); const label = document.createElement("span"); label.textContent = step.label || `Passo ${i + 1}`; li.append(badge, label); list.appendChild(li); }
+    const messages = root.querySelector(".messages");
+    for (const item of (ubCompanionState.messages || []).slice(-30)) { const bubble = document.createElement("div"); bubble.className = `bubble ${item.role || "agent"}`; const who = document.createElement("div"); who.className = "who"; who.textContent = item.role === "user" ? "Você" : "Canivete"; const text = document.createElement("div"); text.textContent = item.text || ""; bubble.append(who, text); messages.appendChild(bubble); }
+    messages.scrollTop = messages.scrollHeight;
+    ubCompanionRefreshMarks();
+    root.querySelector(".min").onclick = () => { ubCompanionState.collapsed = !ubCompanionState.collapsed; ubCompanionRender(); };
+    root.querySelector(".close").onclick = () => { ubCompanionState.active = false; host.remove(); };
+    root.querySelector(".composer").onsubmit = async (event) => { event.preventDefault(); const input = root.querySelector("textarea"), text = input.value.trim(); if (!text) return; const button = root.querySelector('button[type="submit"]'), delivery = root.querySelector(".delivery"); button.disabled = true; delivery.textContent = "Enviando…"; try { const sent = await chrome.runtime.sendMessage({ __ubCompanionMessage: { text } }); if (!sent?.ok) throw new Error(sent?.error || "não foi possível enviar"); ubCompanionState.messages.push({ role: "user", text }); ubCompanionState.messages = ubCompanionState.messages.slice(-30); ubCompanionState.message = "Mensagem enviada; o agente recebe ao ler ou aguardar neste painel."; ubCompanionRender(); } catch (error) { delivery.textContent = String(error?.message || error); button.disabled = false; } };
+  } catch {}
+}
+function ubCompanionCommand(args = {}) {
+  const mode = String(args.mode || "open"); if (mode === "close") { ubCompanionState.active = false; ubCompanionRender(); return { open: false }; }
+  ubCompanionState.active = true; if (args.title) ubCompanionState.title = String(args.title).slice(0, 100);
+  if (args.message !== undefined) { ubCompanionState.message = String(args.message).slice(0, 1000); if (String(args.message).trim() && ["open", "update", "complete"].includes(mode)) { const last = ubCompanionState.messages.at(-1); if (!last || last.role !== "agent" || last.text !== String(args.message)) ubCompanionState.messages.push({ role: "agent", text: String(args.message).slice(0, 2000) }); } }
+  if (Array.isArray(args.steps)) ubCompanionState.steps = args.steps.map((step) => ({ label: String(step.label || "Passo").slice(0, 120), status: ["pending", "active", "done", "error", "skipped"].includes(step.status) ? step.status : "pending" }));
+  if (args.stepIndex != null && ubCompanionState.steps[Number(args.stepIndex)]) {
+    const current = ubCompanionState.steps[Number(args.stepIndex)];
+    if (!(mode === "complete" && current.status === "error")) current.status = mode === "complete" ? "done" : "active";
+  }
+  if (Array.isArray(args.annotations)) ubCompanionState.annotations = args.annotations.slice(0, 30).map((item) => ({ selector: String(item.selector || "").slice(0, 500), label: String(item.label || "Alvo").slice(0, 100), color: String(item.color || "").slice(0, 30) }));
+  ubCompanionRender(); return { open: true, messages: ubCompanionState.messages.length, steps: ubCompanionState.steps.length, annotations: ubCompanionState.annotations.length };
+}
+
 // boot: re-aplica os highlights dos reports abertos deste site (cache do background, TTL 60s)
 try {
   chrome.runtime.sendMessage({ __ubElemGet: { origin: location.origin } }).then((r) => {
@@ -2643,6 +2717,8 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
     const a = msg.args || {};
     if (msg.cmd === "ping") { reply({ ok: true, data: { v: UB_V } }); return; }
     if (msg.cmd === "state") { reply({ ok: true, data: { title: document.title, url: location.href } }); return; }
+    if (msg.cmd === "overview") { reply({ ok: true, data: ubPageOverview(a.max, a.offset) }); return; }
+    if (msg.cmd === "companion") { reply({ ok: true, data: ubCompanionCommand(a) }); return; }
     if (msg.cmd === "read") {
       // settle antes de coletar: SPA hidrata depois do idle; sem isso lê esqueleto (BulkMD: 60%→95%).
       try { await ubSettle({ timeout: 1500, quiet: 250 }); } catch {}

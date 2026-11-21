@@ -162,16 +162,17 @@ export function installToolConsolidation() {
 
   addComposite({
     name: "cv_owner_inspect",
-    description: "Consulta o Chrome logado do dono: status, abas, texto, controles ou imagem. Escolha action. Para clicar/preencher use cv_owner_act; para consumir alertas use cv_owner_alerts.",
+    description: "Entenda a página autenticada em uma chamada: overview compacto, leitura, controles, guias ou imagem. Para agir/chat use cv_owner_act; alertas ficam em cv_owner_alerts.",
     variants: [
       { action: "status", source: "cv_ubrowser_status" },
       { action: "tabs", source: "cv_ubrowser_tabs" },
       { action: "read", source: "cv_ubrowser_read" },
       { action: "snapshot", source: "cv_ubrowser_snapshot" },
+      { action: "overview", source: "cv_ubrowser_overview" },
       { action: "screenshot", source: "cv_ubrowser_shot" },
     ],
   });
-  addAlias({ name: "cv_owner_act", source: "cv_ubrowser_act", description: "Opera o Chrome autenticado em qualquer guia escolhida; guias novas entram no grupo Canivete. A janela-alvo ganha foco por padrão (focus:false preserva o atual). Use CDP quando necessário; confirmações ficam para ações de alto risco." });
+  addAlias({ name: "cv_owner_act", source: "cv_ubrowser_act", description: "Opera qualquer guia do Chrome autenticado; goto troca o site na mesma guia. Guias novas entram no grupo Canivete. Companion oferece chat, passo a passo e marcações na página; flow mostra progresso. CDP está disponível quando necessário." });
   addAlias({ name: "cv_owner_alerts", source: "cv_ubrowser_alerts", description: "Lê e consome alertas pendentes da sessão Chrome do dono." });
 
   addComposite({
