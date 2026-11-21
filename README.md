@@ -209,13 +209,13 @@ act {action:"evaluate", js:"window.__ubReplay=true;dispatchEvent(new Event('ub-r
 - Painel: `http://127.0.0.1:19422/painel` — clique numa linha expande in place; "Olhar replay" monta o player rrweb.
 - Shim em app de teste: `<script src="http://127.0.0.1:19422/uierr.js"></script>` + `window.__ubTags` + `window.__ubReplay=true` (badge visual do último erro; NENHUM POST — quem envia é o mon-hook).
 - Replay grava janela de 2400 eventos (mousemove/scroll/input amostrados) e manda o clipe no erro (1 por 45s) → `~/.config/canivete/replays/<id>.json`.
-- NOTA de segurança: ponte escuta **só em 127.0.0.1**; rotas de leitura do painel são públicas na máquina local, escritas (POST) continuam token-only. Companion/overview/grupos de guias exigem extensão v1.9.8+; observabilidade usa mon-hook v4.
+- NOTA de segurança: ponte escuta **só em 127.0.0.1**; rotas de leitura do painel são públicas na máquina local, escritas (POST) continuam token-only. Companion/overview/grupos de guias exigem extensão v1.9.9+; observabilidade usa mon-hook v4.
 
 ## Solução de problemas
 
 - **Porta ocupada** (`EADDRINUSE`): duas sessões no mesmo projeto — o segundo loga e tenta de novo no primeiro uso, ou mude `CANIVETE_BRIDGE_PORT`/`CANIVETE_CDP_PORT`.
 - **Extensão offline**: Chrome aberto, janela normal, popup ATIVO, token igual ao arquivo. `cv_owner_inspect {action:"status"}` diagnostica.
-- **Painel/chat não aparece**: confirme extensão v1.9.8+ e que a página permite scripts. `chrome://`, páginas protegidas e políticas empresariais podem bloquear a injeção.
+- **Painel/chat não aparece**: confirme extensão v1.9.9+ e que a página permite scripts. `chrome://`, páginas protegidas e políticas empresariais podem bloquear a injeção.
 - **Mensagem sem resposta enquanto o agente trabalha**: confirme que o servidor foi reiniciado com `/companion-poll`; o agente lê mensagens no próximo retorno de ação do navegador ou entre passos de `flow`.
 - **Overview não mostra o controle**: pagine com `nextOffset` ou use `cv_owner_inspect {action:"snapshot",find:"texto"}` para localizar controles da página.
 - **SW dormente**: popup → Testar conexão; alarms reacordam em ~1min.

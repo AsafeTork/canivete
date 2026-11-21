@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "20"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "21"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -2704,7 +2704,7 @@ function ubCompanionRender() {
     const priorInput = root.querySelector(".composer textarea");
     const priorMessages = root.querySelector(".messages");
     const draft = priorInput?.value || "";
-    const hadFocus = priorInput === root.activeElement;
+    const hadFocus = Boolean(priorInput && priorInput === root.activeElement);
     const selection = hadFocus ? [priorInput.selectionStart, priorInput.selectionEnd] : null;
     const wasAtBottom = !priorMessages || priorMessages.scrollHeight - priorMessages.scrollTop - priorMessages.clientHeight < 48;
     const style = make("style");
