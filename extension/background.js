@@ -38,11 +38,11 @@ chrome.storage.onChanged.addListener((ch, area) => {
 try {
   chrome.tabs.onRemoved.addListener((tabId) => {
     try { chrome.debugger.detach({ tabId }).catch(() => {}); } catch {}
-    try { chrome.storage.session.remove(`ubCompanion:${tabId}`).catch(() => {}); } catch {}
+    try { chrome.storage.session.remove([`ubProgressPanel:${tabId}`, `ubCompanion:${tabId}`]).catch(() => {}); } catch {}
   });
 } catch {}
 
-const UB_EXPECTED = "22"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "23"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 // Versão do próprio worker (manifest): reportada no /hello + tab.diag → cv_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
@@ -70,19 +70,6 @@ async function ubClientId() {
     UB_CLIENT_ID = await UB_CLIENT_P;
   }
   return UB_CLIENT_ID;
-}
-async function ubCompanionPoll(tabId, agentSessionId) {
-  if (!settings.enabled || !settings.token || !Number.isInteger(Number(tabId))) return [];
-  try {
-    const response = await fetch(settings.url + "/companion-poll", {
-      method: "POST", headers: { "content-type": "application/json", "x-token": settings.token },
-      body: JSON.stringify({ profile: await ubClientId(), tabId: Number(tabId), agentSessionId: String(agentSessionId || "") }),
-      signal: AbortSignal.timeout(2500),
-    });
-    if (!response.ok) return [];
-    const result = await response.json().catch(() => ({}));
-    return Array.isArray(result.messages) ? result.messages : [];
-  } catch { return []; }
 }
 const injectedTabs = new Set(); // fallback manual 1x por aba/sessão (registro cobre o resto)
 const ubPushLast = new Map(); // debounce do /ubpush por tabId (4s)
@@ -352,7 +339,7 @@ async function handle(cmd, a = {}) {
     if (!found) throw new Error(`aba "${a.tab}" não encontrada — veja cv_ubrowser_tabs`);
     a.tabId = found.id;
   }
-  const foregroundActions = new Set(["tab.goto", "tab.back", "tab.forward", "tab.reload", "tab.click", "tab.fill", "tab.type", "tab.press", "tab.select", "tab.scroll", "tab.cursor", "tab.tooltip", "tab.cdp", "tab.flow", "tab.companion"]);
+  const foregroundActions = new Set(["tab.goto", "tab.back", "tab.forward", "tab.reload", "tab.click", "tab.fill", "tab.type", "tab.press", "tab.select", "tab.scroll", "tab.cursor", "tab.tooltip", "tab.cdp", "tab.flow", "tab.panel"]);
   if (foregroundActions.has(cmd) && a.focus !== false) {
     const id = a.tabId || (await activeTabId());
     const target = await getTabOrThrow(id);
@@ -1217,35 +1204,26 @@ async function ubTrustedMove(tabId, x, y) {
     const id = a.tabId || (await activeTabId());
     const out = [];
     const showProgress = a.showProgress !== false;
-    const checkInbox = a.checkInbox !== false;
-    const companionMeta = a._caniveteAgentSessionId ? { _caniveteAgentSessionId: a._caniveteAgentSessionId } : {};
     const progressSteps = steps.map((step) => ({ label: String(step.label || step.cmd || "passo").slice(0, 120), status: "pending" }));
-    if (showProgress) await ask(id, "companion", { ...companionMeta, mode: "flow", title: a.progressTitle || "Canivete em ação", message: a.progressMessage || "Executando a sequência", steps: progressSteps }).catch(() => {});
+    if (showProgress) await ask(id, "panel", { mode: "flow", title: a.progressTitle || "Canivete em ação", message: a.progressMessage || "Executando a sequência", steps: progressSteps }).catch(() => {});
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i];
       if (showProgress) {
         const currentSteps = progressSteps.map((step, index) => ({ ...step, status: index < i ? "done" : index === i ? "active" : "pending" }));
-        await ask(id, "companion", { mode: "step", title: a.progressTitle || "Canivete em ação", message: a.progressMessage || "Executando a sequência", steps: currentSteps, stepIndex: i }).catch(() => {});
+        await ask(id, "panel", { mode: "step", title: a.progressTitle || "Canivete em ação", message: a.progressMessage || "Executando a sequência", steps: currentSteps, stepIndex: i }).catch(() => {});
       }
       try {
         const r = await handle(s.cmd, { ...a, ...s, tabId: id });
         out.push({ cmd: s.cmd, ok: true, data: r });
         progressSteps[i].status = "done";
-        if (checkInbox) {
-          const messages = await ubCompanionPoll(id, a._caniveteAgentSessionId);
-          if (messages.length) {
-            if (showProgress) await ask(id, "companion", { mode: "step", title: a.progressTitle || "Canivete em ação", message: "Mensagem recebida · vou pausar para responder", steps: progressSteps }).catch(() => {});
-            return { steps: out, interrupted: true, messages, nextStepIndex: i + 1, remainingSteps: steps.slice(i + 1), tabId: id };
-          }
-        }
         if (s.stopOn && JSON.stringify(r).includes(s.stopOn)) { for (let j = i + 1; j < progressSteps.length; j++) progressSteps[j].status = "skipped"; break; }
       } catch (e) {
         progressSteps[i].status = "error";
-        if (showProgress) await ask(id, "companion", { mode: "complete", title: a.progressTitle || "Canivete em ação", message: `Falha em ${progressSteps[i].label}: ${String(e.message || e).slice(0, 180)}`, steps: progressSteps, stepIndex: i }).catch(() => {});
+        if (showProgress) await ask(id, "panel", { mode: "complete", title: a.progressTitle || "Canivete em ação", message: `Falha em ${progressSteps[i].label}: ${String(e.message || e).slice(0, 180)}`, steps: progressSteps, stepIndex: i }).catch(() => {});
         return { steps: out, failedStep: s.cmd, error: String(e.message || e).slice(0, 300) };
       }
     }
-    if (showProgress) await ask(id, "companion", { mode: "complete", title: a.progressTitle || "Canivete em ação", message: "Sequência concluída", steps: progressSteps, stepIndex: steps.length - 1 }).catch(() => {});
+    if (showProgress) await ask(id, "panel", { mode: "complete", title: a.progressTitle || "Canivete em ação", message: "Sequência concluída", steps: progressSteps, stepIndex: steps.length - 1 }).catch(() => {});
     return { steps: out };
   }
   if (cmd === "tab.aesthetic") {
@@ -1419,52 +1397,34 @@ async function loop() {
 
 // status p/ popup
 chrome.runtime.onMessage.addListener((msg, _s, reply) => {
-  if (msg && msg.__ubCompanionStateGet) {
+  if (msg && msg.__ubProgressPanelStateGet) {
     (async () => {
       const tabId = _s?.tab?.id;
       if (!Number.isInteger(tabId)) { reply({ ok: false }); return; }
       try {
-        const key = `ubCompanion:${tabId}`;
+        const key = `ubProgressPanel:${tabId}`;
         const stored = await chrome.storage.session.get(key);
+        // Delete legacy chat transcript/state during the one-time upgrade.
+        await chrome.storage.session.remove(`ubCompanion:${tabId}`);
         reply({ ok: true, state: stored[key] || null });
       } catch { reply({ ok: false }); }
     })();
     return true;
   }
-  if (msg && msg.__ubCompanionStateSet) {
+  if (msg && msg.__ubProgressPanelStateSet) {
     (async () => {
-      const tabId = _s?.tab?.id, state = msg.__ubCompanionStateSet;
+      const tabId = _s?.tab?.id, state = msg.__ubProgressPanelStateSet;
       if (!Number.isInteger(tabId) || !state || typeof state !== "object") { reply({ ok: false }); return; }
       try {
-        const key = `ubCompanion:${tabId}`;
+        const key = `ubProgressPanel:${tabId}`;
         await chrome.storage.session.set({ [key]: {
           active: state.active === true, collapsed: state.collapsed === true,
-          title: String(state.title || "Canivete").slice(0, 100), message: String(state.message || "").slice(0, 1000), delivery: String(state.delivery || "").slice(0, 160), agentSessionId: String(state.agentSessionId || "").slice(0, 120),
+          title: String(state.title || "Canivete").slice(0, 100), message: String(state.message || "").slice(0, 1000),
           steps: Array.isArray(state.steps) ? state.steps.slice(0, 30).map((step) => ({ label: String(step.label || "Passo").slice(0, 120), status: String(step.status || "pending") })) : [],
-          messages: Array.isArray(state.messages) ? state.messages.slice(-50).map((item) => ({ role: item.role === "user" ? "user" : "agent", text: String(item.text || "").slice(0, 2000) })) : [],
         } });
+        await chrome.storage.session.remove(`ubCompanion:${tabId}`);
         reply({ ok: true });
       } catch { reply({ ok: false }); }
-    })();
-    return true;
-  }
-  if (msg && msg.__ubCompanionMessage) {
-    (async () => {
-      try {
-        if (!settings.enabled || !settings.token) { reply({ ok: false, error: "Canivete pausado ou sem token" }); return; }
-        const text = String(msg.__ubCompanionMessage.text || "").trim().slice(0, 4000);
-        const tab = _s && _s.tab;
-        if (!text || !tab?.id) { reply({ ok: false, error: "mensagem vazia ou aba indisponível" }); return; }
-        const clientId = await ubClientId();
-        const response = await fetch(settings.url + "/companion-message", {
-          method: "POST", headers: { "content-type": "application/json", "x-token": settings.token },
-          body: JSON.stringify({ profile: clientId, tabId: tab.id, title: tab.title || "", url: tab.url || "", text, agentSessionId: String(msg.__ubCompanionMessage.agentSessionId || "") }),
-          signal: AbortSignal.timeout(10000),
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok || !result.ok) { reply({ ok: false, error: result.error || `ponte HTTP ${response.status}` }); return; }
-        reply({ ok: true, id: result.id, delivery: result.delivery || "queued" });
-      } catch (error) { reply({ ok: false, error: String(error?.message || error).slice(0, 180) }); }
     })();
     return true;
   }

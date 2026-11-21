@@ -10,32 +10,6 @@ const READ_ONLY_RE = /read|list|glob|grep|search|fetch|status|tabs|snapshot|look
 const DESTRUCTIVE_RE = /write|edit|patch|bash|delete|send|fill|type|lifecycle|connect|login|task_start|task_mailbox|alerts|report|screencast|exec|todowrite|orchestrate|resolve|whatsapp|skill/i;
 const DESTRUCTIVE_ACT_RE = /(^|_)act(_|$)/i;
 
-async function runToolWithCompanion(tool, args, agentSessionId) {
-  let result;
-  try {
-    result = await tool.run(args || {}, { agentSessionId });
-  } catch (error) {
-    result = { content: [{ type: "text", text: `tool error: ${error?.message || error}` }], isError: true };
-  }
-  // companion read/wait returns its own profile-scoped inbox. Every other tool call
-  // is a delivery checkpoint, so browser chat works across all Canivete tool families.
-  const isCompanionInbox = tool.name === "cv_owner_act" && args?.action === "companion" && ["read", "wait"].includes(args?.mode);
-  if (isCompanionInbox) return result;
-  let messages = [];
-  try {
-    const { ubCompanionRead } = await import("../lib/ubridge.mjs");
-    messages = await ubCompanionRead({ agentSessionId });
-  } catch {}
-  if (!messages.length || !result || typeof result !== "object") return result;
-  const notice = messages.map((message) => {
-    const origin = [message.title, message.url, message.tabId ? `aba ${message.tabId}` : ""].filter(Boolean).join(" · ");
-    return `MENSAGEM DO USUÁRIO PELO PAINEL${origin ? ` (${origin})` : ""}:\n${message.text}`;
-  }).join("\n\n");
-  const instruction = `${notice}\n\nResponda no painel com cv_owner_act {action:"companion",mode:"update",message:"..."} antes de retomar a tarefa. Mensagens do painel podem chegar no retorno de qualquer ferramenta.`;
-  result.content = Array.isArray(result.content) ? [{ type: "text", text: instruction }, ...result.content] : [{ type: "text", text: instruction }];
-  return result;
-}
-
 export function annotationsFor(name = "") {
   if (DESTRUCTIVE_RE.test(name) || DESTRUCTIVE_ACT_RE.test(name))
     return { readOnlyHint: false, destructiveHint: true, idempotentHint: false };
@@ -88,7 +62,7 @@ export async function dispatchStdio(msg, TOOLS, sendToHost, agentSessionId = DEF
     const tool = TOOLS.get(name);
     if (!tool) return { id: msg.id, result: { content: [{ type: "text", text: `unknown tool: ${name} — dica: cv_help` }], isError: true } };
     try {
-      return { id: msg.id, result: await runToolWithCompanion(tool, args || {}, agentSessionId) };
+      return { id: msg.id, result: await tool.run(args || {}, { agentSessionId }) };
     } catch (e) {
       return { id: msg.id, result: { content: [{ type: "text", text: `tool error: ${e?.message || e}` }], isError: true } };
     }
@@ -111,7 +85,7 @@ export async function dispatchHttpItem(m, TOOLS, agentSessionId = DEFAULT_AGENT_
     const tool = TOOLS.get(tn);
     if (!tool) return { jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: `unknown tool: ${tn} — dica: cv_help` }], isError: true } };
     try {
-      return { jsonrpc: "2.0", id: m.id, result: await runToolWithCompanion(tool, args || {}, agentSessionId) };
+      return { jsonrpc: "2.0", id: m.id, result: await tool.run(args || {}, { agentSessionId }) };
     } catch (e) {
       return { jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: `tool error: ${e?.message || e}` }], isError: true } };
     }

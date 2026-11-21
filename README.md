@@ -14,7 +14,7 @@ O catálogo é gerado do registro real em [docs/TOOLS.md](docs/TOOLS.md). Em run
 | Ler uma página pública com JS | `cv_browser_read` | `detail`: `summary` ou `full` |
 | Capturar página/medir contraste | `cv_browser_capture` | `action`: `screenshot`, `pdf`, `contrast` |
 | Usar o Chrome autenticado do dono | `cv_owner_inspect` e `cv_owner_act` | consulta e ação têm modos próprios; o agente pode operar em qualquer guia escolhida |
-| Entender ou conversar numa página autenticada | `cv_owner_inspect {action:"overview"}`, `cv_owner_act {action:"companion"}` | mapa compacto, chat, passo a passo e marcações visuais |
+| Entender uma página autenticada | `cv_owner_inspect {action:"overview"}`, `cv_owner_act {action:"panel"}` | mapa compacto, progresso e marcações visuais |
 | Inspecionar/agir em Android | `cv_android_inspect`, `cv_android_act` | parear com `cv_android_connect` |
 | Consultar e editar código | `cv_code_inspect`, `cv_code_edit`, `cv_code_verify` | use o `action` descrito por `cv_help` |
 | Entender o próprio Canivete | `cv_help`, `cv_ctx_status`, `cv_report` | descoberta, consumo de contexto e relato de falha |
@@ -37,10 +37,9 @@ Comece por `cv_owner_inspect {action:"overview", tab:"Gmail"}` para obter um map
 
 `cv_owner_act {action:"goto", tab:"Gmail", url:"https://…"}` navega para outro site na mesma guia. Ativação e interações trazem a janela do Chrome à frente; `focus:false` preserva a janela que estava em foco. Guias criadas com `action:"new"` entram no grupo **Canivete · agente**. O agente continua podendo escolher guias existentes de qualquer grupo.
 
-Abra o painel na página com `cv_owner_act {action:"companion", mode:"open", tab:"Gmail", message:"Vou conferir o formulário e validar o resultado."}`. Ele ocupa a lateral da página com uma camada escurecida discreta; pode ser minimizado ou fechado. Atualize-o com `mode:"update"`, `steps` e `annotations:[{selector,label}]`; as marcações aparecem numa camada isolada, sem alterar atributos do site. O histórico e o painel continuam na mesma guia ao navegar para outro site e sobrevivem a recargas enquanto o Chrome estiver aberto.
+Abra o painel de progresso na página com `cv_owner_act {action:"panel", mode:"open", tab:"Gmail", message:"Conferindo o formulário"}`. Ele mostra o status da tarefa, etapas e marcações visuais. Atualize com `mode:"update"`, `steps` e `annotations:[{selector,label}]`; as marcações usam uma camada isolada, sem alterar atributos do site. O painel permanece na mesma guia ao navegar e sobrevive a recargas enquanto o Chrome estiver aberto.
 
-`action:"flow"` exibe cada passo na página e verifica mensagens entre as etapas. Mensagens do painel são vinculadas à sessão MCP que abriu o painel e chegam no retorno de qualquer tool do Canivete nessa sessão; outras sessões não consomem essa fila. Se o host multiplexa vários agentes numa única sessão MCP, o Canivete não consegue distingui-los. Em `flow`, o fluxo pausa após a ação atual, devolve a mensagem e `remainingSteps`; o agente responde no painel e pode continuar. Se o agente encerrou o turno e não há uma chamada esperando, MCP não consegue reativar esse turno: a mensagem fica na fila até a próxima chamada da mesma sessão. `checkInbox:false` desliga as interrupções e `showProgress:false` oculta o plano. `cv_owner_act` também aceita CDP quando a página exigir interações além dos controles DOM normais.
-
+`action:"flow"` atualiza o painel a cada etapa; `showProgress:false` oculta o plano. `cv_owner_act` também aceita CDP quando a página exigir interações além dos controles DOM normais.
 ## Config por CLI
 
 **opencode** (`~/.config/opencode/opencode.json` ou do projeto):
@@ -196,8 +195,6 @@ a ponte guarda os clipes e um painel local mostra tudo junto do inbox `cv_report
 | `POST /replay?token=` | token | grava clipe rrweb + 1 linha em `~/.config/canivete/mon-log.jsonl` |
 | `POST /elemreport?token=` | token | cria report de elemento vindo do overlay (dedupe por seletor+nota; devolve o report persistido) |
 | `POST /elemreport-update?token=` | token | edita pack existente (nota, `elements_add`/`elements_remove`, `apagar:true`) e devolve o report atualizado |
-| `POST /companion-message` | token | recebe mensagens digitadas no painel da página e entrega ao agente por uma fila em memória |
-| `POST /companion-poll` | token | entrega mensagens ao fluxo entre etapas, filtradas pela sessão MCP vinculada ao painel |
 
 Como o agente usa (Chrome do dono, via `cv_owner_act`):
 
@@ -209,14 +206,13 @@ act {action:"evaluate", js:"window.__ubReplay=true;dispatchEvent(new Event('ub-r
 - Painel: `http://127.0.0.1:19422/painel` — clique numa linha expande in place; "Olhar replay" monta o player rrweb.
 - Shim em app de teste: `<script src="http://127.0.0.1:19422/uierr.js"></script>` + `window.__ubTags` + `window.__ubReplay=true` (badge visual do último erro; NENHUM POST — quem envia é o mon-hook).
 - Replay grava janela de 2400 eventos (mousemove/scroll/input amostrados) e manda o clipe no erro (1 por 45s) → `~/.config/canivete/replays/<id>.json`.
-- NOTA de segurança: ponte escuta **só em 127.0.0.1**; rotas de leitura do painel são públicas na máquina local, escritas (POST) continuam token-only. Companion/overview/grupos de guias exigem extensão v1.10.0+; observabilidade usa mon-hook v4.
+- NOTA de segurança: ponte escuta **só em 127.0.0.1**; rotas de leitura do painel são públicas na máquina local, escritas (POST) continuam token-only. Painel de progresso/overview/grupos de guias exigem extensão v1.10.0+; observabilidade usa mon-hook v4.
 
 ## Solução de problemas
 
 - **Porta ocupada** (`EADDRINUSE`): duas sessões no mesmo projeto — o segundo loga e tenta de novo no primeiro uso, ou mude `CANIVETE_BRIDGE_PORT`/`CANIVETE_CDP_PORT`.
 - **Extensão offline**: Chrome aberto, janela normal, popup ATIVO, token igual ao arquivo. `cv_owner_inspect {action:"status"}` diagnostica.
-- **Painel/chat não aparece**: confirme extensão v1.10.0+ e que a página permite scripts. `chrome://`, páginas protegidas e políticas empresariais podem bloquear a injeção.
-- **Mensagem sem resposta**: a confirmação do painel distingue agente aguardando de mensagem enfileirada. A fila é vinculada à sessão MCP que abriu o painel; ela é entregue após qualquer tool dessa sessão. Se o turno terminou, o host precisa iniciar outra chamada para o mesmo agente; MCP não consegue acordar uma conversa ociosa por conta própria.
+- **Painel de progresso não aparece**: confirme a extensão instalada e que a página permite scripts. `chrome://`, páginas protegidas e políticas empresariais podem bloquear a injeção.
 - **Overview não mostra o controle**: pagine com `nextOffset` ou use `cv_owner_inspect {action:"snapshot",find:"texto"}` para localizar controles da página.
 - **SW dormente**: popup → Testar conexão; alarms reacordam em ~1min.
 - **`chrome://`**: Chrome bloqueia automação nessas páginas (limite dele).
@@ -249,7 +245,7 @@ src/lib/llm.mjs         slots LLM (fallbacks 2-5, presets)
 src/lib/tools-codespace.mjs  cv_codespace_* (ambiente de teste na nuvem gh)
 src/lib/risk.mjs        trava anti-destrutiva (compartilhada)
 config/models.json      modelos (modo opencode)
-extension/              extensão MV3 do Chrome autenticado (background.js ponte/CDP/grupos/interrupção de fluxo, content.js overview/chat persistente/progresso/anotações em overlay imersivo, mon-hook.js observabilidade, wa-hook.js WhatsApp, popup)
+extension/              extensão MV3 do Chrome autenticado (background.js ponte/CDP/grupos/interrupção de fluxo, content.js overview/progresso/anotações em overlay imersivo, mon-hook.js observabilidade, wa-hook.js WhatsApp, popup)
 examples/               configs prontas por CLI
 docs/                   skill global de referência
 test/smoke.mjs          fumaça offline-segura

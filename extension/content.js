@@ -477,7 +477,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "22"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "23"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -2646,34 +2646,38 @@ function ubPageOverview(max = 35, offset = 0) {
   return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: controls.length, controlsOffset: start, controlsOmitted: Math.max(0, controls.length - start - pageControls.length), nextOffset: start + pageControls.length < controls.length ? start + pageControls.length : null, overlays: ubOverlayState(), hint: "Use os selectors para agir. Leia só a região relevante; snapshot/find serve para mapear detalhes." };
 }
 
-var ubCompanionState = globalThis.__ubCompanionState || { active: false, collapsed: false, messages: [], steps: [], annotations: [], title: "Canivete", message: "", delivery: "", agentSessionId: "" };
-globalThis.__ubCompanionState = ubCompanionState;
-var ubCompanionTouched = false;
-function ubCompanionPersist() {
+var ubProgressPanelState = globalThis.__ubProgressPanelState || { active: false, collapsed: false, steps: [], annotations: [], title: "Canivete", message: "" };
+delete ubProgressPanelState.messages; delete ubProgressPanelState.delivery; delete ubProgressPanelState.agentSessionId;
+globalThis.__ubProgressPanelState = ubProgressPanelState;
+// Remove a chat panel left by an older extension build on an already-open page.
+try { document.getElementById("ubrowser-companion")?.remove(); } catch {}
+try { delete globalThis.__ubCompanionState; } catch {}
+var ubProgressPanelTouched = false;
+function ubProgressPanelPersist() {
   try {
-    ubCompanionTouched = true;
-    const state = { active: ubCompanionState.active, collapsed: ubCompanionState.collapsed, title: ubCompanionState.title, message: ubCompanionState.message, delivery: ubCompanionState.delivery, agentSessionId: ubCompanionState.agentSessionId || "", steps: ubCompanionState.steps, messages: ubCompanionState.messages };
-    chrome.runtime.sendMessage({ __ubCompanionStateSet: state }).catch(() => {});
+    ubProgressPanelTouched = true;
+    const state = { active: ubProgressPanelState.active, collapsed: ubProgressPanelState.collapsed, title: ubProgressPanelState.title, message: ubProgressPanelState.message, steps: ubProgressPanelState.steps };
+    chrome.runtime.sendMessage({ __ubProgressPanelStateSet: state }).catch(() => {});
   } catch {}
 }
-function ubCompanionRestore() {
+function ubProgressPanelRestore() {
   try {
-    chrome.runtime.sendMessage({ __ubCompanionStateGet: true }).then((result) => {
-      if (ubCompanionTouched || !result?.ok || !result.state) return;
-      const currentMessages = ubCompanionState.messages || [];
-      Object.assign(ubCompanionState, result.state);
-      if (currentMessages.length > (ubCompanionState.messages || []).length) ubCompanionState.messages = currentMessages;
-      ubCompanionState.annotations = [];
-      if (ubCompanionState.active) ubCompanionRender();
+    chrome.runtime.sendMessage({ __ubProgressPanelStateGet: true }).then((result) => {
+      if (ubProgressPanelTouched || !result?.ok || !result.state) return;
+      Object.assign(ubProgressPanelState, result.state);
+      delete ubProgressPanelState.messages; delete ubProgressPanelState.delivery; delete ubProgressPanelState.agentSessionId;
+      ubProgressPanelState.annotations = [];
+      ubProgressPanelPersist(); // overwrites any session storage left by the old chat panel
+      if (ubProgressPanelState.active) ubProgressPanelRender();
     }).catch(() => {});
   } catch {}
 }
-function ubCompanionRefreshMarks() {
+function ubProgressPanelRefreshMarks() {
   try {
-    const root = document.getElementById("ubrowser-companion")?.shadowRoot;
+    const root = document.getElementById("ubrowser-progress-panel")?.shadowRoot;
     const marks = root?.querySelector(".marks"); if (!marks) return;
     marks.replaceChildren();
-    for (const item of (ubCompanionState.annotations || [])) {
+    for (const item of (ubProgressPanelState.annotations || [])) {
       try {
         const el = item.selector ? findEl(String(item.selector)) : null; if (!el) continue;
         const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue;
@@ -2685,15 +2689,15 @@ function ubCompanionRefreshMarks() {
     }
   } catch {}
 }
-if (!globalThis.__ubCompanionListeners) {
-  globalThis.__ubCompanionListeners = true;
-  try { document.addEventListener("scroll", ubCompanionRefreshMarks, { capture: true, passive: true }); window.addEventListener("resize", ubCompanionRefreshMarks, { passive: true }); } catch {}
+if (!globalThis.__ubProgressPanelListeners) {
+  globalThis.__ubProgressPanelListeners = true;
+  try { document.addEventListener("scroll", ubProgressPanelRefreshMarks, { capture: true, passive: true }); window.addEventListener("resize", ubProgressPanelRefreshMarks, { passive: true }); } catch {}
 }
-function ubCompanionRender() {
+function ubProgressPanelRender() {
   try {
-    let host = document.getElementById("ubrowser-companion");
-    if (!ubCompanionState.active) { host?.remove(); return { ok: true, active: false }; }
-    if (!host) { host = document.createElement("div"); host.id = "ubrowser-companion"; document.documentElement.appendChild(host); }
+    let host = document.getElementById("ubrowser-progress-panel");
+    if (!ubProgressPanelState.active) { host?.remove(); return { ok: true, active: false }; }
+    if (!host) { host = document.createElement("div"); host.id = "ubrowser-progress-panel"; document.documentElement.appendChild(host); }
     const root = host.shadowRoot || host.attachShadow({ mode: "open" });
     const make = (tag, className, text) => {
       const node = document.createElement(tag);
@@ -2701,75 +2705,53 @@ function ubCompanionRender() {
       if (text !== undefined) node.textContent = text;
       return node;
     };
-    const priorInput = root.querySelector(".composer textarea");
-    const priorMessages = root.querySelector(".messages");
-    const draft = priorInput?.value || "";
-    const hadFocus = Boolean(priorInput && priorInput === root.activeElement);
-    const selection = hadFocus ? [priorInput.selectionStart, priorInput.selectionEnd] : null;
-    const wasAtBottom = !priorMessages || priorMessages.scrollHeight - priorMessages.scrollTop - priorMessages.clientHeight < 48;
     const style = make("style");
     style.textContent = `
-      :host{all:initial;color-scheme:dark}*,*::before,*::after{box-sizing:border-box}.stage{position:fixed;inset:0;z-index:2147483646;pointer-events:none;font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f3f4ef;isolation:isolate}.scrim{position:fixed;inset:0;z-index:0;pointer-events:none;background:rgba(7,9,8,.18);backdrop-filter:brightness(.72) saturate(.72) blur(1px)}.panel{pointer-events:auto;position:fixed;z-index:1;right:0;top:0;bottom:0;width:min(420px,100vw);height:100dvh;display:flex;flex-direction:column;background:rgba(14,17,15,.96);border-left:1px solid #3a4037;box-shadow:-24px 0 72px #0007;overflow:hidden;backdrop-filter:blur(20px)}header{height:56px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid #30352e}header strong{flex:1;font-size:14px;font-weight:600;letter-spacing:-.2px;color:#f6f7f2}.live{width:7px;height:7px;border-radius:50%;background:#c7f36b;box-shadow:0 0 10px #c7f36688}button{font:inherit;cursor:pointer;color:#eef0e8;background:transparent;border:0;border-radius:6px;padding:8px 10px}button:hover{background:#272c25}button:focus-visible,textarea:focus-visible{outline:2px solid #c7f36b;outline-offset:2px}.body{min-height:0;flex:1;display:flex;flex-direction:column;gap:0}.status{padding:12px 16px;color:#c9cec4;font-size:12px;white-space:pre-wrap;border-bottom:1px solid #252a24}.plan{max-height:150px;overflow:auto;padding:12px 16px;border-bottom:1px solid #252a24}.plan[hidden]{display:none}.plan-label{margin-bottom:8px;color:#929a8c;font-size:10px;letter-spacing:.08em;text-transform:uppercase}.steps{list-style:none;margin:0;padding:0;display:grid;gap:4px}.steps li{display:flex;align-items:center;gap:8px;color:#aab0a4;font-size:12px}.steps li.active{color:#f1f3eb}.steps li.done{color:#aebe99}.steps li.error{color:#ff9b89}.badge{width:16px;height:16px;flex:none;display:grid;place-items:center;color:#aab0a4;font-size:11px}.steps li.active .badge{color:#c7f36b}.messages{min-height:0;flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;align-items:stretch;gap:12px;overscroll-behavior:contain}.bubble{max-width:92%;white-space:pre-wrap;overflow-wrap:anywhere;color:#e7eae2;font-size:13px;line-height:1.5}.bubble.user{align-self:flex-end;padding:9px 12px;background:#292f28;border:1px solid #3b4338;border-radius:12px 12px 3px 12px}.bubble.agent{align-self:flex-start;padding:4px 0}.who{margin-bottom:3px;color:#899184;font-size:10px;letter-spacing:.02em}.empty{margin:auto 0;color:#8d9588;font-size:13px}.composer-wrap{flex:none;padding:12px 16px 8px;border-top:1px solid #30352e}.composer{display:flex;align-items:flex-end;gap:8px;padding:8px;background:#1b201b;border:1px solid #3b4338;border-radius:10px}.composer:focus-within{border-color:#899f65}.composer textarea{width:100%;min-width:0;min-height:42px;max-height:140px;resize:vertical;background:transparent;color:#f3f4ef;border:0;padding:5px 6px;font:13px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;outline:none}.composer textarea::placeholder{color:#899184}.composer button{flex:none;background:#c7f36b;color:#12160d;font-size:12px;font-weight:650;padding:8px 12px}.composer button:hover{background:#d5fb82}.composer button:disabled{opacity:.55;cursor:wait}.delivery{display:block;min-height:24px;padding:6px 2px 0;color:#889184;font-size:10px}.collapsed .body{display:none}.stage.is-collapsed .scrim{opacity:0}.stage.is-collapsed .panel{top:10px;right:10px;bottom:auto;width:min(250px,calc(100vw - 20px));height:56px;border:1px solid #434a3d;border-radius:10px}.mark{position:fixed;border:2px solid #c7f36b;border-radius:3px;background:#c7f36b18;box-shadow:0 0 0 2px #1118;pointer-events:none}.mark span{position:absolute;left:-2px;top:-24px;white-space:nowrap;background:#c7f36b;color:#12160d;border-radius:3px;padding:3px 7px;font-size:11px;font-weight:650;max-width:240px;overflow:hidden;text-overflow:ellipsis}@media(max-width:560px){.panel{width:100vw}.stage.is-collapsed .panel{width:min(250px,calc(100vw - 20px))}}
+      :host{all:initial;color-scheme:dark}*,*::before,*::after{box-sizing:border-box}.stage{position:fixed;inset:0;z-index:2147483646;pointer-events:none;font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f3f4ef;isolation:isolate}.scrim{position:fixed;inset:0;z-index:0;pointer-events:none;background:rgba(7,9,8,.18);backdrop-filter:brightness(.72) saturate(.72) blur(1px)}.panel{pointer-events:auto;position:fixed;z-index:1;right:0;top:0;bottom:0;width:min(420px,100vw);height:100dvh;display:flex;flex-direction:column;background:rgba(14,17,15,.96);border-left:1px solid #3a4037;box-shadow:-24px 0 72px #0007;overflow:hidden;backdrop-filter:blur(20px)}header{height:56px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid #30352e}header strong{flex:1;font-size:14px;font-weight:600;letter-spacing:-.2px;color:#f6f7f2}.live{width:7px;height:7px;border-radius:50%;background:#c7f36b;box-shadow:0 0 10px #c7f36688}button{font:inherit;cursor:pointer;color:#eef0e8;background:transparent;border:0;border-radius:6px;padding:8px 10px}button:hover{background:#272c25}button:focus-visible{outline:2px solid #c7f36b;outline-offset:2px}.body{min-height:0;flex:1;display:flex;flex-direction:column;gap:0}.status{padding:12px 16px;color:#c9cec4;font-size:12px;white-space:pre-wrap;border-bottom:1px solid #252a24}.plan{max-height:150px;overflow:auto;padding:12px 16px;border-bottom:1px solid #252a24}.plan[hidden]{display:none}.plan-label{margin-bottom:8px;color:#929a8c;font-size:10px;letter-spacing:.08em;text-transform:uppercase}.steps{list-style:none;margin:0;padding:0;display:grid;gap:4px}.steps li{display:flex;align-items:center;gap:8px;color:#aab0a4;font-size:12px}.steps li.active{color:#f1f3eb}.steps li.done{color:#aebe99}.steps li.error{color:#ff9b89}.badge{width:16px;height:16px;flex:none;display:grid;place-items:center;color:#aab0a4;font-size:11px}.steps li.active .badge{color:#c7f36b}.collapsed .body{display:none}.stage.is-collapsed .scrim{opacity:0}.stage.is-collapsed .panel{top:10px;right:10px;bottom:auto;width:min(250px,calc(100vw - 20px));height:56px;border:1px solid #434a3d;border-radius:10px}.mark{position:fixed;border:2px solid #c7f36b;border-radius:3px;background:#c7f36b18;box-shadow:0 0 0 2px #1118;pointer-events:none}.mark span{position:absolute;left:-2px;top:-24px;white-space:nowrap;background:#c7f36b;color:#12160d;border-radius:3px;padding:3px 7px;font-size:11px;font-weight:650;max-width:240px;overflow:hidden;text-overflow:ellipsis}@media(max-width:560px){.panel{width:100vw}.stage.is-collapsed .panel{width:min(250px,calc(100vw - 20px))}}
     `;
     const stage = make("div", "stage"), scrim = make("div", "scrim"), panel = make("section", "panel");
-    if (ubCompanionState.collapsed) stage.classList.add("is-collapsed");
-    if (ubCompanionState.collapsed) panel.classList.add("collapsed");
-    const header = make("header"), live = make("span", "live"), title = make("strong", "", ubCompanionState.title || "Canivete");
+    if (ubProgressPanelState.collapsed) stage.classList.add("is-collapsed");
+    if (ubProgressPanelState.collapsed) panel.classList.add("collapsed");
+    const header = make("header"), live = make("span", "live"), title = make("strong", "", ubProgressPanelState.title || "Canivete");
     live.setAttribute("aria-hidden", "true");
     const minimize = make("button", "min", "−"); minimize.type = "button"; minimize.setAttribute("aria-label", "Minimizar painel");
     const close = make("button", "close", "×"); close.type = "button"; close.setAttribute("aria-label", "Fechar painel");
     header.append(live, title, minimize, close);
-    const body = make("div", "body"), status = make("div", "status", ubCompanionState.message || "Conversa com o agente");
+    const body = make("div", "body"), status = make("div", "status", ubProgressPanelState.message || "Canivete em ação");
     status.setAttribute("aria-live", "polite");
-    const plan = make("section", "plan"); plan.hidden = !(ubCompanionState.steps || []).length;
+    const plan = make("section", "plan"); plan.hidden = !(ubProgressPanelState.steps || []).length;
     const planLabel = make("div", "plan-label", "Em andamento"), list = make("ol", "steps");
     plan.append(planLabel, list);
-    for (const [i, step] of (ubCompanionState.steps || []).entries()) {
+    for (const [i, step] of (ubProgressPanelState.steps || []).entries()) {
       const li = make("li", step.status || "pending"), badge = make("span", "badge"), label = make("span", "", step.label || `Passo ${i + 1}`);
       badge.textContent = step.status === "done" ? "✓" : step.status === "active" ? "•" : step.status === "error" ? "!" : step.status === "skipped" ? "–" : String(i + 1);
       li.append(badge, label); list.appendChild(li);
     }
-    const messages = make("div", "messages"); messages.setAttribute("aria-live", "polite");
-    if (!(ubCompanionState.messages || []).length) messages.appendChild(make("div", "empty", "Converse comigo enquanto acompanho a página."));
-    for (const item of (ubCompanionState.messages || []).slice(-50)) {
-      const bubble = make("div", `bubble ${item.role || "agent"}`), who = make("div", "who", item.role === "user" ? "Você" : "Canivete"), text = make("div", "", item.text || "");
-      bubble.append(who, text); messages.appendChild(bubble);
-    }
-    if (wasAtBottom) messages.scrollTop = messages.scrollHeight;
-    const composerWrap = make("div", "composer-wrap"), form = make("form", "composer"), textarea = make("textarea"), send = make("button", "", "Enviar");
-    textarea.maxLength = 4000; textarea.setAttribute("aria-label", "Mensagem para o agente"); textarea.placeholder = "Escreva para o agente…"; textarea.value = draft;
-    send.type = "submit";
-    form.append(textarea, send);
-    const delivery = make("small", "delivery", ubCompanionState.delivery || "Ao abrir pelo agente, este painel fica vinculado à sessão dele.");
-    composerWrap.append(form, delivery);
-    body.append(status, plan, messages, composerWrap);
+    body.append(status, plan);
     const marks = make("div", "marks");
     stage.append(scrim, panel, marks); panel.append(header, body);
     root.replaceChildren(style, stage);
-    if (hadFocus) { textarea.focus(); if (selection) textarea.setSelectionRange(...selection); }
-    ubCompanionRefreshMarks();
-    minimize.onclick = () => { ubCompanionState.collapsed = !ubCompanionState.collapsed; ubCompanionPersist(); ubCompanionRender(); };
-    close.onclick = () => { ubCompanionState.active = false; ubCompanionPersist(); host.remove(); };
-    form.onsubmit = async (event) => { event.preventDefault(); const text = textarea.value.trim(); if (!text) return; send.disabled = true; delivery.textContent = "Enviando…"; try { const sent = await chrome.runtime.sendMessage({ __ubCompanionMessage: { text, agentSessionId: ubCompanionState.agentSessionId || "" } }); if (!sent?.ok) throw new Error(sent?.error || "não foi possível enviar"); textarea.value = ""; ubCompanionState.messages.push({ role: "user", text }); ubCompanionState.messages = ubCompanionState.messages.slice(-50); ubCompanionState.message = sent.delivery === "delivered" ? "Mensagem entregue · o agente estava aguardando." : ubCompanionState.agentSessionId ? "Mensagem na fila da sessão do agente." : "Painel sem sessão vinculada; não há agente destinatário."; ubCompanionState.delivery = sent.delivery === "delivered" ? "Agente aguardando e notificado." : ubCompanionState.agentSessionId ? "Enviada · será lida no próximo retorno de ferramenta dessa sessão." : "Sem vínculo de agente · reabra o painel pela conversa desejada."; ubCompanionPersist(); ubCompanionRender(); } catch (error) { delivery.textContent = String(error?.message || error); send.disabled = false; } };
+    ubProgressPanelRefreshMarks();
+    minimize.onclick = () => { ubProgressPanelState.collapsed = !ubProgressPanelState.collapsed; ubProgressPanelPersist(); ubProgressPanelRender(); };
+    close.onclick = () => { ubProgressPanelState.active = false; ubProgressPanelPersist(); host.remove(); };
     return { ok: true, active: true };
   } catch (error) { return { ok: false, error: String(error?.message || error).slice(0, 240) }; }
 }
-function ubCompanionCommand(args = {}) {
-  const mode = String(args.mode || "open"); if (mode === "close") { ubCompanionState.active = false; ubCompanionPersist(); ubCompanionRender(); return { open: false }; }
-  ubCompanionState.active = true; if (args.title) ubCompanionState.title = String(args.title).slice(0, 100);
-  if (args._caniveteAgentSessionId) ubCompanionState.agentSessionId = String(args._caniveteAgentSessionId).slice(0, 120);
-  if (args.message !== undefined) { ubCompanionState.message = String(args.message).slice(0, 1000); if (String(args.message).trim() && ["open", "update", "complete"].includes(mode)) { const last = ubCompanionState.messages.at(-1); if (!last || last.role !== "agent" || last.text !== String(args.message)) ubCompanionState.messages.push({ role: "agent", text: String(args.message).slice(0, 2000) }); ubCompanionState.delivery = "Canivete respondeu."; } }
-  if (Array.isArray(args.steps)) ubCompanionState.steps = args.steps.map((step) => ({ label: String(step.label || "Passo").slice(0, 120), status: ["pending", "active", "done", "error", "skipped"].includes(step.status) ? step.status : "pending" }));
-  if (args.stepIndex != null && ubCompanionState.steps[Number(args.stepIndex)]) {
-    const current = ubCompanionState.steps[Number(args.stepIndex)];
+function ubProgressPanelCommand(args = {}) {
+  const mode = String(args.mode || "open"); if (mode === "close") { ubProgressPanelState.active = false; ubProgressPanelPersist(); ubProgressPanelRender(); return { open: false }; }
+  ubProgressPanelState.active = true; if (args.title) ubProgressPanelState.title = String(args.title).slice(0, 100);
+  if (args.message !== undefined) ubProgressPanelState.message = String(args.message).slice(0, 1000);
+  if (Array.isArray(args.steps)) ubProgressPanelState.steps = args.steps.map((step) => ({ label: String(step.label || "Passo").slice(0, 120), status: ["pending", "active", "done", "error", "skipped"].includes(step.status) ? step.status : "pending" }));
+  if (args.stepIndex != null && ubProgressPanelState.steps[Number(args.stepIndex)]) {
+    const current = ubProgressPanelState.steps[Number(args.stepIndex)];
     if (!(mode === "complete" && current.status === "error")) current.status = mode === "complete" ? "done" : "active";
   }
-  if (Array.isArray(args.annotations)) ubCompanionState.annotations = args.annotations.slice(0, 30).map((item) => ({ selector: String(item.selector || "").slice(0, 500), label: String(item.label || "Alvo").slice(0, 100), color: String(item.color || "").slice(0, 30) }));
-  ubCompanionPersist();
-  const rendered = ubCompanionRender();
-  return { open: true, messages: ubCompanionState.messages.length, steps: ubCompanionState.steps.length, annotations: ubCompanionState.annotations.length, rendered: rendered?.ok === true, ...(rendered?.error ? { renderError: rendered.error } : {}) };
+  if (Array.isArray(args.annotations)) ubProgressPanelState.annotations = args.annotations.slice(0, 30).map((item) => ({ selector: String(item.selector || "").slice(0, 500), label: String(item.label || "Alvo").slice(0, 100), color: String(item.color || "").slice(0, 30) }));
+  ubProgressPanelPersist();
+  const rendered = ubProgressPanelRender();
+  return { open: true, steps: ubProgressPanelState.steps.length, annotations: ubProgressPanelState.annotations.length, rendered: rendered?.ok === true, ...(rendered?.error ? { renderError: rendered.error } : {}) };
 }
-ubCompanionRestore();
+ubProgressPanelRestore();
 
 // boot: re-aplica os highlights dos reports abertos deste site (cache do background, TTL 60s)
 try {
@@ -2784,7 +2766,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
     if (msg.cmd === "ping") { reply({ ok: true, data: { v: UB_V } }); return; }
     if (msg.cmd === "state") { reply({ ok: true, data: { title: document.title, url: location.href } }); return; }
     if (msg.cmd === "overview") { reply({ ok: true, data: ubPageOverview(a.max, a.offset) }); return; }
-    if (msg.cmd === "companion") { reply({ ok: true, data: ubCompanionCommand(a) }); return; }
+    if (msg.cmd === "panel") { reply({ ok: true, data: ubProgressPanelCommand(a) }); return; }
     if (msg.cmd === "read") {
       // settle antes de coletar: SPA hidrata depois do idle; sem isso lê esqueleto (BulkMD: 60%→95%).
       try { await ubSettle({ timeout: 1500, quiet: 250 }); } catch {}

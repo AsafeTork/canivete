@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { sleep } from "../core/retry.mjs";
 import { reg, devOut, trimOut } from "./ctx.mjs";
-import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint, ubCompanionRead, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
+import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
 import { ownerCdpSend } from "./cdp.mjs";
 import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks } from "../core/snapshot.mjs";
 // recovery sem mudar protocolo: só texto de erro acionável (janela NORMAL, popup, token) + fallback headless
@@ -252,7 +252,7 @@ reg("cv_ubrowser_overview", {
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const d = r.data || {};
-    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos · ${d.forms?.length || 0} formulários`, data: d, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Use um selector do overview para agir ou marque um elemento com companion" }] });
+    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos · ${d.forms?.length || 0} formulários`, data: d, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Use um selector do overview para agir ou marque um elemento com panel" }] });
   },
 });
 
@@ -569,11 +569,11 @@ reg("cv_ubrowser_snapshot", {
 });
 
 reg("cv_ubrowser_act", {
-  description: "Opera o Chrome autenticado na guia escolhida; `goto` troca o site nessa mesma guia. Guias novas entram no grupo Canivete e as existentes seguem acessíveis. A janela-alvo ganha foco por padrão (`focus:false` preserva o atual). Use CDP quando necessário. `companion` mantém chat e progresso na página; mensagens interrompem `flow` entre passos para o agente responder e continuar. Marcações apontam alvos sem alterar atributos do site. Cursor: coordenadas/selector, movimento animado e hover. Alto risco requer confirmação.",
+  description: "Opera o Chrome autenticado na guia escolhida; `goto` troca o site nessa mesma guia. Guias novas entram no grupo Canivete e as existentes seguem acessíveis. A janela-alvo ganha foco por padrão (`focus:false` preserva o atual). Use CDP quando necessário. `panel` exibe o progresso na página; `flow` atualiza cada passo. Marcações apontam alvos sem alterar atributos do site. Cursor: coordenadas/selector, movimento animado e hover. Alto risco requer confirmação.",
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "monstate", "cdp", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "companion", "console", "close", "activate", "elem_pick"] },
+      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "monstate", "cdp", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "panel", "console", "close", "activate", "elem_pick"] },
       off: { type: "boolean", description: "p/ elem_pick: desliga o modo de marcação" },
       tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, url: { type: "string" }, selector: { type: "string" }, text: { type: "string" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — omitir = mais recente" },
       ref: { type: "number", description: "ref do snapshot (resolve p/ selector via cache; expira se navegar — re-snapshot)" },
@@ -584,10 +584,9 @@ reg("cv_ubrowser_act", {
       timeoutMs: { type: "number", description: "tempo de espera para waittext/evaluate" },
       steps: { type: "array", description: "p/ flow: sequência de comandos [{cmd, ...args}] em uma ida-volta", items: { type: "object" } },
       showProgress: { type: "boolean", description: "p/ flow: exibe o passo a passo no painel da página (default true)" },
-      checkInbox: { type: "boolean", description: "ações do navegador entregam mensagens do companion no retorno; flow pausa entre passos (default true)" },
       progressTitle: { type: "string" }, progressMessage: { type: "string" },
-      mode: { type: "string", enum: ["close_by_prefix", "open", "update", "close", "read", "wait"], description: "p/ close: close_by_prefix; p/ companion: abrir/atualizar/fechar o painel, ou ler/aguardar mensagens do usuário" },
-      message: { type: "string", description: "mensagem visível no painel companion" },
+      mode: { type: "string", enum: ["close_by_prefix", "open", "update", "close"] },
+      message: { type: "string", description: "texto de status mostrado no painel de progresso" },
       annotations: { type: "array", description: "marcações visuais independentes do DOM do site: [{selector,label,color}]", items: { type: "object" } },
       key: { type: "string" }, js: { type: "string" }, ms: { type: "number" },
       x: { type: "number", description: "viewport X p/ cursor|tooltip" }, y: { type: "number", description: "viewport Y p/ cursor|tooltip" },
@@ -620,7 +619,6 @@ reg("cv_ubrowser_act", {
   },
   run: async (a, context = {}) => {
     const t0 = Date.now();
-    const agentSessionId = String(context.agentSessionId || "");
     if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | exemplos: {action:"goto", tab:"trecho", url:"https://..."} / {action:"click", ref:3} / {action:"activate", tab:"Gmail"}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     // roteamento multi-perfil: profile pedido SEM match = erro acionável (lista conectados),
     // nunca despacha em silêncio p/ outro perfil. Um só resolve vale p/ ida e retry.
@@ -638,11 +636,6 @@ reg("cv_ubrowser_act", {
     const risk = ubRisk(a);
     if (risk === "high" && !(a.confirm && a.confirm.trim().length >= 4))
       return devOut({ status: "error", summary: `BLOQUEADO (alto risco). Só com pedido EXPLÍCITO + confirm="<frase do dono>". Ação: ${a.action} ${a.selector || a.url || ""}`, data: { action: a.action, risk }, telemetry: { execution_time_ms: Date.now() - t0 } });
-    if (a.action === "companion" && ["read", "wait"].includes(a.mode)) {
-      const waitMs = a.mode === "wait" ? Number(a.waitMs ?? 30000) : 0;
-      const messages = await ubCompanionRead({ profile: tgt.id, tabId: a.tabId, agentSessionId, waitMs: Number.isFinite(waitMs) ? Math.max(0, waitMs) : 30000 });
-      return devOut({ summary: messages.length ? `${messages.length} mensagem(ns) do usuário no navegador` : "nenhuma mensagem nova no painel do navegador", data: { messages }, telemetry: { execution_time_ms: Date.now() - t0 }, next: messages.length ? [{ tool: "cv_owner_act", reason: "Responda no painel com action=companion, mode=update" }] : [] });
-    }
     // CDP do dono (porta 9222, WS persistente): tenta PRIMEIRO se o toggle estiver armado —
     // sem banner e alcança chrome://. Modo em efeito (escolha do dono): toggle OFF → o fast-fail
     // do ownerConnect recusa em ms e a extensão abaixo responde tudo (zero cliques). tab:"trecho" casa URL/título; indisponível
@@ -666,10 +659,9 @@ reg("cv_ubrowser_act", {
     if (a.action === "wait") {
       const requested = Number(a.waitMs ?? a.ms), waitMs = Number.isFinite(requested) && requested >= 0 ? requested : 2000;
       await new Promise((r) => setTimeout(r, waitMs));
-      const messages = a.checkInbox === false ? [] : await ubCompanionRead({ profile: tgt.id, tabId: a.tabId, agentSessionId });
-      return devOut({ summary: messages.length ? `${messages.length} mensagem(ns) do companion recebida(s) durante a espera` : "wait ok", data: { action: "wait", waitedMs: waitMs, messages }, telemetry: { execution_time_ms: Date.now() - t0 }, next: messages.length ? [{ tool: "cv_owner_act", reason: "Responda no painel com action=companion mode=update antes de continuar" }] : [] });
+      return devOut({ summary: "wait ok", data: { action: "wait", waitedMs: waitMs }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
-    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", monstate: "tab.monstate", cdp: "tab.cdp", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", companion: "tab.companion", console: "tab.console", close: "tab.close", activate: "tab.activate", elem_pick: "tab.elem_pick" };
+    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", monstate: "tab.monstate", cdp: "tab.cdp", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", panel: "tab.panel", console: "tab.console", close: "tab.close", activate: "tab.activate", elem_pick: "tab.elem_pick" };
     if (!map[a.action]) return devOut({ status: "error", summary: `action "${a.action}" desconhecida — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // valida antes da ida-volta: param que a extensão joga como throw vira erro AQUI com exemplo pronto p/ colar.
     {
@@ -705,7 +697,7 @@ reg("cv_ubrowser_act", {
     }, 0) : 0;
     const durationWaitMs = a.action === "flow" ? flowWaitMs : (a.action === "catchup" || a.action === "cursor" || a.action === "click" ? cursorWaitMs : 0);
     const ubTo = Math.max(UB_HEAVY_ACTIONS.has(a.action) ? ubHeavyMs() : UB_TIMEOUT_MS, Number.isFinite(durationWaitMs) ? durationWaitMs : UB_TIMEOUT_MS);
-    let r = await ubSend(map[a.action], { ...a, ...(agentSessionId && ["companion", "flow"].includes(a.action) ? { _caniveteAgentSessionId: agentSessionId } : {}) }, ubTo, tgt.id);
+    let r = await ubSend(map[a.action], { ...a }, ubTo, tgt.id);
     // #43a: evaluate null intermitente (race com JS da página) — 1 retry após 800ms antes de declarar null.
     // v14: vale a verdade mais nova — adota r2 seja ok ou erro (só pendings mantêm o antigo).
     if (a.action === "evaluate" && r && r.ok && (r.data?.value ?? null) === null && !r.data?.error) {
@@ -724,14 +716,6 @@ reg("cv_ubrowser_act", {
       return devOut({ status: "error", summary: `extensão: ${r.error}${ubErrHint(r.error) || ""}${unknownAct ? ` — tab.activate precisa extensão ${UB_VER_ACT}+ (cv_ubrowser_status → data.version); rode {action:"reload-extension"}` : ""} | ${UB_FB}`, data: { action: a.action, ...(unknownAct ? { versionHint: UB_VER_ACT } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const d = r.data || {};
-    if (a.action === "flow" && d.interrupted && Array.isArray(d.messages) && d.messages.length) {
-      const first = d.messages[0];
-      return devOut({ summary: `[flow] pausado após o passo ${d.nextStepIndex || d.steps?.length || 0} para responder no companion: ${(first.text || "mensagem recebida").slice(0, 180)}`, data: { action: "flow", ...d }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Responda ao usuário no painel com action=companion mode=update; depois continue com remainingSteps do resultado." }] });
-    }
-    if (!['companion', 'flow'].includes(a.action) && a.checkInbox !== false) {
-      const messages = await ubCompanionRead({ profile: tgt.id, tabId: a.tabId, agentSessionId });
-      if (messages.length) return devOut({ summary: `[${a.action}] concluída · mensagem do usuário recebida no navegador`, data: { action: a.action, result: d, messages }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Responda no painel com action=companion mode=update; continue a tarefa depois da resposta." }] });
-    }
     if (a.action === "activate") {
       // aba à frente NO Chrome (contrato u Melhora): tolera d.tab{} (futuro), {tabId,title,url,focused} (bg 1.7.3) ou d plano.
       const tb = (d.tab && typeof d.tab === "object") ? d.tab : d;
@@ -740,9 +724,9 @@ reg("cv_ubrowser_act", {
       const actNext = [{ tool: "cv_ubrowser_snapshot", reason: "Janela em foco — mapeie controles atualizados" }];
       return devOut({ summary: `[activate] ok — aba à frente NO Chrome: ${where}${focused ? " + janela em foco" : " (foco preservado por solicitação)"}`, data: { action: "activate", risk, focused, tabId: tb.tabId ?? tb.id ?? d.id, ...(tb.title ? { title: String(tb.title).slice(0, 100) } : {}), ...(tb.url ? { url: String(tb.url).slice(0, 200) } : {}), ...(d.window ? { window: d.window } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: actNext });
     }
-    if (a.action === "companion") {
+    if (a.action === "panel") {
       const open = d.open !== false;
-      return devOut({ summary: open ? `[companion] painel aberto · ${d.steps || 0} passo(s) · ${d.annotations || 0} marcação(ões)` : "[companion] painel fechado", data: { action: "companion", ...d }, telemetry: { execution_time_ms: Date.now() - t0 }, next: open ? [{ tool: "cv_owner_act", reason: "Aguardar mensagens do usuário com action=companion, mode=wait; responder com mode=update" }] : [] });
+      return devOut({ summary: open ? `[panel] painel de progresso aberto · ${d.steps || 0} passo(s) · ${d.annotations || 0} marcação(ões)` : "[panel] painel fechado", data: { action: "panel", ...d }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     if (a.action === "reload-extension") {
       // auto-reload remoto da extensão (aplica código novo do disco).
