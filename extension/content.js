@@ -1755,6 +1755,7 @@ function ubFindVirtualContainers(hintSel) {
 var UB_SNAP_HINT = null; // "virtual-bg": lista virtual em aba de fundo sem shim — servidor instala e repete
 var UB_FIND_TRUNC = false; // find em lista virtual parou no teto de janelas (não chegou ao fim)
 var UB_SNAP_END = false; // a varredura chegou ao fim real do container (não ao teto de itens)
+var UB_SNAP_MORE = false; // a coleta parou no teto de 120 (há mais elementos além da página)
 function ubSnapHintVirtual() { UB_SNAP_HINT = null; }
 async function ubRestoreScroll(cont, top, fast = false) {
   try { if (typeof cont.scrollTo === "function") cont.scrollTo(0, top); else cont.scrollTop = top; } catch {}
@@ -1928,6 +1929,7 @@ async function ubSnapshotVirtualized({ pages = 5, container = null, limit = 120,
     } catch {}
   }
   UB_SNAP_END = !!(targets.length && endReached);
+  UB_SNAP_MORE = !!(seen.size >= lim && !endReached);
   const items = [...seen.values()].slice(0, lim);
   ubFillBoxLazy(items);
   items.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
@@ -3022,7 +3024,8 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         if (!scopeEl) return reply({ ok: false, error: "seletor não encontrado: " + String(a.selector).slice(0, 120) });
       }
       if (a.mode === "distill") {
-        const mc = Math.min(Math.max(Number(a.maxChars) || 4000, 200), 12000);
+        // default 2500 = o anunciado no schema (era 4000: default real divergia do tool)
+        const mc = Math.min(Math.max(Number(a.maxChars) || 2500, 200), 12000);
         const d = ubDistill(mc, scopeEl);
         reply({ ok: true, data: d });
         return;
@@ -3045,7 +3048,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
       const tHandler = performance.now();
       let settleMs = 0;
       if (ubReadNeedsSettle(a)) { try { const tS = performance.now(); await ubSettle({ timeout: 1500, quiet: 250 }); settleMs = Math.round(performance.now() - tS); } catch {} }
-      const mc = Math.min(Math.max(Number(a.maxChars) || 4000, 200), 12000);
+      const mc = Math.min(Math.max(Number(a.maxChars) || 2500, 200), 12000);
       let scopeEl = null;
       if (a.selector) {
         scopeEl = findEl(String(a.selector));
@@ -3069,6 +3072,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
       try {
         UB_FIND_TRUNC = false;
         UB_SNAP_END = false;
+        UB_SNAP_MORE = false;
         const match = a.match ?? a.query ?? a.text ?? "";
         const data = await ubSnapshotVirtualized({ pages: a.pages, container: a.container, limit: 120, match });
         let overlay = null;
@@ -3076,6 +3080,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         if (UB_SNAP_HINT) overlay = { ...(overlay || {}), needsShim: true };
         if (UB_FIND_TRUNC) overlay = { ...(overlay || {}), findTruncated: true };
         if (UB_SNAP_END) overlay = { ...(overlay || {}), virtualEnd: true };
+        if (UB_SNAP_MORE) overlay = { ...(overlay || {}), more: true };
         if (match && String(match).trim()) {
           const needle = String(match).toLowerCase();
           const pos = data.findIndex((it) => ((it.text || "").toLowerCase().includes(needle)));

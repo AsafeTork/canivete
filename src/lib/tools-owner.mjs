@@ -574,11 +574,9 @@ reg("cv_ubrowser_snapshot", {
     const needle = String(find || "").trim().toLowerCase();
     const tgt = ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
-    // pool adaptativo: a extensão fatiava ANTES do dedup/rank do servidor (40 links de
-    // fragmentos distintos viravam 2). Paginamos DEPOIS; o pool só precisa cobrir a página
-    // pedida com folga p/ fold/dedup — max=8 não baixa 120 elementos à toa.
-    const startGuess = Math.max(0, Math.floor(Number(offset) || 0));
-    const poolSize = needle ? 120 : Math.min(120, Math.max(40, Math.ceil((startGuess + cappedMax) * 2.5)));
+    // pool FIXO 120: com pool adaptativo o `total` mudava conforme o max pedido (75 vs 120)
+    // e a paginação mentia. A extensão já coleta 120; o custo extra é o fatiamento no background.
+    const poolSize = 120;
     const tBridge = Date.now();
     const pg = Math.min(Math.max(Number(pages) || 100, 1), 100);
     const snapArgs = { tabId, tab, max: poolSize, ...(needle ? { match: needle, pages: pg } : {}) };
@@ -617,6 +615,7 @@ reg("cv_ubrowser_snapshot", {
     const fallbackNote = overlay && overlay.fallback ? ` | FALLBACK: ${String(overlay.fallbackError || "erro").slice(0, 120)}` : "";
     const shimNote = needsShim && !shimmed ? " | lista virtual em aba de fundo: não rolou (ative a aba p/ varrer tudo)" : "";
     const overlayData = overlay && overlay.open ? { overlay } : {};
+    const moreNote = overlay && overlay.more ? "+" : ""; // coleta parou no teto de 120
     const ranked = ubSnapRank(elements);
     const kept = [];
     let junk = 0;
@@ -674,11 +673,11 @@ reg("cv_ubrowser_snapshot", {
     if (compact) {
       // #42: text||name — img com alt/src ganha nome na extensão; compact não o esconde.
       const compactOut = paged.map(slimEl);
-      return devOut({ summary: `${compactOut.length}/${total} ${total === 1 ? "elemento" : "elementos"} (compact)${pageNote}${omitNote}${foldedNote}${dupeNote}${overlayNote}${fallbackNote}${shimNote}${focusNote}${shimmed ? " (lista virtual rolada em aba de fundo)" : ""}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...pageData, ...overlayData, ...(shimmed ? { virtualScanned: true } : {}) }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs } });
+      return devOut({ summary: `${compactOut.length}/${total}${moreNote} ${total === 1 ? "elemento" : "elementos"} (compact)${pageNote}${omitNote}${foldedNote}${dupeNote}${overlayNote}${fallbackNote}${shimNote}${focusNote}${shimmed ? " (lista virtual rolada em aba de fundo)" : ""}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...pageData, ...(overlay && overlay.more ? { more: true } : {}), ...overlayData, ...(shimmed ? { virtualScanned: true } : {}) }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs } });
     }
     const ac = ubSnapAutoCompactFields(paged);
     const autoNote = ac.autoCompact ? ` (auto-compact campos: -${ac.dropped.join(",")})` : "";
-    return devOut({ summary: `${ac.elements.length}/${total} ${total === 1 ? "elemento" : "elementos"}${ac.autoCompact ? " (compact-campos)" : ""}${pageNote}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${fallbackNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    return devOut({ summary: `${ac.elements.length}/${total}${moreNote} ${total === 1 ? "elemento" : "elementos"}${ac.autoCompact ? " (compact-campos)" : ""}${pageNote}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${fallbackNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...pageData, ...(overlay && overlay.more ? { more: true } : {}), ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 
