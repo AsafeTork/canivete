@@ -463,6 +463,22 @@ function ubErrHint(error) {
 }
 // scan/flow varrem N passos/páginas: transporte com env baixo (ex: 10s) mata a varredura no meio —
 // pesadas ganham piso de 90s (teto próprio 165s = guard do host #50; nada acima disso volta sync vivo). Default global intacto.
+// Lista virtual em aba de fundo: o Chrome pausa rAF e não despacha scroll (frame-aligned).
+// O shim enfileira rAF e o content dispara 'ub-flush' após cada rolagem (ubRafKick), o que
+// renderiza a janela sob demanda sem trazer a aba à frente. Instalado só no scan; restaurado
+// no finally. Marca data-ub-rafshim p/ o content saber que pode kickar.
+const UB_RAF_SHIM = "window.__ubRAForig=window.__ubRAForig||window.requestAnimationFrame;window.__ubRAFq=window.__ubRAFq||[];window.__ubRAFid=window.__ubRAFid||0;window.__ubFlush=function(){var q=window.__ubRAFq.splice(0);for(var i=0;i<q.length;i++){try{q[i].cb(performance.now())}catch(e){}}return q.length};window.__ubFlushH=function(){window.__ubFlush()};document.removeEventListener('ub-flush',window.__ubFlushH);document.addEventListener('ub-flush',window.__ubFlushH);window.requestAnimationFrame=function(cb){var id=++window.__ubRAFid;window.__ubRAFq.push({id:id,cb:cb});return id};document.documentElement.setAttribute('data-ub-rafshim','1');return 'patched';";
+const UB_RAF_RESTORE = "if(window.__ubRAForig)window.requestAnimationFrame=window.__ubRAForig;document.removeEventListener('ub-flush',window.__ubFlushH);delete window.__ubFlush;delete window.__ubFlushH;delete window.__ubRAFq;delete window.__ubRAForig;document.documentElement.removeAttribute('data-ub-rafshim');return 'restored';";
+// Instala/restaura o shim de rAF numa aba (evaluate cai no MAIN world sozinho).
+async function ubRafShimOn(tgt, a) {
+  try {
+    const sh = await ubSend("tab.evaluate", { tabId: a.tabId, tab: a.tab, js: UB_RAF_SHIM }, 8000, tgt.id);
+    return !!(sh && sh.ok && sh.data && sh.data.value === "patched");
+  } catch { return false; }
+}
+async function ubRafShimOff(tgt, a) {
+  try { await ubSend("tab.evaluate", { tabId: a.tabId, tab: a.tab, js: UB_RAF_RESTORE }, 8000, tgt.id); } catch {}
+}
 const UB_HEAVY_ACTIONS = new Set(["scan", "flow"]);
 const ubHeavyMs = () => Math.min(Math.max(UB_TIMEOUT_MS, 90000), 165000);
 // Param obrigatório por ação (espelha o que a extensão joga como throw) + exemplo pronto p/ colar.
@@ -539,9 +555,9 @@ async function ubTabsFetch(args, tgt, timeoutMs) {
 const UB_SHOT_LAST = new Map(); // hash do último shot por aba (frescor v14)
 
 reg("cv_ubrowser_snapshot", {
-  description: "Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). find=\"texto\": localiza com ±3 contexto sem despejar tudo. layer=\"modal|menu|popover|tooltip\": foca SÓ na camada. Listas grandes dobram sozinhas; links duplicados são removidos. compact (padrão) retorna só ref/tag/texto/role e reduz tokens; max=30 por padrão. Lista virtualizada: act scan antes. Rank: viewport→nome→papel.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 30, description: "máximo de elementos por página (default 30, máx 120)" }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" }, compact: { type: "boolean", default: true, description: "padrão true: só ref|tag|texto|role; false inclui mais campos por elemento" }, find: { type: "string", description: "busca texto no snapshot e devolve matches ±3 contexto (sem despejar tudo)" }, layer: { type: "string", enum: ["modal", "menu", "popover", "tooltip"], description: "foco SÓ na camada (ex: modal de 2 botões sem ler a página inteira)" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
-  run: async ({ tabId, tab, max, offset, compact = true, find, layer, profile }) => {
+  description: "Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). find=\"texto\": localiza com ±3 contexto sem despejar tudo. layer=\"modal|menu|popover|tooltip\": foca SÓ na camada. Listas grandes dobram sozinhas; links duplicados são removidos. compact (padrão) retorna só ref/tag/texto/role e reduz tokens; max=30 por padrão. Lista virtualizada: já rola e varre sozinho (5 páginas, até 120 itens) — act scan é alias rápido p/ paginar. Rank: viewport→nome→papel.",
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 30, description: "máximo de elementos por página (default 30, máx 120)" }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" }, compact: { type: "boolean", default: true, description: "padrão true: só ref|tag|texto|role; false inclui mais campos por elemento" }, find: { type: "string", description: "busca texto no snapshot e devolve matches ±3 contexto (sem despejar tudo)" }, pages: { type: "number", default: 100, description: "find em lista virtual: janelas de rolagem (1-100, default 100; orçamento 6s)" }, layer: { type: "string", enum: ["modal", "menu", "popover", "tooltip"], description: "foco SÓ na camada (ex: modal de 2 botões sem ler a página inteira)" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
+  run: async ({ tabId, tab, max, offset, compact = true, find, layer, profile, pages }) => {
     const t0 = Date.now();
     const cappedMax = Math.min(Number(max) || 30, 120);
     const needle = String(find || "").trim().toLowerCase();
@@ -553,13 +569,28 @@ reg("cv_ubrowser_snapshot", {
     const startGuess = Math.max(0, Math.floor(Number(offset) || 0));
     const poolSize = needle ? 120 : Math.min(120, Math.max(40, Math.ceil((startGuess + cappedMax) * 2.5)));
     const tBridge = Date.now();
-    const r = await ubSend("tab.snapshot", { tabId, tab, max: poolSize, ...(needle ? { match: needle } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    const pg = Math.min(Math.max(Number(pages) || 100, 1), 100);
+    let r = await ubSend("tab.snapshot", { tabId, tab, max: poolSize, ...(needle ? { match: needle, pages: pg } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    // lista virtual em aba de fundo: rAF pausado → 1ª passada só vê a dobra. Instala o shim
+    // (fila de rAF + flush no scroll sintético) e repete UMA vez; restaura sempre.
+    let shimmed = false;
+    const needsShim = !!(r && r.ok && r.data && (r.data.needsShim || (r.data.overlay && r.data.overlay.needsShim)));
+    if (needsShim) {
+      shimmed = await ubRafShimOn(tgt, { tabId, tab });
+      if (shimmed) {
+        try {
+          r = await ubSend("tab.snapshot", { tabId, tab, max: poolSize, ...(needle ? { match: needle, pages: pg } : {}) }, UB_TIMEOUT_MS, tgt.id);
+        } finally { await ubRafShimOff(tgt, { tabId, tab }); }
+      }
+    }
     const bridgeMs = Date.now() - tBridge;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const elements = Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.items) ? r.data.items : []);
     const overlay = (!Array.isArray(r.data) && r.data && typeof r.data.overlay === "object" && r.data.overlay) ? r.data.overlay : null;
     const overlayNote = (overlay && overlay.open) ? ` | OVERLAY OPEN (${overlay.kind || "?"}${overlay.label ? ` "${String(overlay.label).slice(0, 60)}"` : ""}) — página bloqueada atrás` : "";
+    const fallbackNote = overlay && overlay.fallback ? ` | FALLBACK: ${String(overlay.fallbackError || "erro").slice(0, 120)}` : "";
+    const shimNote = needsShim && !shimmed ? " | lista virtual em aba de fundo: não rolou (ative a aba p/ varrer tudo)" : "";
     const overlayData = overlay && overlay.open ? { overlay } : {};
     const ranked = ubSnapRank(elements);
     const kept = [];
@@ -593,7 +624,7 @@ reg("cv_ubrowser_snapshot", {
         const hay = `${el.text || ""} ${el.name || ""}`.toLowerCase();
         if (hay.includes(needle)) hits.push(i);
       });
-      if (!hits.length) return devOut({ summary: `find "${find}": nada (varri a página${junk ? `, ${ubPlural(junk, "junk", "junk")} fora` : ""}) — tente trecho menor ou act scan em lista virtualizada${overlayNote}${focusNote}`, data: { find, found: false, elements: [], ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      if (!hits.length) return devOut({ summary: `find "${find}": nada (varri a página${junk ? `, ${ubPlural(junk, "junk", "junk")} fora` : ""}) — tente trecho menor${overlay && overlay.findTruncated ? `; lista virtual: varredura parcial (teto de ${pg} janelas); abra a aba ou use scan paginado` : " ou act scan em lista virtualizada"}${overlayNote}${focusNote}`, data: { find, found: false, elements: [], ...(overlay && overlay.findTruncated ? { truncated: true } : {}), ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
       const win = new Set();
       for (const h of hits) for (let k = Math.max(0, h - 3); k <= Math.min(pool.length - 1, h + 3); k++) win.add(k);
       const hitSet = new Set(hits);
@@ -618,11 +649,11 @@ reg("cv_ubrowser_snapshot", {
     if (compact) {
       // #42: text||name — img com alt/src ganha nome na extensão; compact não o esconde.
       const compactOut = paged.map(slimEl);
-      return devOut({ summary: `${compactOut.length}/${total} ${total === 1 ? "elemento" : "elementos"} (compact)${pageNote}${omitNote}${foldedNote}${dupeNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs } });
+      return devOut({ summary: `${compactOut.length}/${total} ${total === 1 ? "elemento" : "elementos"} (compact)${pageNote}${omitNote}${foldedNote}${dupeNote}${overlayNote}${fallbackNote}${shimNote}${focusNote}${shimmed ? " (lista virtual rolada em aba de fundo)" : ""}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...pageData, ...overlayData, ...(shimmed ? { virtualScanned: true } : {}) }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs } });
     }
     const ac = ubSnapAutoCompactFields(paged);
     const autoNote = ac.autoCompact ? ` (auto-compact campos: -${ac.dropped.join(",")})` : "";
-    return devOut({ summary: `${ac.elements.length}/${total} ${total === 1 ? "elemento" : "elementos"}${ac.autoCompact ? " (compact-campos)" : ""}${pageNote}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    return devOut({ summary: `${ac.elements.length}/${total} ${total === 1 ? "elemento" : "elementos"}${ac.autoCompact ? " (compact-campos)" : ""}${pageNote}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${fallbackNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 
@@ -661,7 +692,7 @@ reg("cv_ubrowser_act", {
       filter: { type: "string", enum: ["all", "errors", "net", "console"], default: "all", description: "p/ console: all|errors|net|console" },
       limit: { type: "number", default: 30, description: "p/ console: máx entradas (1-120)" },
       clear: { type: "boolean", description: "p/ console: limpa o buffer após ler" },
-      pages: { type: "number", default: 4, description: "páginas de rolagem p/ scan (listas virtualizadas)" },
+      pages: { type: "number", default: 5, description: "páginas de rolagem p/ scan (listas virtualizadas; 1-5)" },
       offset: { type: "number", description: "p/ scan: pula N itens (paginação via nextOffset)" },
       durationMs: { type: "number", description: "duração do movimento do cursor; janela do catchup quando action=catchup" },
       intervalMs: { type: "number", description: "intervalo entre amostras do catchup (ms)" },
@@ -757,7 +788,22 @@ reg("cv_ubrowser_act", {
     }, 0) : 0;
     const durationWaitMs = a.action === "flow" ? flowWaitMs : (a.action === "catchup" || a.action === "cursor" || a.action === "click" ? cursorWaitMs : 0);
     const ubTo = Math.max(UB_HEAVY_ACTIONS.has(a.action) ? ubHeavyMs() : UB_TIMEOUT_MS, Number.isFinite(durationWaitMs) ? durationWaitMs : UB_TIMEOUT_MS);
-    let r = await ubSend(map[a.action], { ...a }, ubTo, tgt.id);
+    // scan de lista virtual: instala o shim de rAF antes e restaura depois (sempre).
+    const rafShim = a.action === "scan" ? await ubRafShimOn(tgt, a) : false;
+    let r;
+    try {
+      if (a.action === "scan") {
+        // scan = snapshot que já rola listas virtuais (5 páginas) numa só ida. O tab.scan
+        // antigo repetia a varredura 4× (8s → ~2s) e devolvia menos itens.
+        const pages = Math.min(Math.max(Number(a.pages) || 5, 1), 5);
+        const snap = await ubSend("tab.snapshot", { tabId: a.tabId, tab: a.tab, max: 120, pages, ...(a.container ? { container: a.container } : {}) }, ubTo, tgt.id);
+        if (snap && snap.ok && snap.data && Array.isArray(snap.data.items) && snap.data.items.length) {
+          const items = snap.data.items.map((it, i) => ({ ref: it.ref ?? i, ...it }));
+          r = { ok: true, data: { items, pages, reachedEnd: items.length < 120 } };
+        } else r = await ubSend("tab.scan", { ...a }, ubTo, tgt.id); // fallback: página sem itens p/ snapshot
+      } else r = await ubSend(map[a.action], { ...a }, ubTo, tgt.id);
+    }
+    finally { if (rafShim) await ubRafShimOff(tgt, a); }
     // #43a: evaluate null intermitente (race com JS da página) — 1 retry após 800ms antes de declarar null.
     // v14: vale a verdade mais nova — adota r2 seja ok ou erro (só pendings mantêm o antigo).
     if (a.action === "evaluate" && r && r.ok && (r.data?.value ?? null) === null && !r.data?.error) {

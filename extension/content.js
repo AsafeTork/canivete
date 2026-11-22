@@ -1734,7 +1734,10 @@ function ubFindVirtualContainers(hintSel) {
         const ov = ((st && st.overflowY) || "") + " " + ((st && st.overflow) || "");
         if (!/auto|scroll/i.test(ov)) return;
         try {
-          if (el.scrollHeight > el.clientHeight + 40 && el.clientHeight > 100 && el.clientHeight < innerHeight * 0.95) push(el);
+          // aba oculta/minimizada: innerHeight pode ser 0 — não use como teto (a lista
+          // virtual ficava invisível p/ detecção e o snapshot nunca rolava o container).
+          const maxH = innerHeight > 0 ? innerHeight * 0.95 : Infinity;
+          if (el.scrollHeight > el.clientHeight + 40 && el.clientHeight > 100 && el.clientHeight < maxH) push(el);
         } catch {}
       });
     } catch {}
@@ -1746,11 +1749,35 @@ function ubFindVirtualContainers(hintSel) {
 // Teto coleta: 120 (find=2000; background fatia a resposta). Se pedir maior, para no teto (nota: truncado no cap).
 // Com match: para cedo na 1ª coleta que contém o texto (não varre pages todas).
 // Box LAZY: varredura com needBox=false (sem layout); ubFillBoxLazy mede só finais antes do sort.
+// Lista virtual em aba de FUNDO: o Chrome pausa rAF e nem despacha scroll (frame-aligned),
+// então a lista nunca renderiza ao rolar. O servidor instala um shim de rAF (fila) e marca
+// data-ub-rafshim; aqui disparamos o scroll sintético + flush p/ a página renderizar a janela.
+var UB_SNAP_HINT = null; // "virtual-bg": lista virtual em aba de fundo sem shim — servidor instala e repete
+var UB_FIND_TRUNC = false; // find em lista virtual parou no teto de janelas (não chegou ao fim)
+function ubSnapHintVirtual() { UB_SNAP_HINT = null; }
+async function ubRestoreScroll(cont, top) {
+  try { if (typeof cont.scrollTo === "function") cont.scrollTo(0, top); else cont.scrollTop = top; } catch {}
+  ubRafKick(cont);
+  try { await ubSettle({ timeout: 400, quiet: 80 }); } catch {}
+}
+function ubRafKick(cont) {
+  // Aba de fundo: Chrome não despacha scroll nem roda rAF. Só kickamos com o shim
+  // instalado — sem ele, o handler da página enfileiraria um rAF real que nunca roda
+  // e deixaria o flag interno (renderPending) travado, impedindo o retry de renderizar.
+  try {
+    if (!document.documentElement.hasAttribute("data-ub-rafshim")) return;
+  } catch { return; }
+  try { if (cont && cont.dispatchEvent) cont.dispatchEvent(new Event("scroll")); } catch {}
+  try { window.dispatchEvent(new Event("scroll")); } catch {}
+  try { document.dispatchEvent(new Event("ub-flush")); } catch {}
+}
 // Find em página inteira (inclusive listas virtualizadas): varre todos os candidatos,
 // pré-filtra por texto barato e só monta itens completos nos matches ±3.
-async function ubFindVirtualized({ needle, pages = 2, container = null, fast = false, lim = 20000 } = {}) {
-  const maxPages = Math.min(Math.max(Number(pages) || 2, 1), 5);
+async function ubFindVirtualized({ needle, pages = 100, container = null, fast = false, lim = 20000 } = {}) {
+  const maxPages = Math.min(Math.max(Number(pages) || 100, 1), 100);
+  UB_FIND_TRUNC = false;
   const targets = ubFindVirtualContainers(container).slice(0, 3);
+  ubSnapHintVirtual(targets);
   if (!fast && (targets.length || document.readyState !== "complete")) {
     try { await ubSettle({ timeout: 1200, quiet: 200 }); } catch {}
   }
@@ -1761,11 +1788,18 @@ async function ubFindVirtualized({ needle, pages = 2, container = null, fast = f
   };
   let items = ubFindScan(needle, lim);
   if (items.length) return finish(items);
+  try {
+    if (document.hidden && targets.length && !document.documentElement.hasAttribute("data-ub-rafshim")) {
+      UB_SNAP_HINT = "virtual-bg";
+      return [];
+    }
+  } catch {}
   if (!targets.length) {
     let scrollable = false;
     try { scrollable = (document.documentElement?.scrollHeight || 0) > innerHeight + 40; } catch {}
     if (scrollable) {
       try { window.scrollBy(0, 1); } catch {}
+      ubRafKick(null);
       await ubSleep(80);
       items = ubFindScan(needle, lim);
       try { window.scrollBy(0, -1); } catch {}
@@ -1773,27 +1807,39 @@ async function ubFindVirtualized({ needle, pages = 2, container = null, fast = f
     }
     return [];
   }
+  const beforeFind = items.length;
+  let movedFind = false;
   for (const cont of targets) {
     let startTop = 0;
     try { startTop = cont.scrollTop || 0; } catch {}
-    let lastTop = -1, same = 0;
+    let lastTop = -1, same = 0, reachedEnd = false;
     const step = Math.max(Math.round(((cont.clientHeight || innerHeight) * 0.9) || 400), 100);
+    const tFind = Date.now();
+    const shimmed = (() => { try { return document.documentElement.hasAttribute("data-ub-rafshim"); } catch { return false; } })();
     for (let p = 0; p < maxPages; p++) {
       try { cont.scrollBy(0, step); } catch { break; }
-      await ubSettle({ timeout: 900, quiet: 150 });
+      ubRafKick(cont);
+      // com shim o render roda no flush (síncrono): 1 frame basta. Sem shim, espera DOM.
+      if (shimmed) await ubSleep(12); else await ubSettle({ timeout: 900, quiet: 150 });
       items = ubFindScan(needle, lim);
-      if (items.length) { try { cont.scrollTo(0, startTop); } catch {} return finish(items); }
+      if (items.length) { await ubRestoreScroll(cont, startTop); return finish(items); }
       let cur = 0, max = 0;
       try { cur = cont.scrollTop; max = cont.scrollHeight - cont.clientHeight; } catch {}
-      if (cur === lastTop) { same++; if (same >= 1) break; } else { same = 0; lastTop = cur; }
-      try { if (cur + (cont.clientHeight || 0) >= (cont.scrollHeight || 0) - 8) break; } catch {}
-      if (max <= 0) break;
+      if (cur !== startTop) movedFind = true;
+      if (cur === lastTop) { same++; if (same >= 1) { reachedEnd = true; break; } } else { same = 0; lastTop = cur; }
+      try { if (cur + (cont.clientHeight || 0) >= (cont.scrollHeight || 0) - 8) { reachedEnd = true; break; } } catch {}
+      if (max <= 0) { reachedEnd = true; break; }
+      if (Date.now() - tFind > 6000) break; // orçamento: find explícito, mas não infinito
     }
-    try { if (typeof cont.scrollTo === "function") cont.scrollTo(0, startTop); else cont.scrollTop = startTop; } catch {}
+    if (!reachedEnd && !items.length) UB_FIND_TRUNC = true;
+    await ubRestoreScroll(cont, startTop);
   }
+  try {
+    UB_SNAP_HINT = (document.hidden && targets.length && movedFind && items.length <= beforeFind && !document.documentElement.hasAttribute("data-ub-rafshim")) ? "virtual-bg" : null;
+  } catch {}
   return [];
 }
-async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120, match = "", fast = false } = {}) {
+async function ubSnapshotVirtualized({ pages = 5, container = null, limit = 120, match = "", fast = false } = {}) {
   const matchMode = String(match ?? "").trim().length > 0;
   // find precisa enxergar a página inteira: teto de 120/300 escondia alvos no fim de páginas
   // grandes e o servidor devolvia "nada". Fora do find, 120 segue o teto do contrato.
@@ -1801,24 +1847,40 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
   const maxPages = Math.min(Math.max(Number(pages) || 2, 1), 5);
   const seen = new Map();
   const needle = String(match ?? "").toLowerCase().trim();
-  if (matchMode) return await ubFindVirtualized({ needle, pages: maxPages, container, fast, lim: 20000 });
+  if (matchMode) return await ubFindVirtualized({ needle, pages: Number(pages) || 100, container, fast, lim: 20000 });
   // settle só quando pode haver hidratação/lista virtual: página estática com readyState
   // complete não ganha 1,2s de espera (snapshot caía de ~2s p/ ~0,3s no bench).
   const targets = ubFindVirtualContainers(container).slice(0, 3); // nota: máx 3 containers (se maior, para aqui)
+  ubSnapHintVirtual(targets);
   if (!fast && (targets.length || document.readyState !== "complete")) {
     try { await ubSettle({ timeout: 1200, quiet: 200 }); } catch {}
   }
+  const push = (arr) => {
+    for (const it of arr) {
+      const k = (it.selector || "") + "|" + (it.text || "");
+      if (!seen.has(k)) seen.set(k, it);
+    }
+  };
   // 1ª coleta SEMPRE (topo da página). Sem ela, página curta/não rolável devolvia 0
   // elementos (regressão real: snapshot vazio num HTML de 4 linhas) e lista virtual
   // perdia a primeira dobra, porque o loop rolava antes de coletar.
   push(ubSnapshotCollectRaw(lim, false));
-  if (!targets.length) {
+  const beforeSnap = seen.size;
+  let movedSnap = false;
+  // Aba de fundo + lista virtual sem shim: rolar agora só travaria o renderPending da
+  // página. Devolve a 1ª dobra + needsShim; o servidor instala o shim e repete.
+  let needShim = false;
+  try { needShim = !!(document.hidden && targets.length && !document.documentElement.hasAttribute("data-ub-rafshim")); } catch {}
+  if (needShim) {
+    UB_SNAP_HINT = "virtual-bg";
+  } else if (!targets.length) {
     // página não rolável: não há conteúdo lazy abaixo da dobra — pula o scroll de 200ms.
     // Se a 1ª coleta já encheu o pool, rolar não acrescenta nada: pula também.
     let scrollable = false;
     try { scrollable = (document.documentElement?.scrollHeight || 0) > innerHeight + 40; } catch {}
     if (scrollable && seen.size < lim) {
       try { window.scrollBy(0, 1); } catch {}
+      ubRafKick(null);
       await ubSleep(80);
       push(ubSnapshotCollectRaw(lim, false));
       try { window.scrollBy(0, -1); } catch {}
@@ -1831,19 +1893,29 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
       const step = Math.max(Math.round(((cont.clientHeight || innerHeight) * 0.9) || 400), 100);
       for (let p = 0; p < maxPages; p++) {
         try { cont.scrollBy(0, step); } catch { break; }
+        ubRafKick(cont);
         await ubSettle({ timeout: 900, quiet: 150 });
+        const beforePage = seen.size;
         push(ubSnapshotCollectRaw(lim, false));
+        const grew = seen.size > beforePage;
         let cur = 0, max = 0;
         try { cur = cont.scrollTop; max = cont.scrollHeight - cont.clientHeight; } catch {}
+        if (cur !== startTop) movedSnap = true;
         if (cur === lastTop) { same++; if (same >= 1) break; }
         else { same = 0; lastTop = cur; }
         try { if (cur + (cont.clientHeight || 0) >= (cont.scrollHeight || 0) - 8) break; } catch {}
         if (max <= 0) break;
+        if (!grew) break; // sem crescimento: ou fim da lista, ou virtual travada (retry c/ shim)
         if (seen.size >= lim) break;
       }
-      try { if (typeof cont.scrollTo === "function") cont.scrollTo(0, startTop); else cont.scrollTop = startTop; } catch {}
+      await ubRestoreScroll(cont, startTop);
       if (seen.size >= lim) break;
     }
+  }
+  if (!needShim) {
+    try {
+      UB_SNAP_HINT = (document.hidden && targets.length && movedSnap && seen.size <= beforeSnap && !document.documentElement.hasAttribute("data-ub-rafshim")) ? "virtual-bg" : null;
+    } catch {}
   }
   const items = [...seen.values()].slice(0, lim);
   ubFillBoxLazy(items);
@@ -2984,16 +3056,19 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
       // Args opcionais (todos retrocompatíveis): {pages (1-5, default 2), container (seletor), limit (120; find=2000), match}.
       // Com match: para cedo (não varre pages todas); data ganha {found, position}.
       try {
+        UB_FIND_TRUNC = false;
         const match = a.match ?? a.query ?? a.text ?? "";
         const data = await ubSnapshotVirtualized({ pages: a.pages, container: a.container, limit: 120, match });
         let overlay = null;
         try { overlay = ubOverlayState(); } catch { overlay = { open: false, kind: "", label: "", count: 0 }; }
+        if (UB_SNAP_HINT) overlay = { ...(overlay || {}), needsShim: true };
+        if (UB_FIND_TRUNC) overlay = { ...(overlay || {}), findTruncated: true };
         if (match && String(match).trim()) {
           const needle = String(match).toLowerCase();
           const pos = data.findIndex((it) => ((it.text || "").toLowerCase().includes(needle)));
-          reply({ ok: true, data: { items: data, overlay, found: pos >= 0, position: pos } });
+          reply({ ok: true, data: { items: data, overlay, found: pos >= 0, position: pos, ...(UB_SNAP_HINT ? { needsShim: true } : {}) } });
         } else {
-          reply({ ok: true, data: { items: data, overlay } });
+          reply({ ok: true, data: { items: data, overlay, ...(UB_SNAP_HINT ? { needsShim: true } : {}) } });
         }
       } catch (e) {
         // Fallback: coleta single-pass original (mesmo formato {items, overlay}).
@@ -3001,6 +3076,8 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
           const fb = ubSnapshotCollectRaw(120).map((it, i) => ({ ref: i, ...it }));
           let overlayFb = null;
           try { overlayFb = ubOverlayState(); } catch { overlayFb = { open: false, kind: "", label: "", count: 0 }; }
+          // fallback silencioso escondia bug real (push indefinido = todo snapshot single-pass).
+          overlayFb = { ...(overlayFb || {}), fallback: true, fallbackError: String((e && e.message) || e).slice(0, 160) };
           const matchFb = a.match ?? a.query ?? a.text ?? "";
           if (matchFb && String(matchFb).trim()) {
             const needleFb = String(matchFb).toLowerCase();
