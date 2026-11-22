@@ -118,8 +118,65 @@ function findEl(sel) {
   return null;
 }
 
-var ubSleep = (ms) => new Promise((r) => setTimeout(r, ms)); // var: reinjeção (hot-update) reexecuta sem SyntaxError
-// ubSettle: espera POR EVENTO (MutationObserver) com teto. Resolve true
+// Timer preciso p/ aba em FUNDO: o Chrome alinha setTimeout ao relógio de 1s (settle de
+// 150ms virava ~1s e snapshot de lista virtual custava 3s). Worker dedicado não sofre o
+// alinhamento e não traz a aba à frente. Se o worker não estiver pronto (CSP/blob), um
+// pump de MessageChannel mede o intervalo sem setTimeout; por fim, setTimeout clássico.
+// reinjeção (hot-update) reexecuta este bloco: encerra o worker antigo p/ não vazar
+try { if (ubTimerW && typeof ubTimerW.terminate === "function") ubTimerW.terminate(); } catch {}
+try { if (ubTimerCbs && typeof ubTimerCbs.clear === "function") ubTimerCbs.clear(); } catch {}
+var ubTimerW = null, ubTimerReady = false, ubTimerSeq = 0, ubTimerCbs = new Map();
+function ubPumpTimer(fn, ms) {
+  const d = Math.max(0, Number(ms) || 0), t0 = performance.now();
+  let done = false, ch = null;
+  const stop = () => {
+    if (done) return;
+    done = true;
+    try { ch.port1.onmessage = null; ch.port1.close(); ch.port2.close(); } catch {}
+  };
+  ch = new MessageChannel();
+  ch.port1.onmessage = () => {
+    if (done) return;
+    if (performance.now() - t0 >= d) { stop(); try { fn(); } catch {} return; }
+    try { ch.port2.postMessage(0); } catch { stop(); }
+  };
+  try { ch.port2.postMessage(0); } catch { return () => setTimeout(fn, d); }
+  return stop;
+}
+function ubTimerWorker() {
+  if (ubTimerW !== null) return ubTimerReady ? ubTimerW : null;
+  ubTimerW = false; // tentativa em curso/falha: chamadas concorrentes usam o fallback
+  try {
+    const src = 'const t=new Map();onmessage=(e)=>{const d=e.data||{};if(d.op==="set"){const id=d.id;t.set(id,setTimeout(()=>{t.delete(id);postMessage(id)},Math.max(0,d.ms|0)))}else if(d.op==="clear"){const h=t.get(d.id);if(h){clearTimeout(h);t.delete(d.id)}}};postMessage("ready")';
+    const w = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+    w.onmessage = (e) => {
+      if (e.data === "ready") { ubTimerReady = true; return; }
+      const p = ubTimerCbs.get(e.data);
+      if (p) { ubTimerCbs.delete(e.data); try { p.cb(); } catch {} }
+    };
+    w.onerror = () => { // CSP bloqueou o script: re-arma pendentes no fallback preciso
+      ubTimerW = false; ubTimerReady = false;
+      const pend = [...ubTimerCbs.values()]; ubTimerCbs.clear();
+      for (const p of pend) { try { p.ms <= 300 ? ubPumpTimer(p.cb, p.ms) : setTimeout(p.cb, p.ms); } catch {} }
+    };
+    ubTimerW = w;
+  } catch { ubTimerW = false; }
+  return null; // pronto só depois do "ready" — 1ª espera já usa pump preciso
+}
+function ubSetTimer(fn, ms, opts = {}) {
+  const d = Math.max(0, Number(ms) || 0), w = ubTimerWorker();
+  if (!w) {
+    if (opts.pump && d <= 300) return ubPumpTimer(fn, d);
+    const id = setTimeout(fn, d);
+    return () => clearTimeout(id);
+  }
+  const id = ++ubTimerSeq;
+  ubTimerCbs.set(id, { cb: fn, ms: d });
+  try { w.postMessage({ op: "set", id, ms: d }); }
+  catch { ubTimerCbs.delete(id); const t = setTimeout(fn, d); return () => clearTimeout(t); }
+  return () => { ubTimerCbs.delete(id); try { w.postMessage({ op: "clear", id }); } catch {} };
+}
+var ubSleep = (ms) => new Promise((r) => { ubSetTimer(r, ms, { pump: true }); }); // var: reinjeção (hot-update) reexecuta sem SyntaxError// ubSettle: espera POR EVENTO (MutationObserver) com teto. Resolve true
 // quiet ms após a última mutação; resolve false no teto. Sem rAF
 // (aba em fundo não dispara rAF). Erro retorna imediato no caller.
 // Settle de leitura só quando a página pode ainda hidratar. Página completa com texto
@@ -132,25 +189,24 @@ function ubReadNeedsSettle(a = {}) {
     return ((document.body && document.body.innerText) || "").trim().length <= 400;
   } catch { return true; }
 }
-function ubSettle({ timeout = 3000, quiet = 250 } = {}) {  const t = Math.min(Math.max(Number(timeout) || 3000, 100), 10000);
+function ubSettle({ timeout = 3000, quiet = 250 } = {}) {
+  const t = Math.min(Math.max(Number(timeout) || 3000, 100), 10000);
   const q = Math.min(Math.max(Number(quiet) || 250, 50), 2000);
   return new Promise((resolve) => {
-    let done = false;
-    let obs = null;
-    let quietTo = null;
+    let done = false, obs = null, cancelQuiet = null, cancelCap = null;
     const finish = (v) => {
       if (done) return;
       done = true;
       try { obs && obs.disconnect(); } catch {}
-      clearTimeout(cap);
-      clearTimeout(quietTo);
+      if (cancelCap) { try { cancelCap(); } catch {} }
+      if (cancelQuiet) { try { cancelQuiet(); } catch {} }
       resolve(v);
     };
     const arm = () => {
-      clearTimeout(quietTo);
-      quietTo = setTimeout(() => finish(true), q);
+      if (cancelQuiet) { try { cancelQuiet(); } catch {} }
+      cancelQuiet = ubSetTimer(() => finish(true), q, { pump: true });
     };
-    const cap = setTimeout(() => finish(false), t);
+    cancelCap = ubSetTimer(() => finish(false), t);
     try {
       obs = new MutationObserver(() => arm());
       obs.observe(document.documentElement || document, { childList: true, subtree: true, characterData: true });
@@ -1658,7 +1714,7 @@ function ubFindVirtualContainers(hintSel) {
 }
 // Rolagem p/ carregar + coleta incremental com dedup (selector|text). Restaura scroll ao fim.
 // Bounded: páginas ≤5, containers ≤3, settle ~900ms/página — cabe no timeout de 15s do ask().
-// Teto coleta: hard cap 120 (fatia cedo, antes de sort/dedup). Se pedir maior, para no teto (nota: truncado no cap).
+// Teto coleta: 120 (find=300; background fatia a resposta). Se pedir maior, para no teto (nota: truncado no cap).
 // Com match: para cedo na 1ª coleta que contém o texto (não varre pages todas).
 // Box LAZY: varredura com needBox=false (sem layout); ubFillBoxLazy mede só finais antes do sort.
 async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120, match = "", fast = false } = {}) {
