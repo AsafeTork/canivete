@@ -132,7 +132,7 @@ function listDir(p, depth, maxLines = 1500, sort = "name") {
     try {
       ents = readdirSync(dir, { withFileTypes: true });
     } catch (e) {
-      lines.push(`${"  ".repeat(lv)}! ${e.message} | dica: confira permissões; use cv_glob p/ caminho alternativo`);
+      lines.push(`${"  ".repeat(lv)}! ${e.message} | dica: confira permissões; use cv_file_read action:"search_files" p/ caminho alternativo`);
       return;
     }
     const meta = new Map();
@@ -179,7 +179,7 @@ function listDir(p, depth, maxLines = 1500, sort = "name") {
   rec(p, 0);
   const head = `${p} (${lines.length}${hitCap ? "+" : ""} entries, depth=${depth}, sort=${sort})`;
   if (hitCap) {
-    lines.push(`...[truncated at ${maxLines} lines — next: cv_list({path:${JSON.stringify(p)}, depth:${depth}, maxLines:${maxLines * 2}}) ou filtre com cv_glob/cv_grep]`);
+    lines.push(`...[truncated at ${maxLines} lines — next: depth:${depth}, maxLines:${maxLines * 2} (mesmo path) ou action:"search_files"/"search_text"]`);
   }
   return out(`${head}\n${lines.join("\n") || "(empty)"}`);
 }
@@ -208,12 +208,12 @@ reg("cv_read", {
     try {
       st = await stat(p);
     } catch (e) {
-      return out(fail("cv_read", `not found: ${e.message}`, "confira o filePath; use cv_glob/cv_list p/ achar o caminho"), true);
+      return out(fail("cv_read", `not found: ${e.message}`, "confira o path; use cv_file_read action:\"search_files\" ou action:\"tree\" p/ achar o caminho"), true);
     }
     if (st.isDirectory()) return listDir(p, 1);
     const buf = readFileSync(p);
     const nul = buf.indexOf(0);
-    if (nul >= 0) return out(fail("cv_read", `binary file ${p} (${humanSize(buf.length)}, ${buf.length} bytes, NUL at offset ${nul}) — conteúdo omitido`, "use cv_list p/ confirmar tipo/tamanho; p/ texto use cv_grep com include; bytes só via cv_bash (ex: file/head) se preciso"), true);
+    if (nul >= 0) return out(fail("cv_read", `binary file ${p} (${humanSize(buf.length)}, ${buf.length} bytes, NUL at offset ${nul}) — conteúdo omitido`, "use cv_file_read action:\"tree\" p/ tipo/tamanho; action:\"search_text\" com include; bytes só via cv_bash (file/head)"), true);
     const cutLong = (s) => (s.length > 2000 ? s.slice(0, 2000) + `…[+${s.length - 2000} chars]` : s);
     const fp = JSON.stringify(filePath);
     const cap = Math.max(1000, Number(maxChars) || 100000);
@@ -248,7 +248,7 @@ reg("cv_read", {
         sBody.push(s);
         sUsed += s.length + 1;
       }
-      if (sStart + sBody.length - 1 < syms.length) sBody.push(`...[truncated — next: cv_read({filePath:${fp}, symbols:true, offset:${sStart + sBody.length}, limit:${sLim}})]`);
+      if (sStart + sBody.length - 1 < syms.length) sBody.push(`...[truncated — next: symbols:true, offset:${sStart + sBody.length}, limit:${sLim}]`);
       return out(`${sHead}\n${sBody.join("\n")}`);
     }
     const fmt = (n, l) => (raw ? cutLong(l) : `${n}: ${cutLong(l)}`);
@@ -280,7 +280,7 @@ reg("cv_read", {
         const s = fmt(kept[i].n, kept[i].l);
         if (used + s.length + 1 > cap && body.length) break;
         if (!body.length && used + s.length + 1 > cap) {
-          body.push(s.slice(0, Math.max(0, cap - used)) + `\n...[truncated — next: cv_read({filePath:${fp}, offset:${start + 1}, limit:${lim}})]`);
+          body.push(s.slice(0, Math.max(0, cap - used)) + `\n...[truncated — next: offset:${start + 1}, limit:${lim}]`);
           shown = 1;
           return out(`${head}\n${body.join("\n")}`);
         }
@@ -289,7 +289,7 @@ reg("cv_read", {
         shown++;
       }
       const nextOff = start + shown;
-      if (nextOff <= kept.length) body.push(`...[truncated — next: cv_read({filePath:${fp}, offset:${nextOff}, limit:${lim}})]`);
+      if (nextOff <= kept.length) body.push(`...[truncated — next: offset:${nextOff}, limit:${lim}]`);
       return out(`${head}\n${body.join("\n")}`);
     }
     const start = Math.max(1, Number(offset) || 1);
@@ -304,7 +304,7 @@ reg("cv_read", {
       const s = fmt(i, lines[i - 1]);
       if (used + s.length + 1 > cap && body.length) break;
       if (!body.length && used + s.length + 1 > cap) {
-        body.push(s.slice(0, Math.max(0, cap - used)) + `\n...[truncated — next: cv_read({filePath:${fp}, offset:${start + 1}, limit:${lim}})]`);
+        body.push(s.slice(0, Math.max(0, cap - used)) + `\n...[truncated — next: offset:${start + 1}, limit:${lim}]`);
         shown = 1;
         return out(`${head}\n${body.join("\n")}`);
       }
@@ -313,7 +313,7 @@ reg("cv_read", {
       shown++;
     }
     const lastShown = start + shown - 1;
-    if (lastShown < total) body.push(`...[truncated — next: cv_read({filePath:${fp}, offset:${lastShown + 1}, limit:${lim}})]`);
+    if (lastShown < total) body.push(`...[truncated — next: offset:${lastShown + 1}, limit:${lim}]`);
     return out(`${head}\n${body.join("\n")}`);
   },
 });
@@ -393,7 +393,7 @@ reg("cv_edit", {
     try {
       text = readFileSync(p, "utf8");
     } catch (e) {
-      return out(fail("cv_edit", `edit failed: ${e.message}`, "confira filePath/permissões; leia antes com cv_read"), true);
+      return out(fail("cv_edit", `edit failed: ${e.message}`, "confira path/permissões; leia antes com cv_file_read action:\"read\""), true);
     }
     let count;
     let updated;
@@ -405,14 +405,14 @@ reg("cv_edit", {
         return out(fail("cv_edit", `invalid regex: ${e.message}`, "valide a regex de oldString; escape caracteres especiais"), true);
       }
       count = (text.match(rxG) || []).length;
-      if (count === 0) return out(fail("cv_edit", `oldString not found in ${p}`, "leia com cv_read e copie o trecho exato; confira espaços/quebras"), true);
+      if (count === 0) return out(fail("cv_edit", `oldString not found in ${p}`, "leia com cv_file_read action:\"read\" e copie o trecho exato; confira espaços/quebras"), true);
       if (count > 1 && replaceAll === false)
         return out(fail("cv_edit", `oldString found ${count} times — use replaceAll=true or more context`, "passe replaceAll=true ou amplie o contexto de oldString"), true);
       const rx = new RegExp(oldString, replaceAll === false ? "" : "g");
       updated = text.replace(rx, newString);
     } else {
       count = text.split(oldString).length - 1;
-      if (count === 0) return out(fail("cv_edit", `oldString not found in ${p}`, "leia com cv_read e copie o trecho exato; confira espaços/quebras"), true);
+      if (count === 0) return out(fail("cv_edit", `oldString not found in ${p}`, "leia com cv_file_read action:\"read\" e copie o trecho exato; confira espaços/quebras"), true);
       if (count > 1 && replaceAll === false)
         return out(fail("cv_edit", `oldString found ${count} times — use replaceAll=true or more context`, "passe replaceAll=true ou amplie o contexto de oldString"), true);
       updated = replaceAll === false ? text.replace(oldString, newString) : text.split(oldString).join(newString);

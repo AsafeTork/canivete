@@ -18,7 +18,7 @@
     "smoke": "node test/smoke.mjs",
     "atualizar": "bash scripts/atualizar.sh",
     "simulate": "node test/simulate.mjs",
-    "test": "node test/smoke.mjs",
+    "test": "node test/snapshot.mjs && node test/smoke.mjs",
     "bench": "node test/bench.mjs",
     "bench:local": "node test/bench.mjs --local"
   },

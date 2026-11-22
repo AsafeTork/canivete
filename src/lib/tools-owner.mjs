@@ -7,7 +7,7 @@ import { sleep } from "../core/retry.mjs";
 import { reg, devOut, trimOut } from "./ctx.mjs";
 import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint, ubResolveProfile, ubListExtensions, UB_TIMEOUT_MS } from "./ubridge.mjs";
 import { ownerCdpSend } from "./cdp.mjs";
-import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks } from "../core/snapshot.mjs";
+import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks, ubOverviewSlim } from "../core/snapshot.mjs";
 // recovery sem mudar protocolo: só texto de erro acionável (janela NORMAL, popup, token) + fallback headless
 const UB_REC = "Recovery: 0) sem Chrome? cv_ubrowser_status {open:true} abre sozinho (qualquer perfil) 1) Chrome janela NORMAL mesmo perfil (sem anonimo) 2) popup extensao UBrowser ATIVO 3) token ~/.config/canivete/token.txt igual na extensao 4) rode cv_ubrowser_status p/ confirmar";
 const UB_FB = "Sem login? fallback headless: cv_browser_navigate / cv_browser_screenshot";
@@ -174,14 +174,19 @@ reg("cv_ubrowser_status", {
     const newest = conns.slice().sort((a, b) => (a.lastPollAgoMs || 0) - (b.lastPollAgoMs || 0))[0] || null;
     const version = newest?.info?.bg ? String(newest.info.bg) : undefined;
     const noLabel = conns.length > 0 && conns.every((e) => !e.profileLabel);
+    const noInfo = conns.length > 0 && conns.every((e) => !e.info);
     const oldVer = conns.map((e) => (e.info?.bg ? String(e.info.bg) : "")).find((v) => v && ubVerLt(v, UB_VER_ACT));
     // dicas de roteamento: cada uma existe p/ evitar erro depois (profile errado, activate antigo)
     const hints = [];
     if (oldVer) hints.push(`extensão rodando ${oldVer} (< ${UB_VER_ACT}) — tab.activate indisponível: {action:"reload-extension"} aplica o código novo, depois re-status (data.version)`);
     if (conns.length > 1) hints.push(`${conns.length} perfis conectados — alvo por profile:"<clientId>" (extensions[].id), trecho de label/URL; omitir = ext mais recente`);
     if (conns.length === 1) hints.push("1 perfil só — omita profile (ou passe o clientId exato)");
-    if (noLabel) hints.push("profileLabel ausente — configure o nome do perfil no popup da extensão p/ alvo por nome legível");
-    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${conns.length} perfil(es) conectado(s)${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: cv_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), ...st }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "cv_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [{ tool: "cv_ubrowser_tabs", reason: conns.length > 1 ? "Abas vêm consolidadas dos perfis — aponte profile ao agir" : "Listar abas do dono" }] });
+    if (noInfo) hints.push("hello do perfil ausente após restart (label/versão/tabs) — {action:\"reload-extension\"} reenvia sem fechar abas");
+    else if (noLabel) hints.push("profileLabel ausente — configure o nome do perfil no popup da extensão p/ alvo por nome legível");
+    // status enxuto: o info cru da extensão (UA/tabUrls/accessMode…) duplicava dados e inflava
+    // a resposta em ~3x. Fica o que decide roteamento/versão; o resto vive em cv_owner_alerts/act.
+    const slimExts = exts.map((e) => ({ id: e.id, ...(e.profileLabel ? { label: e.profileLabel } : {}), connected: !!e.connected, lastPollAgoMs: e.lastPollAgoMs, queued: e.queued, ...(e.info?.bg ? { version: String(e.info.bg) } : {}), ...(e.info?.tabs != null ? { tabs: e.info.tabs } : {}) }));
+    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${conns.length} perfil(es) conectado(s)${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: cv_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), extensions: slimExts, bridge: { port: st.port, queued: st.queued, pending: st.pending, lastPollAgoMs: st.lastPollAgoMs, ...(st.expiredDropped ? { expiredDropped: st.expiredDropped } : {}) } }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "cv_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [{ tool: "cv_ubrowser_tabs", reason: conns.length > 1 ? "Abas vêm consolidadas dos perfis — aponte profile ao agir" : "Listar abas do dono" }] });
   },
 });
 
@@ -242,27 +247,36 @@ reg("cv_ubrowser_tabs", {
 });
 
 reg("cv_ubrowser_overview", {
-  description: "Mapa compacto da aba: estrutura, regiões, títulos, formulários e controles com seletores prontos para agir. Reduz chamadas de reconhecimento; use snapshot/read só para aprofundar a região necessária.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL" }, max: { type: "number", default: 35, description: "quantidade de controles por página" }, offset: { type: "number", default: 0, description: "paginação de controles (use nextOffset)" }, profile: { type: "string" } }, required: [] },
-  run: async ({ tabId, tab, max = 35, offset = 0, profile } = {}) => {
+  description: "Mapa compacto da aba: estrutura, títulos, formulários e controles com seletores prontos para agir. Reduz chamadas de reconhecimento; use snapshot/read só para aprofundar a região. detail=\"compact\" (padrão) corta campos redundantes (~60% menos tokens); detail=\"full\" traz o payload cru.",
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL" }, max: { type: "number", default: 35, description: "quantidade de controles por página" }, offset: { type: "number", default: 0, description: "paginação de controles (use nextOffset)" }, detail: { type: "string", enum: ["compact", "full"], default: "compact", description: "compact=corta campos redundantes (default); full=payload cru" }, headingsMax: { type: "number", default: 30, description: "máximo de títulos no compact (default 30; use full p/ todos)" }, profile: { type: "string" } }, required: [] },
+  run: async ({ tabId, tab, max = 35, offset = 0, detail = "compact", headingsMax = 30, profile } = {}) => {
     const t0 = Date.now(), tgt = ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const tBridge = Date.now();
     const r = await ubSend("tab.overview", { tabId, tab, max, offset }, UB_TIMEOUT_MS, tgt.id);
+    const bridgeMs = Date.now() - tBridge;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    const d = r.data || {};
-    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos · ${d.forms?.length || 0} formulários`, data: d, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_owner_act", reason: "Use um selector do overview para agir ou marque um elemento com panel" }] });
+    const d = ubOverviewSlim(r.data || {}, { detail, headingsMax });
+    const hOmit = d.headingsOmitted ? ` (+${d.headingsOmitted} títulos omitidos)` : "";
+    const nextNote = d.nextOffset != null ? ` (mais: offset=${d.nextOffset})` : "";
+    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos${hOmit} · ${d.forms?.length || 0} formulários${nextNote}${detail === "compact" ? "" : " [full]"}`, data: d, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: [{ tool: "cv_owner_act", reason: "Use sel (ou name) do overview para agir; detail:\"full\" se precisar de href/selector de título" }] });
   },
 });
 
 reg("cv_ubrowser_read", {
   description: "Lê aba do dono COM login (texto+links). Mire com tab:\"trecho\" ou tabId. Página pública (sem login)? NÃO use este — cv_webfetch (estática) ou cv_browser_navigate (JS); não gasta a aba do dono. mode=distill (default, enxuto) | raw (integral + links). outline=true: só estrutura (h1-h6 + contagens) p/ triagem. maxChars/maxLinks dão teto. AUTOMÁTICO: espera a página aquietar (SPA), perfura shadow DOM, inputs mostram value separado (`[campo text Nome] = \"João\"`). Pra JS use evaluate no act; pra erros/rede use act console. selector=\"CSS\" escopa a leitura a um container (#app, table, ...); texto curto em página grande ganha WARN no summary (tente mode:\"raw\" ou snapshot).",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" }, selector: { type: "string", description: "CSS p/ escopar a leitura a um container (ex: \"#app\", \"table.turmas\") — erro \"seletor não encontrado\" se não achar" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
-  run: async ({ tabId, tab, mode, maxChars, maxLinks, outline, selector, profile }) => {
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" }, settle: { type: "boolean", description: "auto (padrão): pula espera em página completa; true força settle p/ SPA que ainda hidrata" }, selector: { type: "string", description: "CSS p/ escopar a leitura a um container (ex: \"#app\", \"table.turmas\") — erro \"seletor não encontrado\" se não achar" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
+  run: async ({ tabId, tab, mode, maxChars, maxLinks, outline, settle, selector, profile }) => {
     const t0 = Date.now();
     const tgt = ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
-    const r = await ubSend("tab.read", { tabId, tab, mode: mode || "distill", maxChars, maxLinks, ...(outline ? { outline: true } : {}), ...(selector ? { selector } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    // outline=true: força mode raw — o background intercepta distill e ignora o outline
+    // (devolvia 4KB de texto em vez de estrutura). Content lê a.outline e responde só headings.
+    const effMode = outline ? "raw" : (mode || "distill");
+    const tBridge = Date.now();
+    const r = await ubSend("tab.read", { tabId, tab, mode: effMode, maxChars, maxLinks, ...(outline ? { outline: true } : {}), ...(settle !== undefined ? { settle } : {}), ...(selector ? { selector } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    const bridgeMs = Date.now() - tBridge;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error}${ubErrHint(r.error) || ""} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const body = r.data.markdown || r.data.text || "";
@@ -271,10 +285,11 @@ reg("cv_ubrowser_read", {
     const omitted = allLinks.length > links.length ? allLinks.length - links.length : 0;
     const omitNote = omitted ? ` (+${omitted} links omitidos)` : "";
     const warnNote = r.data.warn ? ` | ${r.data.warn}` : "";
+    const kindNote = outline ? `outline ${r.data.stats?.chars ?? body.length} chars` : (r.data.markdown ? `destilado ${r.data.stats?.chars ?? body.length} chars` : "");
     const nxt = [];
     if (omitted > 0) nxt.push({ tool: "cv_ubrowser_read", reason: "mode:\"raw\" traz o texto integral e links completos" });
     nxt.push({ tool: "cv_ubrowser_snapshot", reason: "Mapear cliques" });
-    return devOut({ summary: `${r.data.title} — ${r.data.url}${r.data.markdown ? ` (destilado ${r.data.stats ? r.data.stats.chars + " chars" : ""})` : ""}${omitNote}${warnNote}${ubAlertsHint()}`, data: { title: r.data.title, url: r.data.url, text: trimOut(body, 6000), links, linksOmitted: omitted, warn: r.data.warn || undefined, stats: r.data.stats }, telemetry: { execution_time_ms: Date.now() - t0 }, next: nxt });
+    return devOut({ summary: `${r.data.title} — ${r.data.url}${kindNote ? ` (${kindNote})` : ""}${omitNote}${warnNote}${ubAlertsHint()}`, data: { title: r.data.title, url: r.data.url, text: trimOut(body, outline ? 3000 : 6000), links, linksOmitted: omitted, warn: r.data.warn || undefined, stats: r.data.stats, ...(outline ? { outline: true } : {}) }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: nxt });
   },
 });
 
@@ -507,7 +522,11 @@ reg("cv_ubrowser_snapshot", {
     const needle = String(find || "").trim().toLowerCase();
     const tgt = ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
-    const r = await ubSend("tab.snapshot", { tabId, tab, max: cappedMax, offset, ...(needle ? { match: needle } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    // pool fixo de 120: a extensão fatiava ANTES do dedup/rank do servidor — com 40 links
+    // de navegação (fragmentos distintos) o max=30 voltava 2 elementos. Paginamos DEPOIS.
+    const tBridge = Date.now();
+    const r = await ubSend("tab.snapshot", { tabId, tab, max: 120, ...(needle ? { match: needle } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    const bridgeMs = Date.now() - tBridge;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const elements = Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.items) ? r.data.items : []);
@@ -556,14 +575,21 @@ reg("cv_ubrowser_snapshot", {
     const foldedNote = folded.folded ? ` (dobra: ${pool.length}→${folded.elements.length})` : "";
     const dd = ubSnapDedupLinks(folded.elements);
     const dupeNote = dd.dupes ? ` (+${dd.dupes} links duplicados)` : "";
+    // paginação DEPOIS de rank/junk/fold/dedup: max=30 mostra 30 elementos úteis, não 30 brutos
+    const start = Number.isFinite(Number(offset)) ? Math.max(0, Math.floor(Number(offset))) : 0;
+    const total = dd.elements.length;
+    const paged = dd.elements.slice(start, start + cappedMax);
+    const nextOffset = start + paged.length < total ? start + paged.length : null;
+    const pageNote = total > paged.length || start > 0 ? ` (${start + 1}-${start + paged.length} de ${total}${nextOffset != null ? `; nextOffset=${nextOffset}` : ""})` : "";
+    const pageData = { total, offset: start, ...(nextOffset != null ? { nextOffset } : {}) };
     if (compact) {
       // #42: text||name — img com alt/src ganha nome na extensão; compact não o esconde.
-      const compactOut = dd.elements.map(({ ref, tag, text, role, name, layer, layerLabel }) => ({ ref, tag, text: text || name || "", role, ...(layer ? { layer, ...(layerLabel ? { layerLabel } : {}) } : {}) }));
-      return devOut({ summary: `${compactOut.length} elemento(s) (compact)${omitNote}${foldedNote}${dupeNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
+      const compactOut = paged.map(({ ref, tag, text, role, name, layer, layerLabel }) => ({ ref, tag, text: text || name || "", role, ...(layer ? { layer, ...(layerLabel ? { layerLabel } : {}) } : {}) }));
+      return devOut({ summary: `${compactOut.length}/${total} elemento(s) (compact)${pageNote}${omitNote}${foldedNote}${dupeNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
     }
-    const ac = ubSnapAutoCompactFields(dd.elements);
+    const ac = ubSnapAutoCompactFields(paged);
     const autoNote = ac.autoCompact ? ` (auto-compact campos: -${ac.dropped.join(",")})` : "";
-    return devOut({ summary: `${ac.elements.length} elemento(s)${ac.autoCompact ? " (compact-campos)" : ""}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
+    return devOut({ summary: `${ac.elements.length}/${total} elemento(s)${ac.autoCompact ? " (compact-campos)" : ""}${pageNote}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
   },
 });
 

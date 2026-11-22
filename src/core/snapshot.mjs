@@ -60,22 +60,71 @@ export function snapFold(els, minRun = 6) {
   }
   return { elements: out, folded };
 }
-// Dedup de links pelo href (sem fragmento). Puro.
+// Dedup de links pelo par (texto, href COMPLETO). Puro.
+// Fragmentos (#s1, #s2) são alvos DIFERENTES: cortar o "#" transformava 40 links de
+// navegação em 1 e o snapshot max=30 devolvia 2 elementos (bench).
 export function snapDedupLinks(els) {
-  const seenHref = new Set();
+  const seen = new Set();
   const out = [];
   let dupes = 0;
   for (const el of els) {
     const h = el && el.role === "link" ? String(el.href || "") : "";
     if (h) {
-      const k = h.split("#")[0];
-      if (seenHref.has(k)) {
+      const k = `${String(el.text || el.name || "")}\u0000${h}`;
+      if (seen.has(k)) {
         dupes++;
         continue;
       }
-      seenHref.add(k);
+      seen.add(k);
     }
     out.push(el);
   }
   return { elements: out, dupes };
+}
+// Overview compacto (default): o payload da extensão trazia selector+name repetidos,
+// headings com selector e href em cada link — 12,3KB p/ 35 controles (~3k tokens).
+// Mantém o que decide a ação (sel/name/role/type/state) e corta o resto; detail:"full" = legado.
+export function ubOverviewSlim(d, { detail = "compact", headingsMax = 30 } = {}) {
+  try {
+    if (detail === "full") return d;
+    const src = d && typeof d === "object" ? d : {};
+    const page = src.page && typeof src.page === "object" ? src.page : {};
+    const slimPage = { title: page.title || "", url: page.url || "", ...(page.readyState && page.readyState !== "complete" ? { readyState: page.readyState } : {}) };
+    const heads = Array.isArray(src.headings) ? src.headings : [];
+    const capH = Math.max(0, Math.floor(Number(headingsMax) || 0)) || 30;
+    // tuplas [nível, texto]: 30 títulos caem de ~990B p/ ~600B (chaves repetidas somem).
+    const headings = heads.slice(0, capH).map((h) => [Number(h?.level) || 0, String(h?.text || "").slice(0, 100)]);
+    const controls = (Array.isArray(src.controls) ? src.controls : []).map((c) => {
+      const name = String(c?.name || c?.text || "").slice(0, 100);
+      const sel = String(c?.selector || "");
+      const out = { ...(sel ? { sel } : {}) };
+      if (name && sel !== `text=${name}`) out.name = name; // text=NAME já carrega o nome
+      if (c?.role) out.role = String(c.role);
+      else if (c?.tag) out.tag = String(c.tag);
+      if (c?.type && c.type !== "text") out.type = String(c.type);
+      if (c?.state) out.state = String(c.state).slice(0, 60);
+      if (c?.inViewport === false) out.off = true;
+      return out;
+    });
+    // "role: nome" em string: mesma informação, sem 2 chaves por landmark.
+    const landmarks = (Array.isArray(src.landmarks) ? src.landmarks : []).map((l) => {
+      const role = String(l?.role || "");
+      const name = String(l?.name || "").slice(0, 80);
+      return name ? `${role}: ${name}` : role;
+    }).filter(Boolean);
+    const forms = (Array.isArray(src.forms) ? src.forms : []).map((f) => ({ name: String(f?.name || "").slice(0, 80), fields: Number(f?.fields) || 0 }));
+    return {
+      page: slimPage,
+      headings,
+      ...(heads.length > headings.length ? { headingsOmitted: heads.length - headings.length } : {}),
+      landmarks,
+      forms,
+      controls,
+      controlsTotal: Number(src.controlsTotal) || controls.length,
+      controlsOffset: Number(src.controlsOffset) || 0,
+      controlsOmitted: Number(src.controlsOmitted) || 0,
+      ...(src.nextOffset != null ? { nextOffset: src.nextOffset } : {}),
+      ...(src.overlays ? { overlays: src.overlays } : {}),
+    };
+  } catch { return d; }
 }

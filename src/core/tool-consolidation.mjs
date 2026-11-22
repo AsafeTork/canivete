@@ -24,26 +24,50 @@ function setPublic(name, value) {
   if (t) t.public = value;
 }
 
-function variantsFor(actionField, variants) {
-  return {
-    oneOf: variants.map(({ action, source, rename = {}, omit = [] }) => {
-      const tool = TOOLS.get(source);
-      if (!tool) return null;
-      const schema = clone(tool.inputSchema);
-      const properties = { ...(schema.properties || {}) };
-      for (const key of omit) delete properties[key];
-      for (const [from, to] of Object.entries(rename)) {
-        if (Object.hasOwn(properties, from)) {
-          properties[to] = properties[from];
-          delete properties[from];
-        }
-      }
-      properties[actionField] = { type: "string", const: action, description: `${actionField}=${action}` };
-      const required = (schema.required || []).map((key) => rename[key] || key).filter((key) => !omit.includes(key));
-      required.push(actionField);
-      return { type: "object", properties, required, additionalProperties: false };
-    }).filter(Boolean),
-  };
+function variantBranch(variant) {
+  const tool = TOOLS.get(variant.source);
+  if (!tool) return null;
+  const schema = clone(tool.inputSchema);
+  const properties = { ...(schema.properties || {}) };
+  for (const key of variant.omit || []) delete properties[key];
+  for (const [from, to] of Object.entries(variant.rename || {})) {
+    if (Object.hasOwn(properties, from)) {
+      properties[to] = properties[from];
+      delete properties[from];
+    }
+  }
+  const required = (schema.required || []).map((key) => variant.rename?.[key] || key).filter((key) => !(variant.omit || []).includes(key));
+  return { action: variant.action, properties, required };
+}
+
+// Schema achatado: um objeto com `action` enum + união das propriedades. O oneOf antigo
+// repetia tabId/tab/profile em cada variante (cv_owner_inspect: 2,5KB → 1,4KB). A validação
+// por ação continua no run via requiredByAction — nada de capacidade perdida.
+function mergeProp(a, b) {
+  const out = { ...a };
+  if (b.type && !out.type) out.type = b.type;
+  if (Array.isArray(a.enum) && Array.isArray(b.enum)) out.enum = [...new Set([...a.enum, ...b.enum])];
+  else if (Array.isArray(a.enum) !== Array.isArray(b.enum)) delete out.enum;
+  if (JSON.stringify(a.default) !== JSON.stringify(b.default)) delete out.default;
+  if (!out.description && b.description) out.description = b.description;
+  return out;
+}
+
+function flatVariants(actionField, variants) {
+  const props = {};
+  const actions = [];
+  const requiredByAction = new Map();
+  for (const variant of variants) {
+    const branch = variantBranch(variant);
+    if (!branch) continue;
+    actions.push(branch.action);
+    requiredByAction.set(branch.action, branch.required);
+    for (const [key, value] of Object.entries(branch.properties)) {
+      props[key] = props[key] ? mergeProp(props[key], value) : value;
+    }
+  }
+  const actionProp = { type: "string", enum: actions };
+  return { schema: { type: "object", properties: { [actionField]: actionProp, ...props }, required: [actionField] }, requiredByAction };
 }
 
 function addComposite({ name, description, actionField = "action", variants, mapArgs = {}, onRun }) {
@@ -54,7 +78,7 @@ function addComposite({ name, description, actionField = "action", variants, map
     setPublic(v.source, false);
     LEGACY_TO_PUBLIC[v.source] = name;
   }
-  const schema = variantsFor(actionField, available);
+  const { schema, requiredByAction } = flatVariants(actionField, available);
   reg(name, {
     description,
     inputSchema: schema,
@@ -62,8 +86,7 @@ function addComposite({ name, description, actionField = "action", variants, map
       const action = String(args[actionField] || "");
       const variant = available.find((v) => v.action === action);
       if (!variant) return out(`ação inválida em ${name}: ${action || "(vazia)"}. Escolha: ${available.map((v) => v.action).join(" | ")}.`, true);
-      const branch = schema.oneOf.find((v) => v.properties?.[actionField]?.const === action);
-      const missing = (branch?.required || []).filter((key) => key !== actionField && args[key] === undefined);
+      const missing = (requiredByAction.get(action) || []).filter((key) => args[key] === undefined);
       if (missing.length) return out(`${name} action=${action}: faltam ${missing.join(", ")}.`, true);
       if (!TOOLS.has(variant.source)) return out(`${name}: action=${action} está desligada nas preferências do Canivete.`, true);
       const runner = runners.get(variant.source);

@@ -574,7 +574,7 @@ reg("cv_apply_semantic_patch", {
           diffs.push(`symbol:${e.target_symbol}`);
         } else {
           const cnt = nextText.split(oldS).length - 1;
-          if (cnt === 0) return devOut({ status: "error", summary: `oldString não encontrado em ${file_path} — dica: cv_read filePath="${file_path}" e copie trecho exato`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
+          if (cnt === 0) return devOut({ status: "error", summary: `oldString não encontrado em ${file_path} — dica: cv_file_read action:"read", path:"${file_path}" e copie trecho exato`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
           if (cnt > 1) return devOut({ status: "error", summary: `oldString ambíguo (${cnt}x) — use mais contexto`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
           nextText = nextText.replace(oldS, newS);
           diffs.push(`exact:${oldS.slice(0, 40)}`);
@@ -608,7 +608,7 @@ reg("cv_apply_semantic_patch", {
       if (isNew) await mkdir(dirname(p), { recursive: true });
       await atomicWriteFile(p, nextText, "utf8"); // atômico: ENOSPC não zera o original (#49)
     } catch (e) {
-      return devOut({ status: "error", summary: `write failed em ${file_path}: ${e.message} — dica: cv_read filePath="${file_path}" + retry cv_apply_semantic_patch {create_if_missing:true}`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ status: "error", summary: `write failed em ${file_path}: ${e.message} — dica: cv_file_read action:"read", path:"${file_path}" + retry cv_apply_semantic_patch {create_if_missing:true}`, data: { file: file_path }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     return devOut({
       summary: isNew ? `Arquivo criado em ${file_path} (${(edits || []).length} hunk(s)) — AST OK` : `Patch semântico aplicado em ${file_path} (${edits.length} hunk(s)) — AST OK`,

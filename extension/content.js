@@ -122,8 +122,17 @@ var ubSleep = (ms) => new Promise((r) => setTimeout(r, ms)); // var: reinjeção
 // ubSettle: espera POR EVENTO (MutationObserver) com teto. Resolve true
 // quiet ms após a última mutação; resolve false no teto. Sem rAF
 // (aba em fundo não dispara rAF). Erro retorna imediato no caller.
-function ubSettle({ timeout = 3000, quiet = 250 } = {}) {
-  const t = Math.min(Math.max(Number(timeout) || 3000, 100), 10000);
+// Settle de leitura só quando a página pode ainda hidratar. Página completa com texto
+// visível já está pronta (goto/act fizeram settle); outline nem precisa de DOM assentado.
+function ubReadNeedsSettle(a = {}) {
+  if (a.outline || a.settle === false) return false;
+  if (a.settle === true) return true;
+  try {
+    if (document.readyState !== "complete") return true;
+    return ((document.body && document.body.innerText) || "").trim().length <= 400;
+  } catch { return true; }
+}
+function ubSettle({ timeout = 3000, quiet = 250 } = {}) {  const t = Math.min(Math.max(Number(timeout) || 3000, 100), 10000);
   const q = Math.min(Math.max(Number(quiet) || 250, 50), 2000);
   return new Promise((resolve) => {
     let done = false;
@@ -1651,14 +1660,18 @@ function ubFindVirtualContainers(hintSel) {
 // Teto coleta: hard cap 120 (fatia cedo, antes de sort/dedup). Se pedir maior, para no teto (nota: truncado no cap).
 // Com match: para cedo na 1ª coleta que contém o texto (não varre pages todas).
 // Box LAZY: varredura com needBox=false (sem layout); ubFillBoxLazy mede só finais antes do sort.
-async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120, match = "" } = {}) {
+async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120, match = "", fast = false } = {}) {
   const lim = Math.min(Math.max(Number(limit) || 120, 10), 120);
   const maxPages = Math.min(Math.max(Number(pages) || 2, 1), 5);
   const seen = new Map();
   const needle = String(match ?? "").toLowerCase().trim();
   const hasNeedle = needle.length > 0;
-  // settle antes da 1ª coleta: snapshot de SPA recém-navegada vinha vazio/parcial.
-  try { await ubSettle({ timeout: 1200, quiet: 200 }); } catch {}
+  // settle só quando pode haver hidratação/lista virtual: página estática com readyState
+  // complete não ganha 1,2s de espera (snapshot caía de ~2s p/ ~0,3s no bench).
+  const targets = ubFindVirtualContainers(container).slice(0, 3); // nota: máx 3 containers (se maior, para aqui)
+  if (!fast && (targets.length || document.readyState !== "complete")) {
+    try { await ubSettle({ timeout: 1200, quiet: 200 }); } catch {}
+  }
   const hasMatch = () => {
     if (!hasNeedle) return false;
     for (const it of seen.values()) {
@@ -1679,12 +1692,16 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
     early.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
     return early.map((it, i) => ({ ref: i, ...it }));
   }
-  const targets = ubFindVirtualContainers(container).slice(0, 3); // nota: máx 3 containers (se maior, para aqui)
   if (!targets.length) {
-    try { window.scrollBy(0, 1); } catch {}
-    await ubSleep(200);
-    push(ubSnapshotCollectRaw(lim, false));
-    try { window.scrollBy(0, -1); } catch {}
+    // página não rolável: não há conteúdo lazy abaixo da dobra — pula o scroll de 200ms
+    let scrollable = false;
+    try { scrollable = (document.documentElement?.scrollHeight || 0) > innerHeight + 40; } catch {}
+    if (scrollable) {
+      try { window.scrollBy(0, 1); } catch {}
+      await ubSleep(200);
+      push(ubSnapshotCollectRaw(lim, false));
+      try { window.scrollBy(0, -1); } catch {}
+    }
   } else {
     let foundEarly = false;
     for (const cont of targets) {
@@ -1887,9 +1904,13 @@ function ubOutline() {
 // ---- distill: texto enxuto e desduplicado (opera em CLONE, nunca na página real) ----
 // scopeEl (selector do read) restringe a extração a um container; sem ele, raiz = MAIN.
 function ubDistill(maxChars = 4000, scopeEl = null) {
+  const t0 = performance.now();
   const cap = Math.min(Math.max(Number(maxChars) || 4000, 200), 12000);
   // clone perfurado: shadow DOM aberto entra no clone (cloneNode puro perderia web components).
-  const src = scopeEl || document.documentElement;
+  // Clona só a raiz principal (article/main/#app/maior container), não o documento inteiro:
+  // páginas grandes pagavam o custo de clonar+consultar nav/header/footer que o distill descarta.
+  const liveRoot = scopeEl || ubMainRoot(document) || document.documentElement;
+  const src = liveRoot;
   let clone = null;
   try { clone = ubClonePierced(src); } catch { clone = null; }
   if (!clone) { try { clone = src.cloneNode(true); } catch { return { title: document.title, url: location.href, markdown: "", stats: { linhas: 0, descartadas: 0, chars: 0 } }; } }
@@ -1901,10 +1922,10 @@ function ubDistill(maxChars = 4000, scopeEl = null) {
     const s = ((n.className && typeof n.className === "string" ? n.className : "") + " " + (n.id || ""));
     if (s && adRe.test(s)) n.remove();
   });
-  // 2) raiz: selector manda (envólucro p/ o próprio elemento entrar nos blocks);
-  //    senão container principal ([role=main]/main/#app/[data-testid*=list]/maior container de texto).
+  // 2) raiz: selector manda (envólucro p/ o próprio elemento entrar nos blocks); senão o clone
+  //    já é a raiz principal escolhida acima.
   let root = clone;
-  try { root = scopeEl ? (() => { const w = document.createElement("div"); w.appendChild(clone); return w; })() : (ubMainRoot(clone) || clone); } catch { root = clone; }
+  try { root = scopeEl ? (() => { const w = document.createElement("div"); w.appendChild(clone); return w; })() : clone; } catch { root = clone; }
   const blocks = root.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,a,button,input,select,textarea,img[alt],tr,div,span");
   const seenText = new Set();
   const seenHref = new Set();
@@ -1987,7 +2008,7 @@ function ubDistill(maxChars = 4000, scopeEl = null) {
   let markdown = lines.join("\n");
   if (markdown.length > cap) markdown = markdown.slice(0, cap);
   const warn = ubShortWarn(markdown.length, false);
-  return { title: document.title, url: location.href, markdown, ...(warn ? { warn } : {}), stats: { linhas: lines.length, descartadas, chars: markdown.length } };
+  return { title: document.title, url: location.href, markdown, ...(warn ? { warn } : {}), stats: { linhas: lines.length, descartadas, chars: markdown.length, ms: Math.round(performance.now() - t0) } };
 }
 
 // ponte de alerta: mon-hook (MAIN) grita CustomEvent p/ erro; content repassa ao
@@ -2641,7 +2662,10 @@ function ubPageOverview(max = 35, offset = 0) {
   });
   const cap = Number.isFinite(Number(max)) && Number(max) > 0 ? Math.floor(Number(max)) : 35;
   const start = Number.isFinite(Number(offset)) ? Math.max(0, Math.floor(Number(offset))) : 0;
-  const landmarks = [...document.querySelectorAll("main,nav,header,footer,aside,[role=main],[role=navigation],[role=search],[role=dialog]")].filter(visible).map((el) => ({ role: ubAriaRole(el) || el.tagName.toLowerCase(), name: textOf(el, 80), selector: cssPath(el) }));
+  // nome de landmark: aria-label > primeiro título > primeiro link/botão. innerText do container
+  // inteiro concatenava o menu todo (80 chars de lixo por landmark, sem dizer nada).
+  const landmarkName = (el) => String(el.getAttribute?.("aria-label") || el.querySelector?.("h1,h2,h3")?.innerText || el.querySelector?.("a,button")?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  const landmarks = [...document.querySelectorAll("main,nav,header,footer,aside,[role=main],[role=navigation],[role=search],[role=dialog]")].filter(visible).map((el) => ({ role: ubAriaRole(el) || el.tagName.toLowerCase(), name: landmarkName(el), selector: cssPath(el) }));
   const pageControls = controls.slice(start, start + cap);
   return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: controls.length, controlsOffset: start, controlsOmitted: Math.max(0, controls.length - start - pageControls.length), nextOffset: start + pageControls.length < controls.length ? start + pageControls.length : null, overlays: ubOverlayState(), hint: "Use os selectors para agir. Leia só a região relevante; snapshot/find serve para mapear detalhes." };
 }
@@ -2769,7 +2793,8 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
     if (msg.cmd === "panel") { reply({ ok: true, data: ubProgressPanelCommand(a) }); return; }
     if (msg.cmd === "read") {
       // settle antes de coletar: SPA hidrata depois do idle; sem isso lê esqueleto (BulkMD: 60%→95%).
-      try { await ubSettle({ timeout: 1500, quiet: 250 }); } catch {}
+      // Auto: página completa com texto já visível pula (goto/act já assentaram); settle:true força.
+      if (ubReadNeedsSettle(a)) { try { await ubSettle({ timeout: 1500, quiet: 250 }); } catch {} }
       if (a.outline) {
         const o = ubOutline();
         reply({ ok: true, data: o });
@@ -2802,7 +2827,9 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         },
       });
     } else if (msg.cmd === "distill") {
-      try { await ubSettle({ timeout: 1500, quiet: 250 }); } catch {}
+      const tHandler = performance.now();
+      let settleMs = 0;
+      if (ubReadNeedsSettle(a)) { try { const tS = performance.now(); await ubSettle({ timeout: 1500, quiet: 250 }); settleMs = Math.round(performance.now() - tS); } catch {} }
       const mc = Math.min(Math.max(Number(a.maxChars) || 4000, 200), 12000);
       let scopeEl = null;
       if (a.selector) {
@@ -2810,6 +2837,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         if (!scopeEl) return reply({ ok: false, error: "seletor não encontrado: " + String(a.selector).slice(0, 120) });
       }
       const d = ubDistill(mc, scopeEl);
+      d.stats = { ...(d.stats || {}), settle_ms: settleMs, total_ms: Math.round(performance.now() - tHandler) };
       reply({ ok: true, data: d });
     } else if (msg.cmd === "html") {
       // inspeção real: outerHTML do seletor (p/ ver estrutura viva como no DevTools)
