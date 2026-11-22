@@ -1660,7 +1660,9 @@ function ubSnapshotItem(el, needBox = true) {
 function ubSnapshotCollectRaw(limit = 120, needBox = true) {
   const cap = Math.min(Math.max(Number(limit) || 120, 10), 2000);
   // perfura shadow DOM aberto: interativos dentro de web components aparecem (antes: invisíveis).
-  const els = ubShadowQueryAll('a,button,input,select,textarea,h1,h2,h3,h4,h5,h6,[role="button"],[role="link"],[role="listitem"],[role="row"],div[data-testid="cell-frame-container"],div[data-testid^="list-item-"],[onclick]').slice(0, cap);
+  // h1-h6 NÃO entram: não são clicáveis e ocupavam slots do teto de 120 (28/120 no bench);
+  // estrutura/headings ficam no cv_owner_inspect overview e o find continua varrendo tudo.
+  const els = ubShadowQueryAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="listitem"],[role="row"],div[data-testid="cell-frame-container"],div[data-testid^="list-item-"],[onclick]').slice(0, cap);
   return els.map((el) => ubSnapshotItem(el, needBox));
 }
 // Texto barato p/ pré-filtro do find (sem role/path/selector/layout): escala p/ 10k+ nós.
