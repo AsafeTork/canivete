@@ -60,7 +60,12 @@ export function riskOf(a = {}) {
     if (riskyStep) return "high";
   }
   if (["close", "tab.close"].includes(a.action || a.cmd) && a.mode === "close_by_prefix") return "high";
-  const blob = `${a.action || ""} ${a.cmd || ""} ${a.selector || ""} ${a.text || ""} ${a.js || ""} ${a.url || ""}`;
+  let blob = `${a.action || ""} ${a.cmd || ""} ${a.selector || ""} ${a.text || ""} ${a.js || ""} ${a.url || ""}`;
+  // cdp digitando (Input.insertText/dispatchKeyEvent): o CONTEÚDO digitado não transaciona nem
+  // destrói (mesma régua do "digitar texto nunca move dinheiro") — método/selector/url seguem valendo.
+  if (a.action === "cdp" && /^Input\.(insertText|dispatchKeyEvent)\b/.test(String(a.text || ""))) {
+    blob = blob.replace(/"text"\s*:\s*"(?:[^"\\]|\\.)*"/g, '"text":"<digitado>"');
+  }
   const norm = blob.replace(/[\/\-]+/g, " ").replace(/\s+/g, " ");
   const isTextAction = a.action === "fill" || a.action === "type";
   // #18: Pix informativo (inclui "Pixtotal" colado) em leitura/digitação NÃO é pagamento.

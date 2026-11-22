@@ -313,12 +313,22 @@ async function withCdp(fn, { url } = {}) {
 const PAGE_SNAPSHOT_JS = `(() => {
   const els = [...document.querySelectorAll('a,button,input,select,textarea,h1,h2,h3,h4,h5,h6,[role="button"],[role="link"],[role="heading"],[role="checkbox"],[role="radio"],[role="switch"],[onclick]')].slice(0,120);
   const path = (el) => {
-    if (el.id) return '#' + el.id;
+    const safe = (v) => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(String(v || ''));
+    const attrSel = (a, v) => '[' + a + '="' + String(v).replace(/"/g, "'") + '"]';
+    if (el.id) return safe(el.id) ? '#' + el.id : '[id="' + String(el.id).replace(/"/g, "'") + '"]';
     const parts = [];
     let n = el;
-    for (let d = 0; d < 4 && n && n !== document.body; d++) {
+    for (let d = 0; d < 5 && n && n !== document.body; d++) {
       let s = n.tagName.toLowerCase();
-      if (n.className && typeof n.className === 'string') { const c = n.className.trim().split(/\\s+/)[0]; if (c) s += '.' + c.replace(/[^a-zA-Z0-9_-]/g,''); }
+      // âncora estável: data-testid/data-test/name/aria-label cortam a cadeia (curto e durável)
+      const anchor = ['data-testid', 'data-test', 'name', 'aria-labelledby', 'aria-label'].find((a) => { const v = n.getAttribute && n.getAttribute(a); return v && v.length <= 60; });
+      if (anchor) { parts.unshift(s + attrSel(anchor, n.getAttribute(anchor))); break; }
+      if (n.className && typeof n.className === 'string') {
+        // só classe "limpa": Tailwind arbitrário (rounded-[24px]) sanitizado virava classe
+        // inexistente e o seletor morria no act (report rmwq3nj6s)
+        const c = n.className.trim().split(/\\s+/).find((x) => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x));
+        if (c) s += '.' + c;
+      }
       const sib = n.parentElement ? [...n.parentElement.children].filter(c => c.tagName === n.tagName) : [];
       if (sib.length > 1) s += ':nth-of-type(' + (sib.indexOf(n)+1) + ')';
       parts.unshift(s); n = n.parentElement;
@@ -544,7 +554,7 @@ async function cdpGoto(send, url, waitMs = 4000) {
 
 async function cdpState(send) {
   const r = await send("Runtime.evaluate", {
-    expression: `({title: document.title, url: location.href, text: document.body ? document.body.innerText.slice(0,6000) : '', links: [...document.querySelectorAll('a[href]')].slice(0,40).map(a=>({text: a.innerText.replace(/\\s+/g,' ').trim().slice(0,80), href: a.href}))})`,
+    expression: `({title: document.title, url: location.href, text: document.body ? document.body.innerText.slice(0,6000) : '', desc: (document.querySelector('meta[name="description"]')||{}).content||'', ogTitle: (document.querySelector('meta[property="og:title"]')||{}).content||'', ogDesc: (document.querySelector('meta[property="og:description"]')||{}).content||'', links: [...document.querySelectorAll('a[href]')].slice(0,40).map(a=>({text: a.innerText.replace(/\\s+/g,' ').trim().slice(0,80), href: a.href}))})`,
     returnByValue: true,
   }, 15000);
   return r.result?.value || {};

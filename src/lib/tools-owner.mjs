@@ -257,7 +257,7 @@ reg("cv_ubrowser_overview", {
 
 reg("cv_ubrowser_read", {
   description: "Lê aba do dono COM login (texto+links). Mire com tab:\"trecho\" ou tabId. Página pública (sem login)? NÃO use este — cv_webfetch (estática) ou cv_browser_navigate (JS); não gasta a aba do dono. mode=distill (default, enxuto) | raw (integral + links). outline=true: só estrutura (h1-h6 + contagens) p/ triagem. maxChars/maxLinks dão teto. AUTOMÁTICO: espera a página aquietar (SPA), perfura shadow DOM, inputs mostram value separado (`[campo text Nome] = \"João\"`). Pra JS use evaluate no act; pra erros/rede use act console. selector=\"CSS\" escopa a leitura a um container (#app, table, ...); texto curto em página grande ganha WARN no summary (tente mode:\"raw\" ou snapshot).",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" }, selector: { type: "string", description: "CSS p/ escopar a leitura a um container (ex: \"#app\", \"table.turmas\") — erro \"seletor não encontrado\" se não achar" } }, required: [] },
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" }, selector: { type: "string", description: "CSS p/ escopar a leitura a um container (ex: \"#app\", \"table.turmas\") — erro \"seletor não encontrado\" se não achar" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
   run: async ({ tabId, tab, mode, maxChars, maxLinks, outline, selector, profile }) => {
     const t0 = Date.now();
     const tgt = ubTarget(profile);
@@ -431,7 +431,7 @@ function ubErrHint(error) {
   const s = String(error || "");
   if (/seletor|SELECTOR/i.test(s)) return " — rode cv_ubrowser_snapshot (ou find com trecho de texto) p/ ver seletores atuais";
   if (/não encontrada|nao encontrada|not found|NOTFOUND|nenhuma aba/i.test(s)) return " — mire de novo: cv_ubrowser_tabs lista as abas/atuais (tabId ou trecho de título/URL)";
-  if (/aba fechou/i.test(s)) return " — a aba morreu: reliste com cv_ubrowser_tabs e re-mire";
+  if (/aba fechou/i.test(s)) return " — a aba morreu OU o tabId é de OUTRO perfil conectado: reliste com cv_owner_inspect {action:'tabs'} (cada aba traz profile) e repita passando profile:<clientId>";
   if (/sem histórico/i.test(s)) return " — back/forward precisam de historico do Chrome: navegue (goto) antes";
   if (/CSP|eval/i.test(s)) return " — suba pra CDP: act {action:'cdp', method:'Runtime.evaluate'} é imune a CSP (read/snapshot dão o dado sem JS)";
   if (/401|403|token/i.test(s)) return " — token divergente: confira o campo token no popup da extensão";
@@ -500,7 +500,7 @@ const UB_SHOT_LAST = new Map(); // hash do último shot por aba (frescor v14)
 
 reg("cv_ubrowser_snapshot", {
   description: "Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). find=\"texto\": localiza com ±3 contexto sem despejar tudo. layer=\"modal|menu|popover|tooltip\": foca SÓ na camada. Listas grandes dobram sozinhas; links duplicados são removidos. compact (padrão) retorna só ref/tag/texto/role e reduz tokens; max=30 por padrão. Lista virtualizada: act scan antes. Rank: viewport→nome→papel.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 30, description: "máximo de elementos por página (default 30, máx 120)" }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" }, compact: { type: "boolean", default: true, description: "padrão true: só ref|tag|texto|role; false inclui mais campos por elemento" }, find: { type: "string", description: "busca texto no snapshot e devolve matches ±3 contexto (sem despejar tudo)" }, layer: { type: "string", enum: ["modal", "menu", "popover", "tooltip"], description: "foco SÓ na camada (ex: modal de 2 botões sem ler a página inteira)" } }, required: [] },
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 30, description: "máximo de elementos por página (default 30, máx 120)" }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" }, compact: { type: "boolean", default: true, description: "padrão true: só ref|tag|texto|role; false inclui mais campos por elemento" }, find: { type: "string", description: "busca texto no snapshot e devolve matches ±3 contexto (sem despejar tudo)" }, layer: { type: "string", enum: ["modal", "menu", "popover", "tooltip"], description: "foco SÓ na camada (ex: modal de 2 botões sem ler a página inteira)" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
   run: async ({ tabId, tab, max, offset, compact = true, find, layer, profile }) => {
     const t0 = Date.now();
     const cappedMax = Math.min(Number(max) || 30, 120);
@@ -588,6 +588,8 @@ reg("cv_ubrowser_act", {
       message: { type: "string", description: "texto de status mostrado no painel de progresso" },
       annotations: { type: "array", description: "marcações visuais independentes do DOM do site: [{selector,label,color}]", items: { type: "object" } },
       key: { type: "string" }, js: { type: "string" }, ms: { type: "number" },
+      method: { type: "string", description: "p/ cdp: método CDP (ex: Runtime.evaluate, DOM.getDocument, Input.insertText)" },
+      params: { type: "object", description: "p/ cdp: parâmetros do método (ex: {expression:'document.title', returnByValue:true})" },
       x: { type: "number", description: "viewport X p/ cursor|tooltip" }, y: { type: "number", description: "viewport Y p/ cursor|tooltip" },
       click: { type: "boolean", description: "cursor clica ao chegar (TRUSTED via CDP por padrão; trusted:false = sintético)" },
       trusted: { type: "boolean", description: "cursor: false desliga o clique trusted (usa sintético direto)" },
@@ -924,7 +926,7 @@ reg("cv_ubrowser_act", {
 
 reg("cv_ubrowser_shot", {
   description: "Print da aba VISÍVEL do dono (imagem + arquivo). Aba em fundo NÃO imprime — use cv_browser_screenshot headless. Nunca troca de aba. scale:0.5 = metade dos bytes. Confirme visualmente após click/fill importantes. O texto da resposta traz tabId + título/url — aja na mesma aba com act/read sem re-listar tabs.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, scale: { type: "number", enum: [0.5, 1], default: 1, description: "deviceScaleFactor: 0.5 = metade dos bytes" } }, required: [] },
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, scale: { type: "number", enum: [0.5, 1], default: 1, description: "deviceScaleFactor: 0.5 = metade dos bytes" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
   run: async ({ tabId, tab, scale, profile }) => {
     const t0 = Date.now();
     const dsf = Number(scale) === 0.5 ? 0.5 : 1;

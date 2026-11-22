@@ -191,7 +191,7 @@ reg("cv_browser_navigate", {
         return devOut({ summary: `${ex.title || "(sem título)"} — ${ex.url} · texto ${(ex.text || "").length} chars${ex.tables?.length ? ` · ${ex.tables.length} tabela(s)` : ""}${ex.forms?.length ? ` · ${ex.forms.length} form(s)` : ""}${ex.jsonld?.length ? ` · JSON-LD` : ""} [extração completa]`, data: { extract: ex, ms }, telemetry: { execution_time_ms: ms }, next: ex.tables?.length || ex.forms?.length ? [] : [{ tool: "cv_browser_snapshot", reason: "Sem tabelas/forms — mapear elementos interativos" }], refs: [] });
       }
       const { extract: _ex, ...stRest } = state;
-      return devOut({ summary: `${state.title || "(sem título)"} — ${state.url || url} (${(state.text || "").length} chars)${state.extractError ? ` | extract falhou: ${state.extractError}` : ""}`, data: { ...stRest, text: trimOut(state.text || "", 6000), ms }, telemetry: { execution_time_ms: ms }, next: [{ tool: "cv_browser_snapshot", reason: "Mapear elementos clicáveis" }, { tool: "cv_browser_screenshot", reason: "Evidência visual" }], refs: [] });
+      return devOut({ summary: `${state.title || "(sem título)"} — ${state.url || url} (${(state.text || state.ogDesc || state.desc || "").length} chars)${state.extractError ? ` | extract falhou: ${state.extractError}` : ""}`, data: { ...stRest, text: trimOut(state.text || state.ogDesc || state.desc || "", 6000), ogTitle: state.ogTitle || null, ogDesc: state.ogDesc || null, ms }, telemetry: { execution_time_ms: ms }, next: [{ tool: "cv_browser_snapshot", reason: "Mapear elementos clicáveis" }, { tool: "cv_browser_screenshot", reason: "Evidência visual" }], refs: [] });
     } catch (e) {
       // fallback: dump-dom single-shot (sem CDP)
       const r = await exec(CHROME_BIN, ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--virtual-time-budget=5000", "--dump-dom", url], { timeout: BROWSER_TIMEOUT_MS });
@@ -550,6 +550,8 @@ reg("cv_browser_screenshot", {
         if (url) await cdpGoto(send, url);
         // #58: viewport REAL via Emulation.setDeviceMetricsOverride (não --window-size)
         const vp = await cdpSetViewport(send, w, h, dsf);
+        // settle: 2 rAF + 120ms — animação/repaint pendente não vira PNG branco (report rmwqd8267)
+        try { await send("Runtime.evaluate", { expression: "new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(r,120))))", awaitPromise: true }, 6000); } catch {}
         try {
           if (selector) {
             const clip = await cdpElementClip(send, selector);
@@ -858,7 +860,7 @@ export const CONTRAST_PROBE_JS = (sel) => `(() => { const el = document.querySel
   return out("rgb(255, 255, 255)", "none", false); })()`;
 reg("cv_browser_contrast", {
   description: "Contraste REAL medido em PIXEL (nao no DOM): captura o clip do elemento, decodifica o PNG em JS puro e compara a mediana do anel da borda com a do miolo -> razao WCAG 2.1. Conserta os 2 furos do DOM: cor computada em oklch() (achava texto==fundo) e background-color transparente em gradiente (ratio 1.0). Gradiente devolve ratio:null + warning. Ex: {url:\"http://localhost:5173\", selector:\"button.cta\"}. Sem selector = viewport.",
-  inputSchema: { type: "object", properties: { url: { type: "string" }, selector: { type: "string", description: "CSS do elemento a recortar; sem selector mede o viewport inteiro" }, points: { type: "array", description: "Pares [fx,fy] em fracoes 0-1 do clip, amostrados no miolo (substitui a grade 3x3 do centro)" } }, required: [] },
+  inputSchema: { type: "object", properties: { url: { type: "string" }, selector: { type: "string", description: "CSS do elemento a recortar; sem selector mede o viewport inteiro" }, points: { type: "array", description: "Pares [fx,fy] em frações 0-1 do clip, amostrados no miolo (substitui a grade 3x3 do centro). Ex: [[0.5,0.4]]", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 } } }, required: [] },
   run: async ({ url, selector, points }) => {
     const t0 = Date.now();
     const fail = (summary, extra = {}) => devOut({ status: "error", summary: latin1Clean(summary), data: { selector: selector || null, ...extra }, telemetry: { execution_time_ms: Date.now() - t0 } });
@@ -874,6 +876,8 @@ reg("cv_browser_contrast", {
           try { const pr = await send("Runtime.evaluate", { expression: CONTRAST_PROBE_JS(selector), returnByValue: true }, 10000); probe = pr.result?.value || null; } catch {}
           clip = await cdpElementClip(send, selector);
         }
+        // settle: 2 rAF + 120ms antes do pixel (repaint pendente não vira medição falsa)
+        try { await send("Runtime.evaluate", { expression: "new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(r,120))))", awaitPromise: true }, 6000); } catch {}
         const shot = await send("Page.captureScreenshot", clip ? { format: "png", clip, captureBeyondViewport: true, fromSurface: true } : { format: "png", fromSurface: true }, 20000);
         return { img: pngPixels(Buffer.from(shot.data, "base64")), probe, clip };
       }, { url }, "cv_browser_contrast");
@@ -894,8 +898,13 @@ reg("cv_browser_contrast", {
           if (dd < 0.005 && delta >= 0.005) warnings.push("DOM (apos oklch->sRGB) diria cor==fundo — o pixel discorda: use a medicao por pixel");
         }
       } catch {}
-      const level = ratio == null ? "n/a (gradiente)" : ratio >= 7 ? "AAA" : ratio >= 4.5 ? "AA" : ratio >= 3 ? "AA-large" : "FAIL";
-      return devOut({ status: "success", summary: latin1Clean(`Contraste por pixel ${ratio == null ? "indisponivel (gradiente)" : `${ratio}:1 (${level})`} — ${selector ? `[${selector}] ` : "viewport "}${contrastHex(outer)} x ${contrastHex(inner)} (deltaE ${delta}, ${outer.samples}+${inner.samples} px${warnings.length ? `, ${warnings.length} aviso(s)` : ""})`), data: { ratio, level, limiares: { AA: 4.5, AAA: 7 }, anel: { hex: contrastHex(outer), amostras: outer.samples, alpha: outer.a }, miolo: { hex: contrastHex(inner), amostras: inner.samples, alpha: inner.a }, deltaE_oklab: delta, clip: m.clip || null, imagem: { width: img.width, height: img.height, channels: img.channels }, domCheck, warnings }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_browser_screenshot", reason: "Confirmar o que foi medido" }] });
+      // pixel degenerado (anel==miolo) com DOM confiável discordando = falso positivo do sampling:
+      // o resumo usa o DOM (report rmwqc5vt9)
+      const pixelSuspeito = ratio != null && domCheck && domCheck.ratio != null && Math.abs(domCheck.ratio - ratio) >= 2 && (ratio <= 1.2 || delta < 0.01);
+      const ratioFinal = pixelSuspeito ? domCheck.ratio : ratio;
+      if (pixelSuspeito) warnings.push(`pixel degenerado (${ratio}:1, anel==miolo) — DOM mede ${domCheck.ratio}:1; resumo usa o DOM`);
+      const level = ratioFinal == null ? "n/a (gradiente)" : ratioFinal >= 7 ? "AAA" : ratioFinal >= 4.5 ? "AA" : ratioFinal >= 3 ? "AA-large" : "FAIL";
+      return devOut({ status: "success", summary: latin1Clean(`Contraste ${pixelSuspeito ? "DOM (pixel degenerado)" : "por pixel"} ${ratioFinal == null ? "indisponivel (gradiente)" : `${ratioFinal}:1 (${level})`} — ${selector ? `[${selector}] ` : "viewport "}${contrastHex(outer)} x ${contrastHex(inner)} (deltaE ${delta}, ${outer.samples}+${inner.samples} px${warnings.length ? `, ${warnings.length} aviso(s)` : ""})`), data: { ratio, ratio_efetivo: ratioFinal, origem: pixelSuspeito ? "dom" : "pixel", level, limiares: { AA: 4.5, AAA: 7 }, anel: { hex: contrastHex(outer), amostras: outer.samples, alpha: outer.a }, miolo: { hex: contrastHex(inner), amostras: inner.samples, alpha: inner.a }, deltaE_oklab: delta, clip: m.clip || null, imagem: { width: img.width, height: img.height, channels: img.channels }, domCheck, warnings }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_browser_screenshot", reason: "Confirmar o que foi medido" }] });
     } catch (e) { return fail(`contrast falhou: ${/dica acionavel/.test(String(e?.message || "")) ? e.message : `${e.message} — dica acionavel: confira o selector com cv_browser_snapshot, CHROME_BIN/porta CDP, ou meça sem selector`}`); }
   },
 });

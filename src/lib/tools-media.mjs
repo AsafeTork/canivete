@@ -4,7 +4,8 @@
 import { statSync } from "node:fs";
 import { reg, devOut, fpath, exec, humanSize } from "./ctx.mjs";
 
-// Summary do ebur128 (stderr): "I:  -19.5 LUFS", "Threshold: -29.6 LUFS", "True peak: -1.2 dBTP"
+// Summary do ebur128 (stderr): "I:  -19.5 LUFS", "Threshold: -29.6 LUFS", "True peak: -1.2 dBTP".
+// Formato novo (ffmpeg 5+): bloco "True peak:\n  Peak: -2.9 dBFS" — o valor NÃO fica na mesma linha.
 function parseLoudness(se) {
   const grab = (re) => {
     let m, last = null;
@@ -13,7 +14,9 @@ function parseLoudness(se) {
   };
   const integrado = grab(/I:\s+(-?\d+(?:\.\d+)?)\s*LUFS/g);
   const limiar = grab(/Threshold:\s+(-?\d+(?:\.\d+)?)\s*LUFS/g);
-  const pico = grab(/True peak:\s+(-?\d+(?:\.\d+)?)\s*dBTP/gi);
+  let pico = grab(/True peak:\s+(-?\d+(?:\.\d+)?)\s*dBTP/gi);
+  if (pico == null) pico = grab(/True peak:\s*\n\s*Peak:\s+(-?\d+(?:\.\d+)?)\s*dBFS/gi);
+  if (pico == null) pico = grab(/TPK:\s+(-?\d+(?:\.\d+)?)\s*dBFS/gi);
   return { integrado_lufs: integrado, limiar_lufs: limiar, pico_true_dbtp: pico };
 }
 

@@ -21,8 +21,9 @@ function globToRegex(pattern) {
     const c = pattern[i];
     if (c === "*") {
       if (pattern[i + 1] === "*") {
-        re += ".*";
-        i++;
+        // "**/" casa ZERO ou mais diretórios (glob padrão): corpus/**/*.md inclui corpus/a.md
+        if (pattern[i + 2] === "/") { re += "(?:.*/)?"; i += 2; }
+        else { re += ".*"; i++; }
       } else {
         re += "[^/]*";
       }
@@ -546,14 +547,15 @@ reg("cv_glob", {
     properties: {
       pattern: { type: "string", description: "e.g. src/**/*.jsx" },
       cwd: { type: "string" },
+      path: { type: "string", description: "alias de cwd (compat com o nome antigo)" },
       maxResults: { type: "number", default: 500 },
       ignore: { type: "string", description: "Globs CSV p/ excluir (ex \"*.min.js,**/dist/**\")" },
       only_files: { type: "boolean", description: "false inclui diretórios (com / no final)" },
     },
     required: ["pattern"],
   },
-  run: async ({ pattern, cwd, maxResults, ignore, only_files }) => {
-    const root = fpath(cwd || CWD);
+  run: async ({ pattern, cwd, path, maxResults, ignore, only_files }) => {
+    const root = fpath(cwd || path || CWD);
     const rx = globToRegex(pattern);
     const ignores = String(ignore || "")
       .split(",")
