@@ -512,8 +512,7 @@ function ubTabsSlim(t, prof) {
       id: t.id, window: t.windowId ?? t.window ?? t.win,
       ...(t.active ? { active: true } : {}),
       ...(t.incognito ? { incognito: true } : {}),
-      ...(t.group ? { group: t.group } : {}),
-      ...(t.agentOwned ? { agentOwned: true } : {}),
+      ...(t.group ? { group: t.group } : {}), // agentOwned é implícito: group === "Canivete · agente"
       title: String(t.title || "").slice(0, 70), url: t.url,
       ...(p.id ? { profile: p.id } : {}), ...(p.label ? { label: p.label } : {}),
     };
@@ -542,8 +541,6 @@ function ubTabsCompact(tabs, { singleProfile = false } = {}) {
   if (win !== undefined) { for (const t of out) delete t.window; hoist.window = win; }
   const grp = uniform("group");
   if (grp !== undefined) { for (const t of out) delete t.group; hoist.group = grp; }
-  const owned = uniform("agentOwned");
-  if (owned !== undefined) { for (const t of out) delete t.agentOwned; hoist.agentOwned = owned; }
   return { tabs: out, hoist };
 }
 const ubProfTag = (e) => {
