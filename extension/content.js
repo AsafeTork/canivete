@@ -1755,10 +1755,11 @@ function ubFindVirtualContainers(hintSel) {
 var UB_SNAP_HINT = null; // "virtual-bg": lista virtual em aba de fundo sem shim — servidor instala e repete
 var UB_FIND_TRUNC = false; // find em lista virtual parou no teto de janelas (não chegou ao fim)
 function ubSnapHintVirtual() { UB_SNAP_HINT = null; }
-async function ubRestoreScroll(cont, top) {
+async function ubRestoreScroll(cont, top, fast = false) {
   try { if (typeof cont.scrollTo === "function") cont.scrollTo(0, top); else cont.scrollTop = top; } catch {}
   ubRafKick(cont);
-  try { await ubSettle({ timeout: 400, quiet: 80 }); } catch {}
+  if (fast) { try { await ubSleep(12); } catch {} }
+  else { try { await ubSettle({ timeout: 400, quiet: 80 }); } catch {} }
 }
 function ubRafKick(cont) {
   // Aba de fundo: Chrome não despacha scroll nem roda rAF. Só kickamos com o shim
@@ -1886,6 +1887,7 @@ async function ubSnapshotVirtualized({ pages = 5, container = null, limit = 120,
       try { window.scrollBy(0, -1); } catch {}
     }
   } else {
+    const shimmed = (() => { try { return document.documentElement.hasAttribute("data-ub-rafshim"); } catch { return false; } })();
     for (const cont of targets) {
       let startTop = 0;
       try { startTop = cont.scrollTop || 0; } catch {}
@@ -1894,10 +1896,17 @@ async function ubSnapshotVirtualized({ pages = 5, container = null, limit = 120,
       for (let p = 0; p < maxPages; p++) {
         try { cont.scrollBy(0, step); } catch { break; }
         ubRafKick(cont);
-        await ubSettle({ timeout: 900, quiet: 150 });
-        const beforePage = seen.size;
+        // flush do shim renderiza síncrono: 1 frame basta; se não cresceu, aí sim espera DOM.
+        await ubSleep(12);
+        let beforePage = seen.size;
         push(ubSnapshotCollectRaw(lim, false));
-        const grew = seen.size > beforePage;
+        let grew = seen.size > beforePage;
+        if (!grew) {
+          await ubSettle({ timeout: 400, quiet: 100 });
+          beforePage = seen.size;
+          push(ubSnapshotCollectRaw(lim, false));
+          grew = seen.size > beforePage;
+        }
         let cur = 0, max = 0;
         try { cur = cont.scrollTop; max = cont.scrollHeight - cont.clientHeight; } catch {}
         if (cur !== startTop) movedSnap = true;
@@ -1908,7 +1917,7 @@ async function ubSnapshotVirtualized({ pages = 5, container = null, limit = 120,
         if (!grew) break; // sem crescimento: ou fim da lista, ou virtual travada (retry c/ shim)
         if (seen.size >= lim) break;
       }
-      await ubRestoreScroll(cont, startTop);
+      await ubRestoreScroll(cont, startTop, shimmed);
       if (seen.size >= lim) break;
     }
   }

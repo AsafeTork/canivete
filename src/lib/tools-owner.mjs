@@ -469,6 +469,7 @@ function ubErrHint(error) {
 // no finally. Marca data-ub-rafshim p/ o content saber que pode kickar.
 const UB_RAF_SHIM = "window.__ubRAForig=window.__ubRAForig||window.requestAnimationFrame;window.__ubRAFq=window.__ubRAFq||[];window.__ubRAFid=window.__ubRAFid||0;window.__ubFlush=function(){var q=window.__ubRAFq.splice(0);for(var i=0;i<q.length;i++){try{q[i].cb(performance.now())}catch(e){}}return q.length};window.__ubFlushH=function(){window.__ubFlush()};document.removeEventListener('ub-flush',window.__ubFlushH);document.addEventListener('ub-flush',window.__ubFlushH);window.requestAnimationFrame=function(cb){var id=++window.__ubRAFid;window.__ubRAFq.push({id:id,cb:cb});return id};document.documentElement.setAttribute('data-ub-rafshim','1');return 'patched';";
 const UB_RAF_RESTORE = "if(window.__ubRAForig)window.requestAnimationFrame=window.__ubRAForig;document.removeEventListener('ub-flush',window.__ubFlushH);delete window.__ubFlush;delete window.__ubFlushH;delete window.__ubRAFq;delete window.__ubRAForig;document.documentElement.removeAttribute('data-ub-rafshim');return 'restored';";
+const ubShimRecent = new Map(); // aba virtual recente (10s): evita 1ª passada inútil em snapshots repetidos
 // Instala/restaura o shim de rAF numa aba (evaluate cai no MAIN world sozinho).
 async function ubRafShimOn(tgt, a) {
   try {
@@ -570,18 +571,32 @@ reg("cv_ubrowser_snapshot", {
     const poolSize = needle ? 120 : Math.min(120, Math.max(40, Math.ceil((startGuess + cappedMax) * 2.5)));
     const tBridge = Date.now();
     const pg = Math.min(Math.max(Number(pages) || 100, 1), 100);
-    let r = await ubSend("tab.snapshot", { tabId, tab, max: poolSize, ...(needle ? { match: needle, pages: pg } : {}) }, UB_TIMEOUT_MS, tgt.id);
-    // lista virtual em aba de fundo: rAF pausado → 1ª passada só vê a dobra. Instala o shim
-    // (fila de rAF + flush no scroll sintético) e repete UMA vez; restaura sempre.
+    const snapArgs = { tabId, tab, max: poolSize, ...(needle ? { match: needle, pages: pg } : {}) };
+    const shimKey = `${tgt.id}:${tabId ?? tab ?? ""}`;
     let shimmed = false;
-    const needsShim = !!(r && r.ok && r.data && (r.data.needsShim || (r.data.overlay && r.data.overlay.needsShim)));
-    if (needsShim) {
+    let r = null;
+    // aba virtual recente (10s): instala o shim ANTES e pula a 1ª passada inútil.
+    if ((ubShimRecent.get(shimKey) || 0) > Date.now() - 10000) {
       shimmed = await ubRafShimOn(tgt, { tabId, tab });
       if (shimmed) {
-        try {
-          r = await ubSend("tab.snapshot", { tabId, tab, max: poolSize, ...(needle ? { match: needle, pages: pg } : {}) }, UB_TIMEOUT_MS, tgt.id);
-        } finally { await ubRafShimOff(tgt, { tabId, tab }); }
+        try { r = await ubSend("tab.snapshot", snapArgs, UB_TIMEOUT_MS, tgt.id); }
+        finally { await ubRafShimOff(tgt, { tabId, tab }); }
       }
+    }
+    if (!r) r = await ubSend("tab.snapshot", snapArgs, UB_TIMEOUT_MS, tgt.id);
+    // lista virtual em aba de fundo: rAF pausado → 1ª passada só vê a dobra. Instala o shim
+    // (fila de rAF + flush no scroll sintético) e repete UMA vez; restaura sempre.
+    const needsShim = !!(r && r.ok && r.data && (r.data.needsShim || (r.data.overlay && r.data.overlay.needsShim)));
+    if (!shimmed && needsShim) {
+      shimmed = await ubRafShimOn(tgt, { tabId, tab });
+      if (shimmed) {
+        try { r = await ubSend("tab.snapshot", snapArgs, UB_TIMEOUT_MS, tgt.id); }
+        finally { await ubRafShimOff(tgt, { tabId, tab }); }
+      }
+    }
+    if (shimmed) {
+      ubShimRecent.set(shimKey, Date.now());
+      if (ubShimRecent.size > 50) { try { ubShimRecent.delete(ubShimRecent.keys().next().value); } catch {} }
     }
     const bridgeMs = Date.now() - tBridge;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
