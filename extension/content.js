@@ -1508,8 +1508,9 @@ function ubAllRoots() {
   }
   return roots;
 }
-function ubShadowQueryAll(sel) {
+function ubShadowQueryAll(sel, max = 2000) {
   const out = [];
+  const cap = Math.max(1, Number(max) || 2000);
   const seen = (typeof Set !== "undefined") ? new Set() : null;
   const has = (el) => { try { return seen ? seen.has(el) : out.indexOf(el) >= 0; } catch { return false; } };
   const add = (el) => { try { if (seen) seen.add(el); } catch {} out.push(el); };
@@ -1517,7 +1518,7 @@ function ubShadowQueryAll(sel) {
     let found = [];
     try { found = [...(r.querySelectorAll ? r.querySelectorAll(sel) : [])]; } catch { continue; }
     for (const el of found) { if (!has(el)) add(el); }
-    if (out.length >= 2000) break;
+    if (out.length >= cap) break;
   }
   return out;
 }
@@ -1605,63 +1606,91 @@ function ubClonePierced(node, depth = 0) {
   } catch {}
   return c;
 }
+// Item completo de UM elemento (tag/text/role/state/path/selector). needBox=false adia
+// o layout p/ ubFillBoxLazy — o find usa isto só no punhado de matches ±3.
+function ubSnapshotItem(el, needBox = true) {
+  const tag = el.tagName.toLowerCase();
+  const text = (((el.textContent || el.value || el.placeholder || (el.getAttribute && el.getAttribute("aria-label")) || "") + "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60));
+  const role = (() => { try { return ubAriaRole(el); } catch { return ""; } })();
+  const name = (() => { try { return ubAccessibleName(el, text); } catch { return text; } })();
+  const state = (() => { try { return ubElementState(el); } catch { return ""; } })();
+  const lvl = (() => { try { return ubHeadingLevel(el, role); } catch { return 0; } })();
+  const path = (() => { try { return ubShortPath(el); } catch { return ""; } })();
+  const rect = needBox
+    ? (() => { try { return elRect(el); } catch { return { x: 0, y: 0, w: 0, h: 0 }; } })()
+    : { x: 0, y: 0, w: 0, h: 0 };
+  const out = {
+    tag,
+    role,
+    name,
+    text,
+    type: el.type || (el.getAttribute && el.getAttribute("role")) || "",
+    state,
+    ...(lvl ? { level: lvl } : {}),
+    path,
+    selector: (() => {
+      try {
+        const ch = ubShadowChain(el);
+        if (ch) return "shadow:" + JSON.stringify(ch);
+        return cssPath(el);
+      } catch { try { return cssPath(el); } catch { return ""; } }
+    })(),
+    depth: ubDepth(el),
+    ...(() => { try { return ubLayerMark(el); } catch { return {}; } })(),
+    ...(() => {
+      try {
+        if (tag === "a") {
+          const h = el.href || (el.getAttribute && el.getAttribute("href")) || "";
+          if (h && !/^javascript:/i.test(h)) return { href: String(h).slice(0, 120) };
+        }
+      } catch {}
+      return {};
+    })(),
+    ...rect,
+  };
+  if (!needBox) {
+    try { Object.defineProperty(out, "_el", { value: el, enumerable: false, writable: true }); }
+    catch { try { out._el = el; } catch {} }
+  }
+  return out;
+}
 function ubSnapshotCollectRaw(limit = 120, needBox = true) {
-  // 300 só no modo find (o handler passa 120 no snapshot normal); o background fatia a resposta.
-  const cap = Math.min(Math.max(Number(limit) || 120, 10), 300);
+  const cap = Math.min(Math.max(Number(limit) || 120, 10), 2000);
   // perfura shadow DOM aberto: interativos dentro de web components aparecem (antes: invisíveis).
   const els = ubShadowQueryAll('a,button,input,select,textarea,h1,h2,h3,h4,h5,h6,[role="button"],[role="link"],[role="listitem"],[role="row"],div[data-testid="cell-frame-container"],div[data-testid^="list-item-"],[onclick]').slice(0, cap);
-  return els.map((el) => {
-    const tag = el.tagName.toLowerCase();
-    const text = (((el.textContent || el.value || el.placeholder || (el.getAttribute && el.getAttribute("aria-label")) || "") + "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 60));
-    const role = (() => { try { return ubAriaRole(el); } catch { return ""; } })();
-    const name = (() => { try { return ubAccessibleName(el, text); } catch { return text; } })();
-    const state = (() => { try { return ubElementState(el); } catch { return ""; } })();
-    const lvl = (() => { try { return ubHeadingLevel(el, role); } catch { return 0; } })();
-    const path = (() => { try { return ubShortPath(el); } catch { return ""; } })();
-    // LAZY: só mede box (getBoundingClientRect força layout/sync) quando needBox=true;
-    // senão zera e guarda _el (não-enumerável) p/ ubFillBoxLazy medir só nos finais.
-    const rect = needBox
-      ? (() => { try { return elRect(el); } catch { return { x: 0, y: 0, w: 0, h: 0 }; } })()
-      : { x: 0, y: 0, w: 0, h: 0 };
-    const out = {
-      tag,
-      role,
-      name,
-      text,
-      type: el.type || (el.getAttribute && el.getAttribute("role")) || "",
-      state,
-      ...(lvl ? { level: lvl } : {}),
-      path,
-      selector: (() => {
-        try {
-          const ch = ubShadowChain(el);
-          if (ch) return "shadow:" + JSON.stringify(ch);
-          return cssPath(el);
-        } catch { try { return cssPath(el); } catch { return ""; } }
-      })(),
-      depth: ubDepth(el),
-      // v11 layers: contexto de overlay por item (só adiciona chaves quando há camada — 0 bytes fora dela).
-      ...(() => { try { return ubLayerMark(el); } catch { return {}; } })(),
-      ...(() => {
-        try {
-          if (tag === "a") {
-            const h = el.href || (el.getAttribute && el.getAttribute("href")) || "";
-            if (h && !/^javascript:/i.test(h)) return { href: String(h).slice(0, 120) };
-          }
-        } catch {}
-        return {};
-      })(),
-      ...rect,
-    };
-    if (!needBox) {
-      try { Object.defineProperty(out, "_el", { value: el, enumerable: false, writable: true }); }
-      catch { try { out._el = el; } catch {} }
-    }
-    return out;
-  });
+  return els.map((el) => ubSnapshotItem(el, needBox));
+}
+// Texto barato p/ pré-filtro do find (sem role/path/selector/layout): escala p/ 10k+ nós.
+function ubFindText(el) {
+  try {
+    const own = (el.textContent || el.value || el.placeholder || (el.getAttribute && (el.getAttribute("aria-label") || el.getAttribute("title"))) || "");
+    let lab = "";
+    try {
+      const tg = el.tagName;
+      if (tg === "INPUT" || tg === "SELECT" || tg === "TEXTAREA") {
+        const ls = el.labels;
+        lab = (ls && ls[0] && ls[0].textContent) || (el.closest && el.closest("label")?.textContent) || "";
+      }
+    } catch {}
+    return ((own + " " + lab) + "").replace(/\s+/g, " ").trim().toLowerCase();
+  } catch { return ""; }
+}
+// Find de página inteira: varre TODOS os candidatos (teto 20k), pré-filtra por texto
+// barato e só monta item completo nos matches ±3. Antes o teto de 120/300 escondia
+// alvos no fim de páginas grandes ("Ação 2199" em 7k elementos).
+function ubFindScan(needle, lim = 20000) {
+  if (!needle) return [];
+  const sel = 'a,button,input,select,textarea,h1,h2,h3,h4,h5,h6,[role="button"],[role="link"],[role="listitem"],[role="row"],div[data-testid="cell-frame-container"],div[data-testid^="list-item-"],[onclick]';
+  const els = ubShadowQueryAll(sel, Math.min(Math.max(Number(lim) || 20000, 10), 20000));
+  const hits = [];
+  for (let i = 0; i < els.length; i++) { if (ubFindText(els[i]).includes(needle)) hits.push(i); }
+  if (!hits.length) return [];
+  const win = new Set();
+  for (const i of hits) for (let k = Math.max(0, i - 3); k <= Math.min(els.length - 1, i + 3); k++) win.add(k);
+  return [...win].sort((a, b) => a - b).map((i) => ubSnapshotItem(els[i], false));
 }
 // Preenche x/y/w/h LAZY só p/ itens finais (evita forçar layout em 120*páginas).
 // Usa _el quando ainda conectado; senão re-resolve via selector. Remove _el ao fim.
@@ -1714,57 +1743,70 @@ function ubFindVirtualContainers(hintSel) {
 }
 // Rolagem p/ carregar + coleta incremental com dedup (selector|text). Restaura scroll ao fim.
 // Bounded: páginas ≤5, containers ≤3, settle ~900ms/página — cabe no timeout de 15s do ask().
-// Teto coleta: 120 (find=300; background fatia a resposta). Se pedir maior, para no teto (nota: truncado no cap).
+// Teto coleta: 120 (find=2000; background fatia a resposta). Se pedir maior, para no teto (nota: truncado no cap).
 // Com match: para cedo na 1ª coleta que contém o texto (não varre pages todas).
 // Box LAZY: varredura com needBox=false (sem layout); ubFillBoxLazy mede só finais antes do sort.
+// Find em página inteira (inclusive listas virtualizadas): varre todos os candidatos,
+// pré-filtra por texto barato e só monta itens completos nos matches ±3.
+async function ubFindVirtualized({ needle, pages = 2, container = null, fast = false, lim = 20000 } = {}) {
+  const maxPages = Math.min(Math.max(Number(pages) || 2, 1), 5);
+  const targets = ubFindVirtualContainers(container).slice(0, 3);
+  if (!fast && (targets.length || document.readyState !== "complete")) {
+    try { await ubSettle({ timeout: 1200, quiet: 200 }); } catch {}
+  }
+  const finish = (items) => {
+    ubFillBoxLazy(items);
+    items.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
+    return items.map((it, i) => ({ ref: i, ...it }));
+  };
+  let items = ubFindScan(needle, lim);
+  if (items.length) return finish(items);
+  if (!targets.length) {
+    let scrollable = false;
+    try { scrollable = (document.documentElement?.scrollHeight || 0) > innerHeight + 40; } catch {}
+    if (scrollable) {
+      try { window.scrollBy(0, 1); } catch {}
+      await ubSleep(80);
+      items = ubFindScan(needle, lim);
+      try { window.scrollBy(0, -1); } catch {}
+      if (items.length) return finish(items);
+    }
+    return [];
+  }
+  for (const cont of targets) {
+    let startTop = 0;
+    try { startTop = cont.scrollTop || 0; } catch {}
+    let lastTop = -1, same = 0;
+    const step = Math.max(Math.round(((cont.clientHeight || innerHeight) * 0.9) || 400), 100);
+    for (let p = 0; p < maxPages; p++) {
+      try { cont.scrollBy(0, step); } catch { break; }
+      await ubSettle({ timeout: 900, quiet: 150 });
+      items = ubFindScan(needle, lim);
+      if (items.length) { try { cont.scrollTo(0, startTop); } catch {} return finish(items); }
+      let cur = 0, max = 0;
+      try { cur = cont.scrollTop; max = cont.scrollHeight - cont.clientHeight; } catch {}
+      if (cur === lastTop) { same++; if (same >= 1) break; } else { same = 0; lastTop = cur; }
+      try { if (cur + (cont.clientHeight || 0) >= (cont.scrollHeight || 0) - 8) break; } catch {}
+      if (max <= 0) break;
+    }
+    try { if (typeof cont.scrollTo === "function") cont.scrollTo(0, startTop); else cont.scrollTop = startTop; } catch {}
+  }
+  return [];
+}
 async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120, match = "", fast = false } = {}) {
   const matchMode = String(match ?? "").trim().length > 0;
-  // find precisa enxergar a página inteira: o teto de 120 escondia o alvo (form/CTA abaixo
-  // da dobra) e o servidor devolvia "nada". Fora do find, 120 segue o teto do contrato.
-  const lim = matchMode ? 300 : Math.min(Math.max(Number(limit) || 120, 10), 120);
+  // find precisa enxergar a página inteira: teto de 120/300 escondia alvos no fim de páginas
+  // grandes e o servidor devolvia "nada". Fora do find, 120 segue o teto do contrato.
+  const lim = matchMode ? 2000 : Math.min(Math.max(Number(limit) || 120, 10), 120);
   const maxPages = Math.min(Math.max(Number(pages) || 2, 1), 5);
   const seen = new Map();
   const needle = String(match ?? "").toLowerCase().trim();
-  const hasNeedle = needle.length > 0;
+  if (matchMode) return await ubFindVirtualized({ needle, pages: maxPages, container, fast, lim: 20000 });
   // settle só quando pode haver hidratação/lista virtual: página estática com readyState
   // complete não ganha 1,2s de espera (snapshot caía de ~2s p/ ~0,3s no bench).
   const targets = ubFindVirtualContainers(container).slice(0, 3); // nota: máx 3 containers (se maior, para aqui)
   if (!fast && (targets.length || document.readyState !== "complete")) {
     try { await ubSettle({ timeout: 1200, quiet: 200 }); } catch {}
-  }
-  const hasMatch = () => {
-    if (!hasNeedle) return false;
-    for (const it of seen.values()) {
-      if (((it.text || "").toLowerCase().includes(needle))) return true;
-    }
-    return false;
-  };
-  const push = (arr) => {
-    for (const it of arr) {
-      const k = (it.selector || "") + "|" + (it.text || "");
-      if (!seen.has(k)) seen.set(k, it);
-    }
-  };
-  // find: devolve só matches ±3 contexto. O background fatia a resposta em 120 itens —
-  // sem filtrar aqui, um alvo na posição 200 nunca chegava ao servidor ("nada encontrado").
-  const matchWindow = (items) => {
-    if (!matchMode) return items;
-    const hits = [];
-    items.forEach((it, i) => {
-      const hay = `${it.text || ""} ${it.name || ""}`.toLowerCase();
-      if (hay.includes(needle)) hits.push(i);
-    });
-    if (!hits.length) return [];
-    const win = new Set();
-    for (const i of hits) for (let k = Math.max(0, i - 3); k <= Math.min(items.length - 1, i + 3); k++) win.add(k);
-    return [...win].sort((a, b) => a - b).map((i) => items[i]);
-  };
-  push(ubSnapshotCollectRaw(lim, false));
-  if (hasMatch()) {
-    const early = matchWindow([...seen.values()].slice(0, lim));
-    ubFillBoxLazy(early);
-    early.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
-    return early.map((it, i) => ({ ref: i, ...it }));
   }
   if (!targets.length) {
     // página não rolável: não há conteúdo lazy abaixo da dobra — pula o scroll de 200ms.
@@ -1778,7 +1820,6 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
       try { window.scrollBy(0, -1); } catch {}
     }
   } else {
-    let foundEarly = false;
     for (const cont of targets) {
       let startTop = 0;
       try { startTop = cont.scrollTop || 0; } catch {}
@@ -1788,7 +1829,6 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
         try { cont.scrollBy(0, step); } catch { break; }
         await ubSettle({ timeout: 900, quiet: 150 });
         push(ubSnapshotCollectRaw(lim, false));
-        if (hasMatch()) { foundEarly = true; break; }
         let cur = 0, max = 0;
         try { cur = cont.scrollTop; max = cont.scrollHeight - cont.clientHeight; } catch {}
         if (cur === lastTop) { same++; if (same >= 1) break; }
@@ -1798,11 +1838,10 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
         if (seen.size >= lim) break;
       }
       try { if (typeof cont.scrollTo === "function") cont.scrollTo(0, startTop); else cont.scrollTop = startTop; } catch {}
-      if (foundEarly) break;
       if (seen.size >= lim) break;
     }
   }
-  const items = matchWindow([...seen.values()].slice(0, lim));
+  const items = [...seen.values()].slice(0, lim);
   ubFillBoxLazy(items);
   items.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
   return items.map((it, i) => ({ ref: i, ...it }));
@@ -2938,7 +2977,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
       // Virtualizado: rola containers p/ carregar + coleta incremental com dedup.
       // v11: responde {ok:true, data:{items, overlay}} (overlay=open kinds modal/menu/popover;
       // background fatia items por offset/max). Itens carregam layer/layerLabel quando em overlay.
-      // Args opcionais (todos retrocompatíveis): {pages (1-5, default 2), container (seletor), limit (120; find=300), match}.
+      // Args opcionais (todos retrocompatíveis): {pages (1-5, default 2), container (seletor), limit (120; find=2000), match}.
       // Com match: para cedo (não varre pages todas); data ganha {found, position}.
       try {
         const match = a.match ?? a.query ?? a.text ?? "";
