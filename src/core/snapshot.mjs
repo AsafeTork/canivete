@@ -101,7 +101,10 @@ export function ubOverviewSlim(d, { detail = "compact", headingsMax = 30 } = {})
       if (name && sel !== `text=${name}`) out.name = name; // text=NAME já carrega o nome
       if (c?.role) out.role = String(c.role);
       else if (c?.tag) out.tag = String(c.tag);
-      if (c?.type && c.type !== "text") out.type = String(c.type);
+      // type só quando distingue o controle (email/search/checkbox); button/select/textarea
+      // já dizem o tipo pelo role/tag — repetir "submit" em 30 botões era ~600B de ruído.
+      const tag = String(c?.tag || "").toLowerCase();
+      if (c?.type && c.type !== "text" && !["button", "select", "textarea"].includes(tag)) out.type = String(c.type);
       if (c?.state) out.state = String(c.state).slice(0, 60);
       if (c?.inViewport === false) out.off = true;
       return out;

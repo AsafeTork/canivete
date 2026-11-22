@@ -41,7 +41,7 @@ const t = (label, cond, extra = "") => {
     landmarks: [{ role: "main", name: "Conteúdo" }],
     forms: [{ name: "Busca", fields: 1 }],
     controls: [
-      { selector: "text=Entrar", name: "Entrar", tag: "button", role: "button", type: "", state: "", inViewport: true },
+      { selector: "text=Entrar", name: "Entrar", tag: "button", role: "button", type: "submit", state: "", inViewport: true },
       { selector: "#q", name: "Buscar", tag: "input", role: "textbox", type: "search", state: "enabled", inViewport: false },
     ],
     controlsTotal: 2,
@@ -49,7 +49,8 @@ const t = (label, cond, extra = "") => {
   const d = ubOverviewSlim(raw);
   t("overview compact corta headings", d.headings.length === 30 && d.headingsOmitted === 10, `h=${d.headings.length} omit=${d.headingsOmitted}`);
   t("overview compact não repete text=NAME", d.controls[0].sel === "text=Entrar" && d.controls[0].name === undefined, JSON.stringify(d.controls[0]));
-  t("overview compact omite type/state vazios", !("type" in d.controls[0]) && !("state" in d.controls[0]));
+  t("overview compact omite state vazio", !("state" in d.controls[0]));
+  t("overview compact omite type redundante de button", !("type" in d.controls[0]));
   t("overview compact mantém type/state úteis", d.controls[1].type === "search" && d.controls[1].state === "enabled" && d.controls[1].off === true);
   t("overview compact mantém headings em tuplas [nível,texto]", Array.isArray(d.headings[0]) && d.headings[0].length === 2 && d.headings[0][1] === "H0");
   t("overview compact achata landmarks em string", d.landmarks[0] === "main: Conteúdo");

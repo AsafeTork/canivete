@@ -1550,7 +1550,8 @@ function ubClonePierced(node, depth = 0) {
   return c;
 }
 function ubSnapshotCollectRaw(limit = 120, needBox = true) {
-  const cap = Math.min(Math.max(Number(limit) || 120, 10), 120);
+  // 300 só no modo find (o handler passa 120 no snapshot normal); o background fatia a resposta.
+  const cap = Math.min(Math.max(Number(limit) || 120, 10), 300);
   // perfura shadow DOM aberto: interativos dentro de web components aparecem (antes: invisíveis).
   const els = ubShadowQueryAll('a,button,input,select,textarea,h1,h2,h3,h4,h5,h6,[role="button"],[role="link"],[role="listitem"],[role="row"],div[data-testid="cell-frame-container"],div[data-testid^="list-item-"],[onclick]').slice(0, cap);
   return els.map((el) => {
@@ -1661,7 +1662,10 @@ function ubFindVirtualContainers(hintSel) {
 // Com match: para cedo na 1ª coleta que contém o texto (não varre pages todas).
 // Box LAZY: varredura com needBox=false (sem layout); ubFillBoxLazy mede só finais antes do sort.
 async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120, match = "", fast = false } = {}) {
-  const lim = Math.min(Math.max(Number(limit) || 120, 10), 120);
+  const matchMode = String(match ?? "").trim().length > 0;
+  // find precisa enxergar a página inteira: o teto de 120 escondia o alvo (form/CTA abaixo
+  // da dobra) e o servidor devolvia "nada". Fora do find, 120 segue o teto do contrato.
+  const lim = matchMode ? 300 : Math.min(Math.max(Number(limit) || 120, 10), 120);
   const maxPages = Math.min(Math.max(Number(pages) || 2, 1), 5);
   const seen = new Map();
   const needle = String(match ?? "").toLowerCase().trim();
@@ -1685,20 +1689,35 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
       if (!seen.has(k)) seen.set(k, it);
     }
   };
+  // find: devolve só matches ±3 contexto. O background fatia a resposta em 120 itens —
+  // sem filtrar aqui, um alvo na posição 200 nunca chegava ao servidor ("nada encontrado").
+  const matchWindow = (items) => {
+    if (!matchMode) return items;
+    const hits = [];
+    items.forEach((it, i) => {
+      const hay = `${it.text || ""} ${it.name || ""}`.toLowerCase();
+      if (hay.includes(needle)) hits.push(i);
+    });
+    if (!hits.length) return [];
+    const win = new Set();
+    for (const i of hits) for (let k = Math.max(0, i - 3); k <= Math.min(items.length - 1, i + 3); k++) win.add(k);
+    return [...win].sort((a, b) => a - b).map((i) => items[i]);
+  };
   push(ubSnapshotCollectRaw(lim, false));
   if (hasMatch()) {
-    const early = [...seen.values()].slice(0, lim);
+    const early = matchWindow([...seen.values()].slice(0, lim));
     ubFillBoxLazy(early);
     early.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
     return early.map((it, i) => ({ ref: i, ...it }));
   }
   if (!targets.length) {
-    // página não rolável: não há conteúdo lazy abaixo da dobra — pula o scroll de 200ms
+    // página não rolável: não há conteúdo lazy abaixo da dobra — pula o scroll de 200ms.
+    // Se a 1ª coleta já encheu o pool, rolar não acrescenta nada: pula também.
     let scrollable = false;
     try { scrollable = (document.documentElement?.scrollHeight || 0) > innerHeight + 40; } catch {}
-    if (scrollable) {
+    if (scrollable && seen.size < lim) {
       try { window.scrollBy(0, 1); } catch {}
-      await ubSleep(200);
+      await ubSleep(80);
       push(ubSnapshotCollectRaw(lim, false));
       try { window.scrollBy(0, -1); } catch {}
     }
@@ -1727,7 +1746,7 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
       if (seen.size >= lim) break;
     }
   }
-  const items = [...seen.values()].slice(0, lim);
+  const items = matchWindow([...seen.values()].slice(0, lim));
   ubFillBoxLazy(items);
   items.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
   return items.map((it, i) => ({ ref: i, ...it }));
@@ -2652,11 +2671,25 @@ function ubElemPickStart(opts) {
     return { picker: false, error: String(e && e.message || e).slice(0, 120) };
   }
 }
-function ubPageOverview(max = 35, offset = 0) {
+function ubPageOverview(max = 35, offset = 0, order = "action") {
   const visible = (el) => { try { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden" && Number(s.opacity) !== 0; } catch { return false; } };
   const textOf = (el, n = 100) => String(el?.innerText || el?.value || el?.getAttribute?.("aria-label") || el?.getAttribute?.("title") || "").replace(/\s+/g, " ").trim().slice(0, n);
   const headings = [...document.querySelectorAll("h1,h2,h3,[role=heading]")].filter(visible).map((el) => ({ level: Number(el.getAttribute("aria-level")) || Number(el.tagName.slice(1)) || 0, text: textOf(el, 140), selector: cssPath(el) }));
-  const controls = ubShadowQueryAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[contenteditable="true"]').filter(visible).map((el) => {
+  // order=action (padrão): campos e botões antes de links — 40 links de menu deixavam de
+  // esconder o formulário/CTAs nas primeiras páginas. order=dom preserva a ordem da página.
+  const ctrlRank = (el) => {
+    try {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "input" || tag === "select" || tag === "textarea" || el.isContentEditable) return 0;
+      const role = ubAriaRole(el);
+      if (tag === "button" || role === "button" || role === "tab") return 1;
+      if (tag === "a" || role === "link") return 2;
+      return 3;
+    } catch { return 3; }
+  };
+  const rawControls = ubShadowQueryAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[contenteditable="true"]').filter(visible);
+  if (String(order || "").toLowerCase() !== "dom") rawControls.sort((x, y) => ctrlRank(x) - ctrlRank(y));
+  const controls = rawControls.map((el) => {
     const r = el.getBoundingClientRect(), name = ubAccessibleName(el, textOf(el, 100));
     return { tag: el.tagName.toLowerCase(), role: ubAriaRole(el), name: String(name || textOf(el, 100)).slice(0, 100), type: el.type || "", state: ubElementState(el), selector: cssPath(el), inViewport: r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth, ...(el.href ? { href: String(el.href).slice(0, 240) } : {}) };
   });
@@ -2789,7 +2822,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
     const a = msg.args || {};
     if (msg.cmd === "ping") { reply({ ok: true, data: { v: UB_V } }); return; }
     if (msg.cmd === "state") { reply({ ok: true, data: { title: document.title, url: location.href } }); return; }
-    if (msg.cmd === "overview") { reply({ ok: true, data: ubPageOverview(a.max, a.offset) }); return; }
+    if (msg.cmd === "overview") { reply({ ok: true, data: ubPageOverview(a.max, a.offset, a.order) }); return; }
     if (msg.cmd === "panel") { reply({ ok: true, data: ubProgressPanelCommand(a) }); return; }
     if (msg.cmd === "read") {
       // settle antes de coletar: SPA hidrata depois do idle; sem isso lê esqueleto (BulkMD: 60%→95%).
@@ -2849,7 +2882,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
       // Virtualizado: rola containers p/ carregar + coleta incremental com dedup.
       // v11: responde {ok:true, data:{items, overlay}} (overlay=open kinds modal/menu/popover;
       // background fatia items por offset/max). Itens carregam layer/layerLabel quando em overlay.
-      // Args opcionais (todos retrocompatíveis): {pages (1-5, default 2), container (seletor), limit (hard cap 120), match}.
+      // Args opcionais (todos retrocompatíveis): {pages (1-5, default 2), container (seletor), limit (120; find=300), match}.
       // Com match: para cedo (não varre pages todas); data ganha {found, position}.
       try {
         const match = a.match ?? a.query ?? a.text ?? "";

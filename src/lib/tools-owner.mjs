@@ -120,6 +120,11 @@ async function ubOpenAndWait(profileDir, waitMs, wake = false, checkOk = null) {
 // NÃO roteia em silêncio p/ "qualquer" (comando no perfil ERRADO é pior que erro) —
 // devolve erro acionável listando os conectados (clientId/label/idade do último poll).
 // Sem profile = comportamento de sempre (broadcast p/ o mais recente).
+// plural sem "(s)": summaries legíveis e menores ("1 perfil conectado" / "2 perfis conectados").
+function ubPlural(n, one, many) {
+  const v = Number(n) || 0;
+  return `${v} ${v === 1 ? one : many}`;
+}
 function ubTarget(profile) {
   if (!profile) return { ok: true, id: null };
   const id = ubResolveProfile(profile);
@@ -186,7 +191,7 @@ reg("cv_ubrowser_status", {
     // status enxuto: o info cru da extensão (UA/tabUrls/accessMode…) duplicava dados e inflava
     // a resposta em ~3x. Fica o que decide roteamento/versão; o resto vive em cv_owner_alerts/act.
     const slimExts = exts.map((e) => ({ id: e.id, ...(e.profileLabel ? { label: e.profileLabel } : {}), connected: !!e.connected, lastPollAgoMs: e.lastPollAgoMs, queued: e.queued, ...(e.info?.bg ? { version: String(e.info.bg) } : {}), ...(e.info?.tabs != null ? { tabs: e.info.tabs } : {}) }));
-    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${conns.length} perfil(es) conectado(s)${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: cv_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), extensions: slimExts, bridge: { port: st.port, queued: st.queued, pending: st.pending, lastPollAgoMs: st.lastPollAgoMs, ...(st.expiredDropped ? { expiredDropped: st.expiredDropped } : {}) } }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "cv_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [{ tool: "cv_ubrowser_tabs", reason: conns.length > 1 ? "Abas vêm consolidadas dos perfis — aponte profile ao agir" : "Listar abas do dono" }] });
+    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${ubPlural(conns.length, "perfil conectado", "perfis conectados")}${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: cv_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), extensions: slimExts, bridge: { port: st.port, queued: st.queued, pending: st.pending, lastPollAgoMs: st.lastPollAgoMs, ...(st.expiredDropped ? { expiredDropped: st.expiredDropped } : {}) } }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "cv_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [{ tool: "cv_ubrowser_tabs", reason: conns.length > 1 ? "Abas vêm consolidadas dos perfis — aponte profile ao agir" : "Listar abas do dono" }] });
   },
 });
 
@@ -200,7 +205,7 @@ reg("cv_ubrowser_alerts", {
     const list = ubAlertsList(since);
     if (!list.length) return devOut({ summary: `sem alertas${since ? " desde " + String(since) : " desde o boot do daemon"} — aba(s) sem erros de console/rede empurrados`, data: { alerts: [], drained: true }, telemetry: { execution_time_ms: Date.now() - t0 } });
     const err = list.filter((a) => a.kind !== "net").length, net = list.length - err;
-    return devOut({ summary: `${list.length} alerta(s)${since ? " desde " + String(since) : ""} (${err} console · ${net} rede) — mais novo: ${list[list.length - 1].text.slice(0, 90)}`, data: { alerts: list, drained: true }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_read", reason: "Ver a aba que errou (tab = trecho do url dos alertas)" }] });
+    return devOut({ summary: `${ubPlural(list.length, "alerta", "alertas")}${since ? " desde " + String(since) : ""} (${err} console · ${net} rede) — mais novo: ${list[list.length - 1].text.slice(0, 90)}`, data: { alerts: list, drained: true }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_read", reason: "Ver a aba que errou (tab = trecho do url dos alertas)" }] });
   },
 });
 
@@ -231,7 +236,7 @@ reg("cv_ubrowser_tabs", {
       const f = ubTabsFilterMax(tabs, filter, max, offset);
       const omitNote = f.omitted ? ` (${f.omitted} restantes; offset=${offset + f.tabs.length} para continuar)` : "";
       const badNote = bads.length ? ` (${bads.length} perfil sem resposta: ${bads.map((b) => b.e.profileLabel || b.e.id).join(", ")})` : "";
-      return devOut({ summary: `${f.tabs.length} aba(s) em ${profiles.length} perfil(is)${omitNote}${badNote}`, data: { tabs: f.tabs, profiles, total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ summary: `${ubPlural(f.tabs.length, "aba", "abas")} em ${ubPlural(profiles.length, "perfil", "perfis")}${omitNote}${badNote}`, data: { tabs: f.tabs, profiles, total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const r = res.single;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
@@ -242,25 +247,25 @@ reg("cv_ubrowser_tabs", {
     const slim = (Array.isArray(tabs) ? tabs : []).map((t) => ubTabsSlim(t, ubProfTag(ext0)));
     const f = ubTabsFilterMax(slim, filter, max, offset);
     const omitNote = f.omitted ? ` (${f.omitted} restantes; offset=${offset + f.tabs.length} para continuar)` : "";
-    return devOut({ summary: `${f.tabs.length} aba(s) em ${wins.length || "?"} janela(s)${omitNote}`, data: { tabs: f.tabs, profiles: ext0 ? [{ id: ext0.id, ...(ext0.profileLabel ? { label: ext0.profileLabel } : {}), windows: wins.length, tabs: (Array.isArray(tabs) ? tabs : []).length }] : [], total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    return devOut({ summary: `${ubPlural(f.tabs.length, "aba", "abas")} em ${wins.length ? ubPlural(wins.length, "janela", "janelas") : "? janelas"}${omitNote}`, data: { tabs: f.tabs, profiles: ext0 ? [{ id: ext0.id, ...(ext0.profileLabel ? { label: ext0.profileLabel } : {}), windows: wins.length, tabs: (Array.isArray(tabs) ? tabs : []).length }] : [], total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 
 reg("cv_ubrowser_overview", {
   description: "Mapa compacto da aba: estrutura, títulos, formulários e controles com seletores prontos para agir. Reduz chamadas de reconhecimento; use snapshot/read só para aprofundar a região. detail=\"compact\" (padrão) corta campos redundantes (~60% menos tokens); detail=\"full\" traz o payload cru.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL" }, max: { type: "number", default: 35, description: "quantidade de controles por página" }, offset: { type: "number", default: 0, description: "paginação de controles (use nextOffset)" }, detail: { type: "string", enum: ["compact", "full"], default: "compact", description: "compact=corta campos redundantes (default); full=payload cru" }, headingsMax: { type: "number", default: 30, description: "máximo de títulos no compact (default 30; use full p/ todos)" }, profile: { type: "string" } }, required: [] },
-  run: async ({ tabId, tab, max = 35, offset = 0, detail = "compact", headingsMax = 30, profile } = {}) => {
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL" }, max: { type: "number", default: 35, description: "quantidade de controles por página" }, offset: { type: "number", default: 0, description: "paginação de controles (use nextOffset)" }, order: { type: "string", enum: ["action", "dom"], default: "action", description: "action=campos/botões antes de links (default); dom=ordem da página" }, detail: { type: "string", enum: ["compact", "full"], default: "compact", description: "compact=corta campos redundantes (default); full=payload cru" }, headingsMax: { type: "number", default: 30, description: "máximo de títulos no compact (default 30; use full p/ todos)" }, profile: { type: "string" } }, required: [] },
+  run: async ({ tabId, tab, max = 35, offset = 0, order = "action", detail = "compact", headingsMax = 30, profile } = {}) => {
     const t0 = Date.now(), tgt = ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const tBridge = Date.now();
-    const r = await ubSend("tab.overview", { tabId, tab, max, offset }, UB_TIMEOUT_MS, tgt.id);
+    const r = await ubSend("tab.overview", { tabId, tab, max, offset, order }, UB_TIMEOUT_MS, tgt.id);
     const bridgeMs = Date.now() - tBridge;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const d = ubOverviewSlim(r.data || {}, { detail, headingsMax });
     const hOmit = d.headingsOmitted ? ` (+${d.headingsOmitted} títulos omitidos)` : "";
     const nextNote = d.nextOffset != null ? ` (mais: offset=${d.nextOffset})` : "";
-    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos${hOmit} · ${d.forms?.length || 0} formulários${nextNote}${detail === "compact" ? "" : " [full]"}`, data: d, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: [{ tool: "cv_owner_act", reason: "Use sel (ou name) do overview para agir; detail:\"full\" se precisar de href/selector de título" }] });
+    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos${hOmit} · ${ubPlural(d.forms?.length || 0, "formulário", "formulários")}${nextNote}${detail === "compact" ? "" : " [full]"}`, data: d, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: [{ tool: "cv_owner_act", reason: "Use sel (ou name) do overview para agir; detail:\"full\" se precisar de href/selector de título" }] });
   },
 });
 
@@ -522,10 +527,13 @@ reg("cv_ubrowser_snapshot", {
     const needle = String(find || "").trim().toLowerCase();
     const tgt = ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
-    // pool fixo de 120: a extensão fatiava ANTES do dedup/rank do servidor — com 40 links
-    // de navegação (fragmentos distintos) o max=30 voltava 2 elementos. Paginamos DEPOIS.
+    // pool adaptativo: a extensão fatiava ANTES do dedup/rank do servidor (40 links de
+    // fragmentos distintos viravam 2). Paginamos DEPOIS; o pool só precisa cobrir a página
+    // pedida com folga p/ fold/dedup — max=8 não baixa 120 elementos à toa.
+    const startGuess = Math.max(0, Math.floor(Number(offset) || 0));
+    const poolSize = needle ? 120 : Math.min(120, Math.max(40, Math.ceil((startGuess + cappedMax) * 2.5)));
     const tBridge = Date.now();
-    const r = await ubSend("tab.snapshot", { tabId, tab, max: 120, ...(needle ? { match: needle } : {}) }, UB_TIMEOUT_MS, tgt.id);
+    const r = await ubSend("tab.snapshot", { tabId, tab, max: poolSize, ...(needle ? { match: needle } : {}) }, UB_TIMEOUT_MS, tgt.id);
     const bridgeMs = Date.now() - tBridge;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
@@ -545,7 +553,7 @@ reg("cv_ubrowser_snapshot", {
     const layerFilter = String(layer || "").trim().toLowerCase();
     if (layerFilter) {
       pool = kept.filter((el) => String(el.layer || "").toLowerCase() === layerFilter);
-      if (!pool.length) return devOut({ summary: `layer "${layer}": vazio (overlay: ${overlay && overlay.open ? `${overlay.kind || "?"}${overlay.label ? ` "${String(overlay.label).slice(0, 60)}"` : ""}` : "nenhum aberto"}) em ${kept.length} elemento(s)${omitNote}${overlayNote}`, data: { layer, found: false, elements: [], ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      if (!pool.length) return devOut({ summary: `layer "${layer}": vazio (overlay: ${overlay && overlay.open ? `${overlay.kind || "?"}${overlay.label ? ` "${String(overlay.label).slice(0, 60)}"` : ""}` : "nenhum aberto"}) em ${ubPlural(kept.length, "elemento", "elementos")}${omitNote}${overlayNote}`, data: { layer, found: false, elements: [], ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
       focusNote = ` (foco: layer=${layerFilter}, ${pool.length}/${kept.length})`;
     } else if (overlay && overlay.open) {
       const want = String(overlay.kind || "modal").toLowerCase();
@@ -553,6 +561,11 @@ reg("cv_ubrowser_snapshot", {
       const top = pool.filter(isTop), rest = pool.filter((el) => !isTop(el));
       if (top.length && top.length < pool.length) { pool = [...top, ...rest]; focusNote = ` (foco: ${top.length} da camada "${overlay.kind || "modal"}" primeiro)`; }
     }
+    // projeção compacta única (find e compact): tag redundante some; ref continua agindo via cache.
+    const slimEl = ({ ref, tag, text, role, name, layer, layerLabel }) => {
+      const t = (!tag || !role || tag === role || (tag === "a" && role === "link")) ? undefined : tag;
+      return { ref, ...(t ? { tag: t } : {}), text: text || name || "", role, ...(layer ? { layer, ...(layerLabel ? { layerLabel } : {}) } : {}) };
+    };
     // find: matches ±3 contexto, sem fold/dedup (previsível); resto do pipeline pula.
     if (needle) {
       const hits = [];
@@ -560,7 +573,7 @@ reg("cv_ubrowser_snapshot", {
         const hay = `${el.text || ""} ${el.name || ""}`.toLowerCase();
         if (hay.includes(needle)) hits.push(i);
       });
-      if (!hits.length) return devOut({ summary: `find "${find}": nada em ${pool.length} elemento(s)${omitNote}${overlayNote}${focusNote}`, data: { find, found: false, elements: [], ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      if (!hits.length) return devOut({ summary: `find "${find}": nada (varri a página${junk ? `, ${ubPlural(junk, "junk", "junk")} fora` : ""}) — tente trecho menor ou act scan em lista virtualizada${overlayNote}${focusNote}`, data: { find, found: false, elements: [], ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
       const win = new Set();
       for (const h of hits) for (let k = Math.max(0, h - 3); k <= Math.min(pool.length - 1, h + 3); k++) win.add(k);
       const hitSet = new Set(hits);
@@ -569,7 +582,7 @@ reg("cv_ubrowser_snapshot", {
         const tag = `[${el.ref ?? i}] ${el.role || el.tag} "${(el.text || el.name || "").slice(0, 80)}"`;
         return hitSet.has(i) ? `→ ${tag}  ← MATCH` : `  ${tag}`;
       });
-      return devOut({ summary: `find "${find}": ${hits.length} match(es) em ${pool.length} elemento(s)${omitNote}${overlayNote}${focusNote}`, data: { find, found: true, matches: hits.map((i) => pool[i].ref ?? i), elements: [...win].sort((a, b) => a - b).map((i) => pool[i]), ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref/selector" }] });
+      return devOut({ summary: `find "${find}": ${ubPlural(hits.length, "match", "matches")} em ${ubPlural(pool.length, "elemento", "elementos")}${omitNote}${overlayNote}${focusNote}`, data: { find, found: true, matches: hits.map((i) => pool[i].ref ?? i), elements: [...win].sort((a, b) => a - b).map((i) => slimEl(pool[i])), ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N do match" }] });
     }
     const folded = ubSnapFold(pool);
     const foldedNote = folded.folded ? ` (dobra: ${pool.length}→${folded.elements.length})` : "";
@@ -584,12 +597,12 @@ reg("cv_ubrowser_snapshot", {
     const pageData = { total, offset: start, ...(nextOffset != null ? { nextOffset } : {}) };
     if (compact) {
       // #42: text||name — img com alt/src ganha nome na extensão; compact não o esconde.
-      const compactOut = paged.map(({ ref, tag, text, role, name, layer, layerLabel }) => ({ ref, tag, text: text || name || "", role, ...(layer ? { layer, ...(layerLabel ? { layerLabel } : {}) } : {}) }));
-      return devOut({ summary: `${compactOut.length}/${total} elemento(s) (compact)${pageNote}${omitNote}${foldedNote}${dupeNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
+      const compactOut = paged.map(slimEl);
+      return devOut({ summary: `${compactOut.length}/${total} ${total === 1 ? "elemento" : "elementos"} (compact)${pageNote}${omitNote}${foldedNote}${dupeNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
     }
     const ac = ubSnapAutoCompactFields(paged);
     const autoNote = ac.autoCompact ? ` (auto-compact campos: -${ac.dropped.join(",")})` : "";
-    return devOut({ summary: `${ac.elements.length}/${total} elemento(s)${ac.autoCompact ? " (compact-campos)" : ""}${pageNote}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
+    return devOut({ summary: `${ac.elements.length}/${total} ${total === 1 ? "elemento" : "elementos"}${ac.autoCompact ? " (compact-campos)" : ""}${pageNote}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
   },
 });
 
@@ -598,7 +611,7 @@ reg("cv_ubrowser_act", {
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "monstate", "cdp", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "panel", "console", "close", "activate", "elem_pick"] },
+      action: { type: "string", enum: ["goto", "back", "forward", "reload", "reload-extension", "reinject", "click", "fill", "type", "select", "press", "scroll", "highlight", "waittext", "wait", "evaluate", "monstate", "cdp", "cursor", "tooltip", "catchup", "aesthetic", "new", "scan", "count", "attr", "html", "flow", "panel", "console", "close", "activate", "elem_pick"] },
       off: { type: "boolean", description: "p/ elem_pick: desliga o modo de marcação" },
       tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, url: { type: "string" }, selector: { type: "string" }, text: { type: "string" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — omitir = mais recente" },
       ref: { type: "number", description: "ref do snapshot (resolve p/ selector via cache; expira se navegar — re-snapshot)" },
@@ -646,7 +659,7 @@ reg("cv_ubrowser_act", {
   },
   run: async (a, context = {}) => {
     const t0 = Date.now();
-    if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | exemplos: {action:"goto", tab:"trecho", url:"https://..."} / {action:"click", ref:3} / {action:"activate", tab:"Gmail"}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|reinject|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | exemplos: {action:"goto", tab:"trecho", url:"https://..."} / {action:"click", ref:3} / {action:"activate", tab:"Gmail"}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     // roteamento multi-perfil: profile pedido SEM match = erro acionável (lista conectados),
     // nunca despacha em silêncio p/ outro perfil. Um só resolve vale p/ ida e retry.
     const tgt = ubTarget(a.profile);
@@ -688,8 +701,8 @@ reg("cv_ubrowser_act", {
       await new Promise((r) => setTimeout(r, waitMs));
       return devOut({ summary: "wait ok", data: { action: "wait", waitedMs: waitMs }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
-    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", monstate: "tab.monstate", cdp: "tab.cdp", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", panel: "tab.panel", console: "tab.console", close: "tab.close", activate: "tab.activate", elem_pick: "tab.elem_pick" };
-    if (!map[a.action]) return devOut({ status: "error", summary: `action "${a.action}" desconhecida — ações válidas: goto|back|forward|reload|reload-extension|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    const map = { goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", "reload-extension": "tab.reload-extension", reinject: "tab.reinject", click: "tab.click", fill: "tab.fill", type: "tab.type", select: "tab.select", press: "tab.press", scroll: "tab.scroll", highlight: "tab.highlight", waittext: "tab.waittext", evaluate: "tab.evaluate", monstate: "tab.monstate", cdp: "tab.cdp", cursor: "tab.cursor", tooltip: "tab.tooltip", catchup: "tab.catchup", aesthetic: "tab.aesthetic", new: "tab.new", scan: "tab.scan", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow", panel: "tab.panel", console: "tab.console", close: "tab.close", activate: "tab.activate", elem_pick: "tab.elem_pick" };
+    if (!map[a.action]) return devOut({ status: "error", summary: `action "${a.action}" desconhecida — ações válidas: goto|back|forward|reload|reload-extension|reinject|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | ${UB_FB}`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // valida antes da ida-volta: param que a extensão joga como throw vira erro AQUI com exemplo pronto p/ colar.
     {
       const req = ubReqMiss(a.action, a);
