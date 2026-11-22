@@ -1754,6 +1754,7 @@ function ubFindVirtualContainers(hintSel) {
 // data-ub-rafshim; aqui disparamos o scroll sintético + flush p/ a página renderizar a janela.
 var UB_SNAP_HINT = null; // "virtual-bg": lista virtual em aba de fundo sem shim — servidor instala e repete
 var UB_FIND_TRUNC = false; // find em lista virtual parou no teto de janelas (não chegou ao fim)
+var UB_SNAP_END = false; // a varredura chegou ao fim real do container (não ao teto de itens)
 function ubSnapHintVirtual() { UB_SNAP_HINT = null; }
 async function ubRestoreScroll(cont, top, fast = false) {
   try { if (typeof cont.scrollTo === "function") cont.scrollTo(0, top); else cont.scrollTop = top; } catch {}
@@ -1845,7 +1846,7 @@ async function ubSnapshotVirtualized({ pages = 5, container = null, limit = 120,
   // find precisa enxergar a página inteira: teto de 120/300 escondia alvos no fim de páginas
   // grandes e o servidor devolvia "nada". Fora do find, 120 segue o teto do contrato.
   const lim = matchMode ? 2000 : Math.min(Math.max(Number(limit) || 120, 10), 120);
-  const maxPages = Math.min(Math.max(Number(pages) || 2, 1), 5);
+  const maxPages = Math.min(Math.max(Number(pages) || 5, 1), 20);
   const seen = new Map();
   const needle = String(match ?? "").toLowerCase().trim();
   if (matchMode) return await ubFindVirtualized({ needle, pages: Number(pages) || 100, container, fast, lim: 20000 });
@@ -1867,7 +1868,7 @@ async function ubSnapshotVirtualized({ pages = 5, container = null, limit = 120,
   // perdia a primeira dobra, porque o loop rolava antes de coletar.
   push(ubSnapshotCollectRaw(lim, false));
   const beforeSnap = seen.size;
-  let movedSnap = false;
+  let movedSnap = false, endReached = false;
   // Aba de fundo + lista virtual sem shim: rolar agora só travaria o renderPending da
   // página. Devolve a 1ª dobra + needsShim; o servidor instala o shim e repete.
   let needShim = false;
@@ -1910,10 +1911,10 @@ async function ubSnapshotVirtualized({ pages = 5, container = null, limit = 120,
         let cur = 0, max = 0;
         try { cur = cont.scrollTop; max = cont.scrollHeight - cont.clientHeight; } catch {}
         if (cur !== startTop) movedSnap = true;
-        if (cur === lastTop) { same++; if (same >= 1) break; }
+        if (cur === lastTop) { same++; if (same >= 1) { endReached = true; break; } }
         else { same = 0; lastTop = cur; }
-        try { if (cur + (cont.clientHeight || 0) >= (cont.scrollHeight || 0) - 8) break; } catch {}
-        if (max <= 0) break;
+        try { if (cur + (cont.clientHeight || 0) >= (cont.scrollHeight || 0) - 8) { endReached = true; break; } } catch {}
+        if (max <= 0) { endReached = true; break; }
         if (!grew) break; // sem crescimento: ou fim da lista, ou virtual travada (retry c/ shim)
         if (seen.size >= lim) break;
       }
@@ -1926,6 +1927,7 @@ async function ubSnapshotVirtualized({ pages = 5, container = null, limit = 120,
       UB_SNAP_HINT = (document.hidden && targets.length && movedSnap && seen.size <= beforeSnap && !document.documentElement.hasAttribute("data-ub-rafshim")) ? "virtual-bg" : null;
     } catch {}
   }
+  UB_SNAP_END = !!(targets.length && endReached);
   const items = [...seen.values()].slice(0, lim);
   ubFillBoxLazy(items);
   items.sort((x, y) => ((x.y - y.y) || (x.x - y.x)));
@@ -3066,12 +3068,14 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
       // Com match: para cedo (não varre pages todas); data ganha {found, position}.
       try {
         UB_FIND_TRUNC = false;
+        UB_SNAP_END = false;
         const match = a.match ?? a.query ?? a.text ?? "";
         const data = await ubSnapshotVirtualized({ pages: a.pages, container: a.container, limit: 120, match });
         let overlay = null;
         try { overlay = ubOverlayState(); } catch { overlay = { open: false, kind: "", label: "", count: 0 }; }
         if (UB_SNAP_HINT) overlay = { ...(overlay || {}), needsShim: true };
         if (UB_FIND_TRUNC) overlay = { ...(overlay || {}), findTruncated: true };
+        if (UB_SNAP_END) overlay = { ...(overlay || {}), virtualEnd: true };
         if (match && String(match).trim()) {
           const needle = String(match).toLowerCase();
           const pos = data.findIndex((it) => ((it.text || "").toLowerCase().includes(needle)));

@@ -717,7 +717,7 @@ reg("cv_ubrowser_act", {
       filter: { type: "string", enum: ["all", "errors", "net", "console"], default: "all", description: "p/ console: all|errors|net|console" },
       limit: { type: "number", default: 30, description: "p/ console: máx entradas (1-120)" },
       clear: { type: "boolean", description: "p/ console: limpa o buffer após ler" },
-      pages: { type: "number", default: 5, description: "páginas de rolagem p/ scan (listas virtualizadas; 1-5)" },
+      pages: { type: "number", default: 10, description: "páginas de rolagem p/ scan (listas virtualizadas; 1-20)" },
       offset: { type: "number", description: "p/ scan: pula N itens (paginação via nextOffset)" },
       durationMs: { type: "number", description: "duração do movimento do cursor; janela do catchup quando action=catchup" },
       intervalMs: { type: "number", description: "intervalo entre amostras do catchup (ms)" },
@@ -820,11 +820,12 @@ reg("cv_ubrowser_act", {
       if (a.action === "scan") {
         // scan = snapshot que já rola listas virtuais (5 páginas) numa só ida. O tab.scan
         // antigo repetia a varredura 4× (8s → ~2s) e devolvia menos itens.
-        const pages = Math.min(Math.max(Number(a.pages) || 5, 1), 5);
+        const pages = Math.min(Math.max(Number(a.pages) || 10, 1), 20);
         const snap = await ubSend("tab.snapshot", { tabId: a.tabId, tab: a.tab, max: 120, pages, ...(a.container ? { container: a.container } : {}) }, ubTo, tgt.id);
         if (snap && snap.ok && snap.data && Array.isArray(snap.data.items) && snap.data.items.length) {
           const items = snap.data.items.map((it, i) => ({ ref: it.ref ?? i, ...it }));
-          r = { ok: true, data: { items, pages, reachedEnd: items.length < 120 } };
+          const end = !!(snap.data.overlay && snap.data.overlay.virtualEnd);
+          r = { ok: true, data: { items, pages, reachedEnd: end } };
         } else r = await ubSend("tab.scan", { ...a }, ubTo, tgt.id); // fallback: página sem itens p/ snapshot
       } else r = await ubSend(map[a.action], { ...a }, ubTo, tgt.id);
     }
