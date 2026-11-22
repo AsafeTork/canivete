@@ -47,7 +47,9 @@ const t = (label, cond, extra = "") => {
     controlsTotal: 2,
   };
   const d = ubOverviewSlim(raw);
-  t("overview compact corta headings", d.headings.length === 30 && d.headingsOmitted === 10, `h=${d.headings.length} omit=${d.headingsOmitted}`);
+  t("overview compact corta headings", d.headings.length === 15 && d.headingsOmitted === 25, `h=${d.headings.length} omit=${d.headingsOmitted}`);
+  const d30 = ubOverviewSlim(raw, { headingsMax: 30 });
+  t("overview headingsMax respeita override", d30.headings.length === 30 && d30.headingsOmitted === 10, `h=${d30.headings.length} omit=${d30.headingsOmitted}`);
   t("overview compact não repete text=NAME", d.controls[0].sel === "text=Entrar" && d.controls[0].name === undefined, JSON.stringify(d.controls[0]));
   t("overview compact omite state vazio", !("state" in d.controls[0]));
   t("overview compact omite type redundante de button", !("type" in d.controls[0]));

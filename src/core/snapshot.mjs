@@ -84,14 +84,14 @@ export function snapDedupLinks(els) {
 // Overview compacto (default): o payload da extensão trazia selector+name repetidos,
 // headings com selector e href em cada link — 12,3KB p/ 35 controles (~3k tokens).
 // Mantém o que decide a ação (sel/name/role/type/state) e corta o resto; detail:"full" = legado.
-export function ubOverviewSlim(d, { detail = "compact", headingsMax = 30 } = {}) {
+export function ubOverviewSlim(d, { detail = "compact", headingsMax = 15 } = {}) {
   try {
     if (detail === "full") return d;
     const src = d && typeof d === "object" ? d : {};
     const page = src.page && typeof src.page === "object" ? src.page : {};
     const slimPage = { title: page.title || "", url: page.url || "", ...(page.readyState && page.readyState !== "complete" ? { readyState: page.readyState } : {}) };
     const heads = Array.isArray(src.headings) ? src.headings : [];
-    const capH = Math.max(0, Math.floor(Number(headingsMax) || 0)) || 30;
+    const capH = Math.max(0, Math.floor(Number(headingsMax) || 0)) || 15;
     // tuplas [nível, texto]: 30 títulos caem de ~990B p/ ~600B (chaves repetidas somem).
     const headings = heads.slice(0, capH).map((h) => [Number(h?.level) || 0, String(h?.text || "").slice(0, 100)]);
     const controls = (Array.isArray(src.controls) ? src.controls : []).map((c) => {

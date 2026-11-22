@@ -254,8 +254,8 @@ reg("cv_ubrowser_tabs", {
 
 reg("cv_ubrowser_overview", {
   description: "Mapa compacto da aba: estrutura, títulos, formulários e controles com seletores prontos para agir. Reduz chamadas de reconhecimento; use snapshot/read só para aprofundar a região. detail=\"compact\" (padrão) corta campos redundantes (~60% menos tokens); detail=\"full\" traz o payload cru.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL" }, max: { type: "number", default: 35, description: "quantidade de controles por página" }, offset: { type: "number", default: 0, description: "paginação de controles (use nextOffset)" }, order: { type: "string", enum: ["action", "dom"], default: "action", description: "action=campos/botões antes de links (default); dom=ordem da página" }, detail: { type: "string", enum: ["compact", "full"], default: "compact", description: "compact=corta campos redundantes (default); full=payload cru" }, headingsMax: { type: "number", default: 30, description: "máximo de títulos no compact (default 30; use full p/ todos)" }, profile: { type: "string" } }, required: [] },
-  run: async ({ tabId, tab, max = 35, offset = 0, order = "action", detail = "compact", headingsMax = 30, profile } = {}) => {
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL" }, max: { type: "number", default: 35, description: "quantidade de controles por página" }, offset: { type: "number", default: 0, description: "paginação de controles (use nextOffset)" }, order: { type: "string", enum: ["action", "dom"], default: "action", description: "action=campos/botões antes de links (default); dom=ordem da página" }, detail: { type: "string", enum: ["compact", "full"], default: "compact", description: "compact=corta campos redundantes (default); full=payload cru" }, headingsMax: { type: "number", default: 15, description: "máximo de títulos no compact (default 15; use full p/ todos)" }, profile: { type: "string" } }, required: [] },
+  run: async ({ tabId, tab, max = 35, offset = 0, order = "action", detail = "compact", headingsMax = 15, profile } = {}) => {
     const t0 = Date.now(), tgt = ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const tBridge = Date.now();
@@ -532,8 +532,18 @@ function ubTabsCompact(tabs, { singleProfile = false } = {}) {
     if (same("profile") !== undefined) for (const t of out) delete t.profile;
     if (same("label") !== undefined) for (const t of out) delete t.label;
   }
-  const win = same("window");
+  const uniform = (key) => {
+    if (!out.length) return undefined;
+    const v = out[0][key];
+    if (v === undefined) return undefined;
+    return out.every((t) => t[key] === v) ? v : undefined;
+  };
+  const win = uniform("window");
   if (win !== undefined) { for (const t of out) delete t.window; hoist.window = win; }
+  const grp = uniform("group");
+  if (grp !== undefined) { for (const t of out) delete t.group; hoist.group = grp; }
+  const owned = uniform("agentOwned");
+  if (owned !== undefined) { for (const t of out) delete t.agentOwned; hoist.agentOwned = owned; }
   return { tabs: out, hoist };
 }
 const ubProfTag = (e) => {
