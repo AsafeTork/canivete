@@ -185,13 +185,12 @@ reg("cv_ubrowser_status", {
     const hints = [];
     if (oldVer) hints.push(`extensão rodando ${oldVer} (< ${UB_VER_ACT}) — tab.activate indisponível: {action:"reload-extension"} aplica o código novo, depois re-status (data.version)`);
     if (conns.length > 1) hints.push(`${conns.length} perfis conectados — alvo por profile:"<clientId>" (extensions[].id), trecho de label/URL; omitir = ext mais recente`);
-    if (conns.length === 1) hints.push("1 perfil só — omita profile (ou passe o clientId exato)");
     if (noInfo) hints.push("hello do perfil ausente após restart (label/versão/tabs) — {action:\"reload-extension\"} reenvia sem fechar abas");
     else if (noLabel) hints.push("profileLabel ausente — configure o nome do perfil no popup da extensão p/ alvo por nome legível");
     // status enxuto: o info cru da extensão (UA/tabUrls/accessMode…) duplicava dados e inflava
     // a resposta em ~3x. Fica o que decide roteamento/versão; o resto vive em cv_owner_alerts/act.
     const slimExts = exts.map((e) => ({ id: e.id, ...(e.profileLabel ? { label: e.profileLabel } : {}), connected: !!e.connected, lastPollAgoMs: e.lastPollAgoMs, queued: e.queued, ...(e.info?.bg ? { version: String(e.info.bg) } : {}), ...(e.info?.tabs != null ? { tabs: e.info.tabs } : {}) }));
-    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${ubPlural(conns.length, "perfil conectado", "perfis conectados")}${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: cv_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), extensions: slimExts, bridge: { port: st.port, queued: st.queued, pending: st.pending, lastPollAgoMs: st.lastPollAgoMs, ...(st.expiredDropped ? { expiredDropped: st.expiredDropped } : {}) } }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "cv_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [] });
+    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${ubPlural(conns.length, "perfil conectado", "perfis conectados")}${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: cv_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), extensions: slimExts, bridge: { port: st.port, ...(st.queued ? { queued: st.queued } : {}), ...(st.pending ? { pending: st.pending } : {}), ...(conns.length ? {} : { lastPollAgoMs: st.lastPollAgoMs }), ...(st.expiredDropped ? { expiredDropped: st.expiredDropped } : {}) } }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "cv_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [] });
   },
 });
 
@@ -203,7 +202,7 @@ reg("cv_ubrowser_alerts", {
   run: async ({ since } = {}) => {
     const t0 = Date.now();
     const list = ubAlertsList(since);
-    if (!list.length) return devOut({ summary: `sem alertas${since ? " desde " + String(since) : " desde o boot do daemon"} — aba(s) sem erros de console/rede empurrados`, data: { alerts: [], drained: true }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    if (!list.length) return devOut({ summary: `sem alertas${since ? " desde " + String(since) : " desde o boot do daemon"} — aba(s) sem erros de console/rede empurrados`, data: { drained: true }, telemetry: { execution_time_ms: Date.now() - t0 } });
     const err = list.filter((a) => a.kind !== "net").length, net = list.length - err;
     return devOut({ summary: `${ubPlural(list.length, "alerta", "alertas")}${since ? " desde " + String(since) : ""} (${err} console · ${net} rede) — mais novo: ${list[list.length - 1].text.slice(0, 90)}`, data: { alerts: list, drained: true }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_read", reason: "Ver a aba que errou (tab = trecho do url dos alertas)" }] });
   },
@@ -234,9 +233,10 @@ reg("cv_ubrowser_tabs", {
       });
       for (const b of bads) profiles.push({ id: b.e.id, ...(b.e.profileLabel ? { label: b.e.profileLabel } : {}), error: b.r.__offline ? "offline" : "timeout" });
       const f = ubTabsFilterMax(tabs, filter, max, offset);
+      const c = ubTabsCompact(f.tabs, { singleProfile: goods.length <= 1 });
       const omitNote = f.omitted ? ` (${f.omitted} restantes; offset=${offset + f.tabs.length} para continuar)` : "";
       const badNote = bads.length ? ` (${bads.length} perfil sem resposta: ${bads.map((b) => b.e.profileLabel || b.e.id).join(", ")})` : "";
-      return devOut({ summary: `${ubPlural(f.tabs.length, "aba", "abas")} em ${ubPlural(profiles.length, "perfil", "perfis")}${omitNote}${badNote}`, data: { tabs: f.tabs, profiles, total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+      return devOut({ summary: `${ubPlural(f.tabs.length, "aba", "abas")} em ${ubPlural(profiles.length, "perfil", "perfis")}${omitNote}${badNote}`, data: { tabs: c.tabs, ...c.hoist, profiles, total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const r = res.single;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
@@ -246,8 +246,9 @@ reg("cv_ubrowser_tabs", {
     const ext0 = res.exts[0] || null;
     const slim = (Array.isArray(tabs) ? tabs : []).map((t) => ubTabsSlim(t, ubProfTag(ext0)));
     const f = ubTabsFilterMax(slim, filter, max, offset);
+    const c = ubTabsCompact(f.tabs, { singleProfile: true });
     const omitNote = f.omitted ? ` (${f.omitted} restantes; offset=${offset + f.tabs.length} para continuar)` : "";
-    return devOut({ summary: `${ubPlural(f.tabs.length, "aba", "abas")} em ${wins.length ? ubPlural(wins.length, "janela", "janelas") : "? janelas"}${omitNote}`, data: { tabs: f.tabs, profiles: ext0 ? [{ id: ext0.id, ...(ext0.profileLabel ? { label: ext0.profileLabel } : {}), windows: wins.length, tabs: (Array.isArray(tabs) ? tabs : []).length }] : [], total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
+    return devOut({ summary: `${ubPlural(f.tabs.length, "aba", "abas")} em ${wins.length ? ubPlural(wins.length, "janela", "janelas") : "? janelas"}${omitNote}`, data: { tabs: c.tabs, ...c.hoist, profiles: ext0 ? [{ id: ext0.id, ...(ext0.profileLabel ? { label: ext0.profileLabel } : {}), windows: wins.length, tabs: (Array.isArray(tabs) ? tabs : []).length }] : [], total: f.total, offset, ...(f.omitted ? { omitted: f.omitted, nextOffset: offset + f.tabs.length } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 
@@ -291,10 +292,13 @@ reg("cv_ubrowser_read", {
     const omitNote = omitted ? ` (+${omitted} links omitidos)` : "";
     const warnNote = r.data.warn ? ` | ${r.data.warn}` : "";
     const kindNote = outline ? `outline ${r.data.stats?.chars ?? body.length} chars` : (r.data.markdown ? `destilado ${r.data.stats?.chars ?? body.length} chars` : "");
-    const nxt = [];
-    if (omitted > 0) nxt.push({ tool: "cv_ubrowser_read", reason: "mode:\"raw\" traz o texto integral e links completos" });
-    nxt.push({ tool: "cv_ubrowser_snapshot", reason: "Mapear cliques" });
-    return devOut({ summary: `${r.data.title} — ${r.data.url}${kindNote ? ` (${kindNote})` : ""}${omitNote}${warnNote}${ubAlertsHint()}`, data: { title: r.data.title, url: r.data.url, text: trimOut(body, outline ? 3000 : 6000), links, linksOmitted: omitted, warn: r.data.warn || undefined, stats: r.data.stats, ...(outline ? { outline: true } : {}) }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: nxt });
+    // "mapear cliques" é o óbvio da descrição; só orienta quando há links truncados.
+    const nxt = omitted > 0 ? [{ tool: "cv_ubrowser_read", reason: "mode:\"raw\" traz o texto integral e links completos" }] : [];
+    // stats: ms/total_ms são ruído (bridge_ms já cobre); chars/linhas/descartadas dizem a qualidade.
+    const st = r.data.stats && typeof r.data.stats === "object"
+      ? { chars: r.data.stats.chars, linhas: r.data.stats.linhas, descartadas: r.data.stats.descartadas, ...(r.data.stats.settle_ms ? { settle_ms: r.data.stats.settle_ms } : {}) }
+      : undefined;
+    return devOut({ summary: `${r.data.title} — ${r.data.url}${kindNote ? ` (${kindNote})` : ""}${omitNote}${warnNote}${ubAlertsHint()}`, data: { title: r.data.title, url: r.data.url, text: trimOut(body, outline ? 3000 : 6000), ...(links.length ? { links } : {}), ...(omitted ? { linksOmitted: omitted } : {}), ...(r.data.warn ? { warn: r.data.warn } : {}), ...(st ? { stats: st } : {}), ...(outline ? { outline: true } : {}) }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: nxt });
   },
 });
 
@@ -491,13 +495,29 @@ function ubTabsSlim(t, prof) {
       id: t.id, window: t.windowId ?? t.window ?? t.win,
       ...(t.active ? { active: true } : {}),
       ...(t.incognito ? { incognito: true } : {}),
-      ...(t.groupId !== undefined ? { groupId: t.groupId } : {}),
       ...(t.group ? { group: t.group } : {}),
       ...(t.agentOwned ? { agentOwned: true } : {}),
       title: String(t.title || "").slice(0, 70), url: t.url,
       ...(p.id ? { profile: p.id } : {}), ...(p.label ? { label: p.label } : {}),
     };
   } catch { return { id: t && t.id, title: "", url: "" }; }
+}
+// profile/label/window repetidos em cada aba custam ~40% do payload em listas grandes.
+// Uniforme → sobe uma vez (window) ou some (profile/label, já no array profiles).
+function ubTabsCompact(tabs, { singleProfile = false } = {}) {
+  const out = tabs.map((t) => ({ ...t }));
+  const hoist = {};
+  const same = (key) => {
+    const vals = new Set(out.map((t) => t[key]).filter((v) => v !== undefined));
+    return vals.size === 1 ? [...vals][0] : undefined;
+  };
+  if (singleProfile) {
+    if (same("profile") !== undefined) for (const t of out) delete t.profile;
+    if (same("label") !== undefined) for (const t of out) delete t.label;
+  }
+  const win = same("window");
+  if (win !== undefined) { for (const t of out) delete t.window; hoist.window = win; }
+  return { tabs: out, hoist };
 }
 const ubProfTag = (e) => {
   const x = e || {};
@@ -540,7 +560,7 @@ reg("cv_ubrowser_snapshot", {
     const elements = Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.items) ? r.data.items : []);
     const overlay = (!Array.isArray(r.data) && r.data && typeof r.data.overlay === "object" && r.data.overlay) ? r.data.overlay : null;
     const overlayNote = (overlay && overlay.open) ? ` | OVERLAY OPEN (${overlay.kind || "?"}${overlay.label ? ` "${String(overlay.label).slice(0, 60)}"` : ""}) — página bloqueada atrás` : "";
-    const overlayData = overlay ? { overlay } : {};
+    const overlayData = overlay && overlay.open ? { overlay } : {};
     const ranked = ubSnapRank(elements);
     const kept = [];
     let junk = 0;
@@ -593,7 +613,7 @@ reg("cv_ubrowser_snapshot", {
     const total = dd.elements.length;
     const paged = dd.elements.slice(start, start + cappedMax);
     const nextOffset = start + paged.length < total ? start + paged.length : null;
-    const pageNote = total > paged.length || start > 0 ? ` (${start + 1}-${start + paged.length} de ${total}${nextOffset != null ? `; nextOffset=${nextOffset}` : ""})` : "";
+    const pageNote = total > paged.length || start > 0 ? ` (${start + 1}-${start + paged.length}${nextOffset != null ? `; nextOffset=${nextOffset}` : ""})` : "";
     const pageData = { total, offset: start, ...(nextOffset != null ? { nextOffset } : {}) };
     if (compact) {
       // #42: text||name — img com alt/src ganha nome na extensão; compact não o esconde.

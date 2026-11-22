@@ -124,10 +124,11 @@ export function ubOverviewSlim(d, { detail = "compact", headingsMax = 30 } = {})
       forms,
       controls,
       controlsTotal: Number(src.controlsTotal) || controls.length,
-      controlsOffset: Number(src.controlsOffset) || 0,
-      controlsOmitted: Number(src.controlsOmitted) || 0,
+      // offset 0 é o caso comum; controlsOmitted é derivável de total-offset-length.
+      ...(Number(src.controlsOffset) ? { controlsOffset: Number(src.controlsOffset) } : {}),
       ...(src.nextOffset != null ? { nextOffset: src.nextOffset } : {}),
-      ...(src.overlays ? { overlays: src.overlays } : {}),
+      // overlay fechado é ruído fixo (~45B/call): só vai quando há camada bloqueando.
+      ...(src.overlays && src.overlays.open ? { overlays: src.overlays } : {}),
     };
   } catch { return d; }
 }

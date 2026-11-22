@@ -1808,6 +1808,10 @@ async function ubSnapshotVirtualized({ pages = 2, container = null, limit = 120,
   if (!fast && (targets.length || document.readyState !== "complete")) {
     try { await ubSettle({ timeout: 1200, quiet: 200 }); } catch {}
   }
+  // 1ª coleta SEMPRE (topo da página). Sem ela, página curta/não rolável devolvia 0
+  // elementos (regressão real: snapshot vazio num HTML de 4 linhas) e lista virtual
+  // perdia a primeira dobra, porque o loop rolava antes de coletar.
+  push(ubSnapshotCollectRaw(lim, false));
   if (!targets.length) {
     // página não rolável: não há conteúdo lazy abaixo da dobra — pula o scroll de 200ms.
     // Se a 1ª coleta já encheu o pool, rolar não acrescenta nada: pula também.

@@ -93,7 +93,10 @@ for (const [name, a, label] of calls) {
   if (only && !name.includes(only) && label !== only) continue;
   const samples = [];
   for (let i = 0; i < runs; i++) {
-    const r = await call(name, name === "cv_ubrowser_status" || name === "cv_ubrowser_tabs" ? a : { ...(out.tabId ? { tabId: out.tabId } : {}), ...a });
+    // _bench=i evita o guard de repetição (mesma tool+args+resultado vira "REPETIÇÃO 3×"
+    // a partir da 3ª chamada) — sem isso a mediana mede o atalho, não o payload real.
+    const base = name === "cv_ubrowser_status" || name === "cv_ubrowser_tabs" ? a : { ...(out.tabId ? { tabId: out.tabId } : {}), ...a };
+    const r = await call(name, { ...base, _bench: i });
     samples.push(r);
     if (r.status === "error" && /offline|EXTENS/i.test(r.summary)) break;
   }
