@@ -191,7 +191,7 @@ reg("cv_ubrowser_status", {
     // status enxuto: o info cru da extensão (UA/tabUrls/accessMode…) duplicava dados e inflava
     // a resposta em ~3x. Fica o que decide roteamento/versão; o resto vive em cv_owner_alerts/act.
     const slimExts = exts.map((e) => ({ id: e.id, ...(e.profileLabel ? { label: e.profileLabel } : {}), connected: !!e.connected, lastPollAgoMs: e.lastPollAgoMs, queued: e.queued, ...(e.info?.bg ? { version: String(e.info.bg) } : {}), ...(e.info?.tabs != null ? { tabs: e.info.tabs } : {}) }));
-    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${ubPlural(conns.length, "perfil conectado", "perfis conectados")}${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: cv_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), extensions: slimExts, bridge: { port: st.port, queued: st.queued, pending: st.pending, lastPollAgoMs: st.lastPollAgoMs, ...(st.expiredDropped ? { expiredDropped: st.expiredDropped } : {}) } }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "cv_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [{ tool: "cv_ubrowser_tabs", reason: conns.length > 1 ? "Abas vêm consolidadas dos perfis — aponte profile ao agir" : "Listar abas do dono" }] });
+    return devOut({ status: c ? "success" : "error", summary: c ? `UBrowser pronto — ${ubPlural(conns.length, "perfil conectado", "perfis conectados")}${launchNote}` : `EXTENSÃO OFFLINE — abra sozinho: cv_ubrowser_status {open:true} (Chrome em qualquer perfil) | dono: janela NORMAL + popup ATIVO`, data: { connected: c, ...(version ? { version } : {}), ...(hints.length ? { hint: hints.join(" | ") } : {}), extensions: slimExts, bridge: { port: st.port, queued: st.queued, pending: st.pending, lastPollAgoMs: st.lastPollAgoMs, ...(st.expiredDropped ? { expiredDropped: st.expiredDropped } : {}) } }, telemetry: { execution_time_ms: Date.now() - t0 }, next: !c ? [{ tool: "cv_ubrowser_status", reason: "Re-checar com open:true — o agente abre o Chrome sozinho" }] : [] });
   },
 });
 
@@ -265,7 +265,7 @@ reg("cv_ubrowser_overview", {
     const d = ubOverviewSlim(r.data || {}, { detail, headingsMax });
     const hOmit = d.headingsOmitted ? ` (+${d.headingsOmitted} títulos omitidos)` : "";
     const nextNote = d.nextOffset != null ? ` (mais: offset=${d.nextOffset})` : "";
-    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos${hOmit} · ${ubPlural(d.forms?.length || 0, "formulário", "formulários")}${nextNote}${detail === "compact" ? "" : " [full]"}`, data: d, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: [{ tool: "cv_owner_act", reason: "Use sel (ou name) do overview para agir; detail:\"full\" se precisar de href/selector de título" }] });
+    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos${hOmit} · ${ubPlural(d.forms?.length || 0, "formulário", "formulários")}${nextNote}${detail === "compact" ? "" : " [full]"}`, data: d, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs } });
   },
 });
 
@@ -582,7 +582,7 @@ reg("cv_ubrowser_snapshot", {
         const tag = `[${el.ref ?? i}] ${el.role || el.tag} "${(el.text || el.name || "").slice(0, 80)}"`;
         return hitSet.has(i) ? `→ ${tag}  ← MATCH` : `  ${tag}`;
       });
-      return devOut({ summary: `find "${find}": ${ubPlural(hits.length, "match", "matches")} em ${ubPlural(pool.length, "elemento", "elementos")}${omitNote}${overlayNote}${focusNote}`, data: { find, found: true, matches: hits.map((i) => pool[i].ref ?? i), elements: [...win].sort((a, b) => a - b).map((i) => slimEl(pool[i])), ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N do match" }] });
+      return devOut({ summary: `find "${find}": ${ubPlural(hits.length, "match", "matches")} em ${ubPlural(pool.length, "elemento", "elementos")}${omitNote}${overlayNote}${focusNote}`, data: { find, found: true, matches: hits.map((i) => pool[i].ref ?? i), elements: [...win].sort((a, b) => a - b).map((i) => slimEl(pool[i])), ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     const folded = ubSnapFold(pool);
     const foldedNote = folded.folded ? ` (dobra: ${pool.length}→${folded.elements.length})` : "";
@@ -598,11 +598,11 @@ reg("cv_ubrowser_snapshot", {
     if (compact) {
       // #42: text||name — img com alt/src ganha nome na extensão; compact não o esconde.
       const compactOut = paged.map(slimEl);
-      return devOut({ summary: `${compactOut.length}/${total} ${total === 1 ? "elemento" : "elementos"} (compact)${pageNote}${omitNote}${foldedNote}${dupeNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
+      return devOut({ summary: `${compactOut.length}/${total} ${total === 1 ? "elemento" : "elementos"} (compact)${pageNote}${omitNote}${foldedNote}${dupeNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: compactOut, compact: true, omitted: junk, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs } });
     }
     const ac = ubSnapAutoCompactFields(paged);
     const autoNote = ac.autoCompact ? ` (auto-compact campos: -${ac.dropped.join(",")})` : "";
-    return devOut({ summary: `${ac.elements.length}/${total} ${total === 1 ? "elemento" : "elementos"}${ac.autoCompact ? " (compact-campos)" : ""}${pageNote}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_act", reason: "Agir com ref:N ou selector" }] });
+    return devOut({ summary: `${ac.elements.length}/${total} ${total === 1 ? "elemento" : "elementos"}${ac.autoCompact ? " (compact-campos)" : ""}${pageNote}${omitNote}${foldedNote}${dupeNote}${autoNote}${overlayNote}${focusNote}${ubAlertsHint()}`, data: { elements: ac.elements, compact: ac.autoCompact, compactFields: ac.dropped, omitted: junk, bytes: ac.bytes, ...pageData, ...overlayData }, telemetry: { execution_time_ms: Date.now() - t0 } });
   },
 });
 
@@ -795,7 +795,7 @@ reg("cv_ubrowser_act", {
       // v14: undefined (rodou, sem valor) ≠ null/falha de transporte — mensagens distintas.
       if (!a.selector && ubEvalNullKind(d) === "undefined") return devOut({ status: "warn", summary: `evaluate executou e retornou undefined — termine o JS com o valor desejado | ${UB_FB}`, data: { action: a.action, risk, value: null, undefined: true, cspBlocked: false, selectorFound: selFound, note: d.note || undefined }, telemetry: { execution_time_ms: Date.now() - t0 } });
       if (!a.selector && value === null) return devOut({ status: "warn", summary: `evaluate retornou null${d.note ? ` — ${String(d.note).slice(0, 160)}` : " — termine JS com valor + confira cv_ubrowser_snapshot/read"} | ${UB_FB}`, data: { action: a.action, risk, value: null, cspBlocked: false, selectorFound: selFound, note: d.note || undefined }, telemetry: { execution_time_ms: Date.now() - t0 } });
-      return devOut({ summary: "[evaluate] ok", data: { action: a.action, risk, value, cspBlocked: false, selectorFound: selFound }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_shot", reason: "Confirmar visualmente" }] });
+      return devOut({ summary: "[evaluate] ok", data: { action: a.action, risk, value, cspBlocked: false, selectorFound: selFound }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }
     if (a.action === "monstate") {
       // estado do mon-hook (v/quiet/count/hasFlag) — func-based, imune à CSP da página.
