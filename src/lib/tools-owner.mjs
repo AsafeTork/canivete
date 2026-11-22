@@ -617,7 +617,6 @@ reg("cv_ubrowser_act", {
       ref: { type: "number", description: "ref do snapshot (resolve p/ selector via cache; expira se navegar — re-snapshot)" },
       name: { type: "string", description: "atributo p/ attr (href/src/value/text/html)" },
       container: { type: "string", description: "selector do container p/ scan/scroll (listas virtualizadas, opcional)" },
-      confirmLogin: { type: "boolean", description: "(legado, ignorado) gate de senha removido a pedido do dono" },
       value: { type: "string", description: "valor p/ select (match por texto ou value da option)" },
       timeoutMs: { type: "number", description: "tempo de espera para waittext/evaluate" },
       steps: { type: "array", description: "p/ flow: sequência de comandos [{cmd, ...args}] em uma ida-volta", items: { type: "object" } },
@@ -643,6 +642,7 @@ reg("cv_ubrowser_act", {
       limit: { type: "number", default: 30, description: "p/ console: máx entradas (1-120)" },
       clear: { type: "boolean", description: "p/ console: limpa o buffer após ler" },
       pages: { type: "number", default: 4, description: "páginas de rolagem p/ scan (listas virtualizadas)" },
+      offset: { type: "number", description: "p/ scan: pula N itens (paginação via nextOffset)" },
       durationMs: { type: "number", description: "duração do movimento do cursor; janela do catchup quando action=catchup" },
       intervalMs: { type: "number", description: "intervalo entre amostras do catchup (ms)" },
       urlPrefix: { type: "string", description: "prefixo para fechar guias correspondentes; operação em lote exige confirm" },
@@ -872,6 +872,29 @@ reg("cv_ubrowser_act", {
       }
       const where = d.url ? String(d.url).slice(0, 80) : (a.tabId ? `tabId ${a.tabId}` : "aba ativa");
       return devOut({ summary: `[close risk=${risk}] ok — fechei ${where}`, data: { action: "close", risk, closed: d.closed ?? 1, tabId: d.tabId, url: d.url, title: d.title }, telemetry: { execution_time_ms: Date.now() - t0 }, next: [{ tool: "cv_ubrowser_tabs", reason: "Conferir abas restantes" }] });
+    }
+    if (a.action === "scan") {
+      // scan coleta até 150 itens de lista virtualizada; sem este handler o payload era
+      // descartado e a resposta virava só "ok". Compacto + paginação: o agente age por sel.
+      const all = Array.isArray(d.items) ? d.items : [];
+      const total = all.length;
+      const off = Math.max(0, Math.floor(Number(a.offset) || 0));
+      const cap = Math.min(Math.max(Number(a.limit) || 30, 1), 150);
+      const page = all.slice(off, off + cap);
+      const nextOffset = off + page.length < total ? off + page.length : null;
+      const items = page.map(({ tag, role, text, name, selector, layer, layerLabel }) => ({
+        sel: String(selector || "").slice(0, 120),
+        text: String(text || name || "").slice(0, 80),
+        ...(role ? { role } : {}),
+        ...(tag && tag !== role ? { tag } : {}),
+        ...(layer ? { layer, ...(layerLabel ? { layerLabel } : {}) } : {}),
+      }));
+      return devOut({
+        summary: `[scan] ${page.length}/${total} itens em ${d.pages ?? "?"} página(s)${nextOffset == null && d.reachedEnd ? " (fim da lista)" : ""}${nextOffset != null ? ` — mais: offset=${nextOffset}` : ""}`,
+        data: { action: "scan", items, total, offset: off, ...(nextOffset != null ? { nextOffset } : {}), pages: d.pages ?? null, reachedEnd: !!d.reachedEnd },
+        telemetry: { execution_time_ms: Date.now() - t0 },
+        next: nextOffset != null ? [{ tool: "cv_ubrowser_act", reason: `scan offset=${nextOffset} p/ continuar a lista` }] : [],
+      });
     }
     const afterUrl = d.url ?? a.url ?? null;
     const afterTitle = d.title ?? null;
