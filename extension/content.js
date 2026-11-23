@@ -2900,12 +2900,27 @@ function ubPageOverview(max = 35, offset = 0, order = "action", goal = "") {
   const rawControls = ubShadowQueryAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[contenteditable="true"]').filter(visible);
   if (String(order || "").toLowerCase() !== "dom") rawControls.sort((x, y) => ctrlRank(x) - ctrlRank(y));
   const contextCache = new WeakMap();
+  const headingLike = (n) => {
+    try {
+      const t = n && n.tagName;
+      return t === "H1" || t === "H2" || t === "H3" || !!(n.getAttribute && n.getAttribute("role") === "heading");
+    } catch { return false; }
+  };
   const contextOf = (el) => {
     try {
       const box = el.closest("fieldset,form,section,article,nav");
       if (!box) return "";
       if (contextCache.has(box)) return contextCache.get(box);
-      const value = String(box.getAttribute("aria-label") || box.querySelector("legend,h1,h2,h3,[role=heading]")?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      const al = String(box.getAttribute("aria-label") || "").trim();
+      let h = null;
+      if (!al) {
+        // título no topo do card é o caso comum: firstElementChild evita o querySelector
+        // composto, que custava 80ms em 2.200 cards (o seletor [role=heading] domina).
+        const f = box.firstElementChild;
+        if (headingLike(f)) h = f;
+        else { try { h = box.querySelector("legend,h1,h2,h3"); } catch {} }
+      }
+      const value = String(al || (h && h.innerText) || "").replace(/\s+/g, " ").trim().slice(0, 80);
       contextCache.set(box, value);
       return value;
     } catch { return ""; }
