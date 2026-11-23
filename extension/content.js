@@ -542,7 +542,7 @@ async function findElResilient(sel) {
 // desde o document_start) + posição salva em chrome.storage.session → sobrevive a F5/navegação.
 var ubCursor = (typeof ubCursor !== "undefined" && ubCursor) || null, ubCX = 0, ubCY = 0; // var: preserva overlay em reinjeção
 var UB_VERIFY = (typeof UB_VERIFY !== "undefined" && UB_VERIFY) || null; // var: janela de verificação p/ clique trusted (verify_arm/stop)
-var UB_V = "24"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
+var UB_V = "28"; // anti-dupla-injeção: var + listener só-responde-mais-novo (hot-update seguro)
 var __ubN = (typeof __ubN === "number" ? __ubN + 1 : 1); // contador de injeções (hot-update seguro)
 globalThis.__ubLatestN = __ubN;
 function ubShowCursor() {
@@ -1192,6 +1192,20 @@ function ubAccessibleName(el, text) {
       if (alt && String(alt).trim()) return String(alt).replace(/\s+/g, " ").trim().slice(0, 60);
     }
   } catch {}
+  // label associado (wrapping ou for=) é o nome acessível de campo de formulário — antes
+  // o value preenchido virava "nome" e um input só com <label>Email> ficava sem nome.
+  try {
+    const tag = (el.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "select" || tag === "textarea") {
+      const lab = (el.labels && el.labels[0]) || (el.closest && el.closest("label")) || null;
+      if (lab) {
+        const clone = lab.cloneNode(true);
+        try { clone.querySelectorAll("input,select,textarea,button,option").forEach((n) => n.remove()); } catch {}
+        const clean = String(clone.textContent || "").replace(/\s+/g, " ").trim();
+        if (clean) return clean.slice(0, 60);
+      }
+    }
+  } catch {}
   if (text && String(text).trim()) return String(text).slice(0, 60);
   try {
     const v = el.value;
@@ -1610,7 +1624,16 @@ function ubClonePierced(node, depth = 0) {
 // o layout p/ ubFillBoxLazy — o find usa isto só no punhado de matches ±3.
 function ubSnapshotItem(el, needBox = true) {
   const tag = el.tagName.toLowerCase();
-  const text = (((el.textContent || el.value || el.placeholder || (el.getAttribute && el.getAttribute("aria-label")) || "") + "")
+  // campo: valor atual (value) > texto; select: opção selecionada, não todas as opções
+  // ("FreePro" concatenado). Botão/link seguem textContent primeiro.
+  const rawText = (() => {
+    try {
+      if (tag === "select") return (el.selectedOptions && el.selectedOptions[0] && el.selectedOptions[0].textContent) || el.value || "";
+      if (tag === "input" || tag === "textarea") return el.value || el.textContent || "";
+      return el.textContent || el.value || "";
+    } catch { return ""; }
+  })();
+  const text = (((rawText || el.placeholder || (el.getAttribute && el.getAttribute("aria-label")) || "") + "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 60));
@@ -2857,7 +2880,7 @@ function ubElemPickStart(opts) {
     return { picker: false, error: String(e && e.message || e).slice(0, 120) };
   }
 }
-function ubPageOverview(max = 35, offset = 0, order = "action") {
+function ubPageOverview(max = 35, offset = 0, order = "action", goal = "") {
   const visible = (el) => { try { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden" && Number(s.opacity) !== 0; } catch { return false; } };
   const textOf = (el, n = 100) => String(el?.innerText || el?.value || el?.getAttribute?.("aria-label") || el?.getAttribute?.("title") || "").replace(/\s+/g, " ").trim().slice(0, n);
   const headings = [...document.querySelectorAll("h1,h2,h3,[role=heading]")].filter(visible).map((el) => ({ level: Number(el.getAttribute("aria-level")) || Number(el.tagName.slice(1)) || 0, text: textOf(el, 140), selector: cssPath(el) }));
@@ -2875,18 +2898,49 @@ function ubPageOverview(max = 35, offset = 0, order = "action") {
   };
   const rawControls = ubShadowQueryAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[contenteditable="true"]').filter(visible);
   if (String(order || "").toLowerCase() !== "dom") rawControls.sort((x, y) => ctrlRank(x) - ctrlRank(y));
+  const contextCache = new WeakMap();
+  const contextOf = (el) => {
+    try {
+      const box = el.closest("fieldset,form,section,article,nav");
+      if (!box) return "";
+      if (contextCache.has(box)) return contextCache.get(box);
+      const value = String(box.getAttribute("aria-label") || box.querySelector("legend,h1,h2,h3,[role=heading]")?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      contextCache.set(box, value);
+      return value;
+    } catch { return ""; }
+  };
   const controls = rawControls.map((el) => {
     const r = el.getBoundingClientRect(), name = ubAccessibleName(el, textOf(el, 100));
-    return { tag: el.tagName.toLowerCase(), role: ubAriaRole(el), name: String(name || textOf(el, 100)).slice(0, 100), type: el.type || "", state: ubElementState(el), selector: cssPath(el), inViewport: r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth, ...(el.href ? { href: String(el.href).slice(0, 240) } : {}) };
+    return { tag: el.tagName.toLowerCase(), role: ubAriaRole(el), name: String(name || textOf(el, 100)).slice(0, 100), type: el.type || "", state: ubElementState(el), selector: cssPath(el), inViewport: r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth, ...(el.href ? { href: String(el.href).slice(0, 240) } : {}), ...(goal ? { context: contextOf(el) } : {}) };
   });
+  const norm = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const stop = new Set(["a","as","o","os","de","da","do","das","dos","em","no","na","para","por","um","uma","que","como","the","to","of","in","on","and","abrir","ir","ver","achar","encontrar"]);
+  const phrase = norm(goal).slice(0, 120);
+  const words = [...new Set(phrase.split(" ").filter((w) => w.length > 2 && !stop.has(w)))].slice(0, 8);
+  const score = (c) => {
+    if (!words.length) return 0;
+    const name = norm(c.name), context = norm(c.context), href = norm(c.href);
+    let n = phrase && name.includes(phrase) ? 16 : 0;
+    for (const w of words) {
+      if (name.split(" ").some((part) => part === w || part.startsWith(w) || w.startsWith(part) && part.length > 3 || part.length >= 6 && w.length >= 6 && part.slice(0, 6) === w.slice(0, 6))) n += 8;
+      else if (context.includes(w)) n += 2;
+      if (href.includes(w)) n += 5;
+    }
+    if (n && c.inViewport) n++;
+    if (n && String(c.state).includes("disabled")) n -= 4;
+    return Math.max(0, n);
+  };
+  const ordered = words.length ? controls.map((c, i) => ({ c, i, score: score(c) })).sort((a, b) => (b.score - a.score) || (a.i - b.i)) : controls.map((c, i) => ({ c, i, score: 0 }));
+  const matches = ordered.filter((x) => x.score >= 5).slice(0, 5).map((x) => ({ selector: x.c.selector, name: x.c.name, role: x.c.role, ...(x.c.context ? { context: x.c.context } : {}), ...(x.c.href ? { href: x.c.href } : {}) }));
   const cap = Number.isFinite(Number(max)) && Number(max) > 0 ? Math.floor(Number(max)) : 35;
   const start = Number.isFinite(Number(offset)) ? Math.max(0, Math.floor(Number(offset))) : 0;
   // nome de landmark: aria-label > primeiro título > primeiro link/botão. innerText do container
   // inteiro concatenava o menu todo (80 chars de lixo por landmark, sem dizer nada).
   const landmarkName = (el) => String(el.getAttribute?.("aria-label") || el.querySelector?.("h1,h2,h3")?.innerText || el.querySelector?.("a,button")?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 60);
   const landmarks = [...document.querySelectorAll("main,nav,header,footer,aside,[role=main],[role=navigation],[role=search],[role=dialog]")].filter(visible).map((el) => ({ role: ubAriaRole(el) || el.tagName.toLowerCase(), name: landmarkName(el), selector: cssPath(el) }));
-  const pageControls = controls.slice(start, start + cap);
-  return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: controls.length, controlsOffset: start, controlsOmitted: Math.max(0, controls.length - start - pageControls.length), nextOffset: start + pageControls.length < controls.length ? start + pageControls.length : null, overlays: ubOverlayState(), hint: "Use os selectors para agir. Leia só a região relevante; snapshot/find serve para mapear detalhes." };
+  const relevant = words.length && matches.length ? ordered.filter((x) => x.score >= 5) : ordered;
+  const pageControls = relevant.slice(start, start + cap).map((x) => x.c);
+  return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: relevant.length, ...(relevant.length < controls.length ? { allControls: controls.length } : {}), controlsOffset: start, controlsOmitted: Math.max(0, relevant.length - start - pageControls.length), nextOffset: start + pageControls.length < relevant.length ? start + pageControls.length : null, ...(goal ? { goal: String(goal).slice(0, 120), goalMatched: matches.length > 0, matches } : {}), overlays: ubOverlayState() };
 }
 
 var ubProgressPanelState = globalThis.__ubProgressPanelState || { active: false, collapsed: false, steps: [], annotations: [], title: "Canivete", message: "" };
@@ -3008,7 +3062,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
     const a = msg.args || {};
     if (msg.cmd === "ping") { reply({ ok: true, data: { v: UB_V } }); return; }
     if (msg.cmd === "state") { reply({ ok: true, data: { title: document.title, url: location.href } }); return; }
-    if (msg.cmd === "overview") { reply({ ok: true, data: ubPageOverview(a.max, a.offset, a.order) }); return; }
+    if (msg.cmd === "overview") { reply({ ok: true, data: ubPageOverview(a.max, a.offset, a.order, a.goal) }); return; }
     if (msg.cmd === "panel") { reply({ ok: true, data: ubProgressPanelCommand(a) }); return; }
     if (msg.cmd === "read") {
       // settle antes de coletar: SPA hidrata depois do idle; sem isso lê esqueleto (BulkMD: 60%→95%).
@@ -3057,6 +3111,18 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
         if (!scopeEl) return reply({ ok: false, error: "seletor não encontrado: " + String(a.selector).slice(0, 120) });
       }
       const d = ubDistill(mc, scopeEl);
+      if (d.warn) {
+        const raw = ubReadMain(mc, a.maxLinks == null ? 15 : Number(a.maxLinks), scopeEl);
+        if ((raw.text || "").length > (d.markdown || "").length + 80) {
+          reply({ ok: true, data: { title: d.title, url: d.url, text: raw.text, links: raw.links, warn: "destilado vazio; texto principal recuperado automaticamente", fallback: "raw", stats: raw.stats } });
+          return;
+        }
+        const outline = ubOutline();
+        if ((outline.markdown || "").length > (d.markdown || "").length) {
+          reply({ ok: true, data: { ...outline, warn: "texto principal vazio; estrutura recuperada automaticamente — use overview com goal para achar controles", fallback: "outline" } });
+          return;
+        }
+      }
       d.stats = { ...(d.stats || {}), settle_ms: settleMs, total_ms: Math.round(performance.now() - tHandler) };
       reply({ ok: true, data: d });
     } else if (msg.cmd === "html") {

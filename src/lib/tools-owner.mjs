@@ -9,7 +9,7 @@ import { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubStats, ubAler
 import { ownerCdpSend } from "./cdp.mjs";
 import { snapLabel as ubSnapLabel, snapRole as ubSnapRole, snapHasBox as ubSnapHasBox, snapInViewport as ubSnapInViewport, snapIsEditable as ubSnapIsEditable, snapBytes as ubSnapBytes, snapFoldKey as ubSnapFoldKey, snapFold as ubSnapFold, snapDedupLinks as ubSnapDedupLinks, ubOverviewSlim } from "../core/snapshot.mjs";
 // recovery sem mudar protocolo: só texto de erro acionável (janela NORMAL, popup, token) + fallback headless
-const UB_REC = "Recovery: 0) sem Chrome? cv_ubrowser_status {open:true} abre sozinho (qualquer perfil) 1) Chrome janela NORMAL mesmo perfil (sem anonimo) 2) popup extensao UBrowser ATIVO 3) token ~/.config/canivete/token.txt igual na extensao 4) rode cv_ubrowser_status p/ confirmar";
+const UB_REC = "Sem conexão? cv_owner_inspect {action:'status',open:true} abre o Chrome; confira o perfil, popup do Canivete e token ~/.config/canivete/token.txt";
 const UB_FB = "Sem login? fallback headless: cv_browser_navigate / cv_browser_screenshot";
 const UB_OFF_FULL = `${UB_OFF} | ${UB_REC} | ${UB_FB}`;
 // timeout de transporte ÚNICO (const UB_TIMEOUT_MS do ubridge): mensagem mostra o valor REAL
@@ -125,8 +125,59 @@ function ubPlural(n, one, many) {
   const v = Number(n) || 0;
   return `${v} ${v === 1 ? one : many}`;
 }
-function ubTarget(profile) {
-  if (!profile) return { ok: true, id: null };
+const UB_TAB_ROUTES = new Map(); // tabId → donos por perfil; IDs podem coincidir entre perfis
+const UB_ROUTE_TTL = 10 * 60 * 1000;
+function ubLiveOwners(route, live, now = Date.now()) {
+  return route ? [...route.owners].filter(([id, v]) => live.has(id) && now - v.ts < UB_ROUTE_TTL) : [];
+}
+function ubRememberTabs(ext, result, args = {}) {
+  const tabs = result?.data?.tabs;
+  if (!ext?.id || !Array.isArray(tabs)) return;
+  const now = Date.now();
+  const filter = String(args.filter || "").toLowerCase();
+  for (const [id, route] of UB_TAB_ROUTES) {
+    const own = route.owners.get(ext.id);
+    if (own && (!filter || own.title.toLowerCase().includes(filter) || own.url.toLowerCase().includes(filter))) route.owners.delete(ext.id);
+    if (!route.owners.size) UB_TAB_ROUTES.delete(id);
+  }
+  for (const t of tabs) if (Number.isInteger(t.id)) {
+    const route = UB_TAB_ROUTES.get(t.id) || { owners: new Map() };
+    route.owners.set(ext.id, { ts: now, title: String(t.title || ""), url: String(t.url || "") });
+    UB_TAB_ROUTES.set(t.id, route);
+  }
+  if (UB_TAB_ROUTES.size > 500) for (const [id, route] of UB_TAB_ROUTES) {
+    for (const [owner, v] of route.owners) if (now - v.ts > UB_ROUTE_TTL) route.owners.delete(owner);
+    if (!route.owners.size) UB_TAB_ROUTES.delete(id);
+  }
+}
+async function ubTarget(profile, tabId, tab) {
+  if (!profile) {
+    const connected = ubListExtensions().filter((e) => e.connected);
+    if (!connected.length) return { ok: true, id: null };
+    if (connected.length === 1) return { ok: true, id: connected[0].id };
+    const live = new Set(connected.map((e) => e.id));
+    const knownRoute = UB_TAB_ROUTES.get(Number(tabId));
+    if (tabId != null && (!knownRoute?.verifiedAt || Date.now() - knownRoute.verifiedAt >= UB_ROUTE_TTL || !ubLiveOwners(knownRoute, live).length)) {
+      const scan = await ubTabsFetch({}, { id: null }, Math.min(UB_TIMEOUT_MS, 5000));
+      if (scan.multi && scan.all.some((r) => !r?.ok)) return { ok: false, summary: "um perfil não respondeu à busca de abas — passe profile explícito ou tente de novo" };
+    }
+    if (tabId != null) {
+      const owners = ubLiveOwners(UB_TAB_ROUTES.get(Number(tabId)), live);
+      if (owners.length === 1) return { ok: true, id: owners[0][0] };
+      if (owners.length > 1) return { ok: false, summary: `tabId ${tabId} existe em mais de um perfil — passe profile da lista de abas` };
+      return { ok: false, summary: `tabId ${tabId} não pertence a um perfil conectado — confira se a aba ainda existe` };
+    }
+    if (tab) {
+      const needle = String(tab).toLowerCase();
+      const scan = await ubTabsFetch({ filter: tab }, { id: null }, Math.min(UB_TIMEOUT_MS, 5000));
+      if (scan.multi && scan.all.some((r) => !r?.ok)) return { ok: false, summary: "um perfil não respondeu à busca de abas — passe profile explícito ou tente de novo" };
+      const owners = new Set([...UB_TAB_ROUTES.values()].flatMap((route) => ubLiveOwners(route, live).filter(([, v]) => v.title.toLowerCase().includes(needle) || v.url.toLowerCase().includes(needle)).map(([id]) => id)));
+      if (owners.size === 1) return { ok: true, id: [...owners][0] };
+      if (owners.size > 1) return { ok: false, summary: `aba "${String(tab).slice(0, 60)}" aparece em mais de um perfil — passe profile da lista de abas` };
+      return { ok: false, summary: `aba "${String(tab).slice(0, 60)}" não encontrada nos perfis conectados` };
+    }
+    return { ok: true, id: null };
+  }
   const id = ubResolveProfile(profile);
   if (id) return { ok: true, id };
   const exts = ubListExtensions();
@@ -136,8 +187,8 @@ function ubTarget(profile) {
 }
 
 reg("cv_ubrowser_status", {
-  description: "Status da ponte com o Chrome LOGADO do dono (extensão local). SEMPRE o passo 1: offline → open:true (o agente ABRE o Chrome sozinho, em qualquer perfil — sem refém do dono). Fluxo: status→tabs→read|snapshot→act→shot. IDs de aba mudam — nas tools prefira tab:\"trecho do título/URL\".",
-  inputSchema: { type: "object", properties: { open: { type: "boolean", description: "ponte offline? abre o Chrome do dono sozinho (display com WM detectado, perfil abaixo) e espera a ponte conectar (teto 25s)" }, profile: { type: "string", description: "com open: perfil do Chrome — \"Default\", \"Profile 1\"…, só o número (1, 2…) ou o RÓTULO do perfil (nome em Local State, ex: \"Financia\"); o perfil precisa ter a extensão UBrowser carregada" }, wait: { type: "number", description: "teto de espera pós-launch em ms (default 25000, teto 60000)" } }, required: [] },
+  description: "Estado da ponte e perfis do Chrome logado. Use se a conexão falhar; open:true abre o Chrome. Com tab conhecido, vá direto a overview/read/act sem status e tabs prévios.",
+  inputSchema: { type: "object", properties: { open: { type: "boolean", description: "ponte offline? abre o Chrome do dono e espera conectar" }, profile: { type: "string", description: "com open: perfil Chrome (Default, Profile 1, número ou nome) com a extensão Canivete" }, wait: { type: "number", description: "teto pós-abertura em ms (default 25000)" } }, required: [] },
   run: async ({ open, profile, wait } = {}) => {
     const t0 = Date.now();
     ubEnsure();
@@ -184,7 +235,7 @@ reg("cv_ubrowser_status", {
     // dicas de roteamento: cada uma existe p/ evitar erro depois (profile errado, activate antigo)
     const hints = [];
     if (oldVer) hints.push(`extensão rodando ${oldVer} (< ${UB_VER_ACT}) — tab.activate indisponível: {action:"reload-extension"} aplica o código novo, depois re-status (data.version)`);
-    if (conns.length > 1) hints.push(`${conns.length} perfis conectados — alvo por profile:"<clientId>" (extensions[].id), trecho de label/URL; omitir = ext mais recente`);
+    if (conns.length > 1) hints.push(`${conns.length} perfis conectados — tabId ou título conhecido é roteado; passe profile se a aba existir em mais de um perfil`);
     if (noInfo) hints.push("hello do perfil ausente após restart (label/versão/tabs) — {action:\"reload-extension\"} reenvia sem fechar abas");
     else if (noLabel) hints.push("profileLabel ausente — configure o nome do perfil no popup da extensão p/ alvo por nome legível");
     // status enxuto: o info cru da extensão (UA/tabUrls/accessMode…) duplicava dados e inflava
@@ -213,7 +264,7 @@ reg("cv_ubrowser_tabs", {
   inputSchema: { type: "object", properties: { filter: { type: "string", description: "substring em título+url (case-insensitive)" }, max: { type: "number", default: 30, description: "abas nesta página (default 30)" }, offset: { type: "number", default: 0, description: "posição inicial para paginação" }, profile: { type: "string", description: "clientId de um perfil conectado; omitir consolida os perfis" } }, required: [] },
   run: async ({ filter, max = 30, offset = 0, profile } = {}) => {
     const t0 = Date.now();
-    const tgt = ubTarget(profile);
+    const tgt = await ubTarget(profile);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // Fetch the complete matching set so pagination remains global across profiles.
     const args = filter ? { filter } : {};
@@ -253,29 +304,29 @@ reg("cv_ubrowser_tabs", {
 });
 
 reg("cv_ubrowser_overview", {
-  description: "Mapa compacto da aba: estrutura, títulos, formulários e controles com seletores prontos para agir. Reduz chamadas de reconhecimento; use snapshot/read só para aprofundar a região. detail=\"compact\" (padrão) corta campos redundantes (~60% menos tokens); detail=\"full\" traz o payload cru.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL" }, max: { type: "number", default: 35, description: "quantidade de controles por página" }, offset: { type: "number", default: 0, description: "paginação de controles (use nextOffset)" }, order: { type: "string", enum: ["action", "dom"], default: "action", description: "action=campos/botões antes de links (default); dom=ordem da página" }, detail: { type: "string", enum: ["compact", "full"], default: "compact", description: "compact=corta campos redundantes (default); full=payload cru" }, headingsMax: { type: "number", default: 15, description: "máximo de títulos no compact (default 15; use full p/ todos)" }, profile: { type: "string" } }, required: [] },
-  run: async ({ tabId, tab, max = 35, offset = 0, order = "action", detail = "compact", headingsMax = 15, profile } = {}) => {
-    const t0 = Date.now(), tgt = ubTarget(profile);
+  description: "Entenda uma aba e encontre o caminho curto para um objetivo: goal ordena controles relevantes e devolve até 5 seletores com contexto/href. Use direto com tab/tabId; read só para texto, snapshot find quando o alvo não aparecer. Sem goal, mostra mapa geral.",
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL" }, goal: { type: "string", description: "o que deseja localizar ou fazer, ex: 'abrir configurações de conta'" }, max: { type: "number", description: "controles por página (15 com goal; 35 sem goal)" }, offset: { type: "number", default: 0, description: "paginação de controles (use nextOffset)" }, order: { type: "string", enum: ["action", "dom"], default: "action", description: "action=campos/botões antes de links; dom=ordem da página" }, detail: { type: "string", enum: ["compact", "full"], default: "compact", description: "compact=corta campos redundantes; full=payload cru" }, headingsMax: { type: "number", default: 15, description: "máximo de títulos no compact" }, profile: { type: "string" } }, required: [] },
+  run: async ({ tabId, tab, goal, max, offset = 0, order = "action", detail = "compact", headingsMax = 15, profile } = {}) => {
+    const t0 = Date.now(), tgt = await ubTarget(profile, tabId, tab);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const tBridge = Date.now();
-    const r = await ubSend("tab.overview", { tabId, tab, max, offset, order }, UB_TIMEOUT_MS, tgt.id);
+    const r = await ubSend("tab.overview", { tabId, tab, max: max ?? (goal ? 15 : 35), offset, order, ...(goal ? { goal: String(goal).slice(0, 120) } : {}) }, UB_TIMEOUT_MS, tgt.id);
     const bridgeMs = Date.now() - tBridge;
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     if (!r.ok) return devOut({ status: "error", summary: `extensão: ${r.error} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const d = ubOverviewSlim(r.data || {}, { detail, headingsMax });
     const hOmit = d.headingsOmitted ? ` (+${d.headingsOmitted} títulos omitidos)` : "";
     const nextNote = d.nextOffset != null ? ` (mais: offset=${d.nextOffset})` : "";
-    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles · ${d.headings?.length || 0} títulos${hOmit} · ${ubPlural(d.forms?.length || 0, "formulário", "formulários")}${nextNote}${detail === "compact" ? "" : " [full]"}`, data: d, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs } });
+    return devOut({ summary: `${d.page?.title || "Página"}: ${d.controls?.length || 0}/${d.controlsTotal || 0} controles${d.allControls ? ` (${d.allControls} na página)` : ""} · ${d.headings?.length || 0} títulos${hOmit} · ${ubPlural(d.forms?.length || 0, "formulário", "formulários")}${goal ? ` · objetivo: ${d.matches?.length || 0} candidato(s)${d.goalMatched ? "" : " — tente outra expressão ou snapshot find"}` : ""}${nextNote}${detail === "compact" ? "" : " [full]"}`, data: { ...(Number.isInteger(r.data?.tabId) ? { tabId: r.data.tabId } : {}), ...(tgt.id ? { profile: tgt.id } : {}), ...d }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs } });
   },
 });
 
 reg("cv_ubrowser_read", {
   description: "Lê aba do dono COM login (texto+links). Mire com tab:\"trecho\" ou tabId. Página pública (sem login)? NÃO use este — cv_webfetch (estática) ou cv_browser_navigate (JS); não gasta a aba do dono. mode=distill (default, enxuto) | raw (integral + links). outline=true: só estrutura (h1-h6 + contagens) p/ triagem. maxChars/maxLinks dão teto. AUTOMÁTICO: espera a página aquietar (SPA), perfura shadow DOM, inputs mostram value separado (`[campo text Nome] = \"João\"`). Pra JS use evaluate no act; pra erros/rede use act console. selector=\"CSS\" escopa a leitura a um container (#app, table, ...); texto curto em página grande ganha WARN no summary (tente mode:\"raw\" ou snapshot).",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" }, settle: { type: "boolean", description: "auto (padrão): pula espera em página completa; true força settle p/ SPA que ainda hidrata" }, selector: { type: "string", description: "CSS p/ escopar a leitura a um container (ex: \"#app\", \"table.turmas\") — erro \"seletor não encontrado\" se não achar" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, maxChars: { type: "number", default: 2500 }, maxLinks: { type: "number", default: 15 }, mode: { type: "string", enum: ["distill", "raw"], default: "distill", description: "distill=destilado enxuto (default); raw=texto integral opt-out" }, outline: { type: "boolean", description: "outline=true: só estrutura (h1-h6 + contagens) p/ triagem rápida" }, settle: { type: "boolean", description: "auto (padrão): pula espera em página completa; true força settle p/ SPA que ainda hidrata" }, selector: { type: "string", description: "CSS p/ escopar a leitura a um container (ex: \"#app\", \"table.turmas\") — erro \"seletor não encontrado\" se não achar" }, profile: { type: "string", description: "perfil opcional; tabId ou tab conhecido é roteado automaticamente" } }, required: [] },
   run: async ({ tabId, tab, mode, maxChars, maxLinks, outline, settle, selector, profile }) => {
     const t0 = Date.now();
-    const tgt = ubTarget(profile);
+    const tgt = await ubTarget(profile, tabId, tab);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // outline=true: força mode raw — o background intercepta distill e ignora o outline
     // (devolvia 4KB de texto em vez de estrutura). Content lê a.outline e responde só headings.
@@ -291,14 +342,14 @@ reg("cv_ubrowser_read", {
     const omitted = allLinks.length > links.length ? allLinks.length - links.length : 0;
     const omitNote = omitted ? ` (+${omitted} links omitidos)` : "";
     const warnNote = r.data.warn ? ` | ${r.data.warn}` : "";
-    const kindNote = outline ? `outline ${r.data.stats?.chars ?? body.length} chars` : (r.data.markdown ? `destilado ${r.data.stats?.chars ?? body.length} chars` : "");
+    const kindNote = outline ? `outline ${r.data.stats?.chars ?? body.length} chars` : r.data.fallback ? `recuperação ${r.data.fallback} ${r.data.stats?.chars ?? body.length} chars` : (r.data.markdown ? `destilado ${r.data.stats?.chars ?? body.length} chars` : "");
     // "mapear cliques" é o óbvio da descrição; só orienta quando há links truncados.
     const nxt = omitted > 0 ? [{ tool: "cv_ubrowser_read", reason: "mode:\"raw\" traz o texto integral e links completos" }] : [];
     // stats: ms/total_ms são ruído (bridge_ms já cobre); chars/linhas/descartadas dizem a qualidade.
     const st = r.data.stats && typeof r.data.stats === "object"
       ? { chars: r.data.stats.chars, linhas: r.data.stats.linhas, descartadas: r.data.stats.descartadas, ...(r.data.stats.settle_ms ? { settle_ms: r.data.stats.settle_ms } : {}) }
       : undefined;
-    return devOut({ summary: `${r.data.title} — ${r.data.url}${kindNote ? ` (${kindNote})` : ""}${omitNote}${warnNote}${ubAlertsHint()}`, data: { title: r.data.title, url: r.data.url, text: trimOut(body, outline ? 3000 : 6000), ...(links.length ? { links } : {}), ...(omitted ? { linksOmitted: omitted } : {}), ...(r.data.warn ? { warn: r.data.warn } : {}), ...(st ? { stats: st } : {}), ...(outline ? { outline: true } : {}) }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: nxt });
+    return devOut({ summary: `${r.data.title} — ${r.data.url}${kindNote ? ` (${kindNote})` : ""}${omitNote}${warnNote}${ubAlertsHint()}`, data: { title: r.data.title, url: r.data.url, text: trimOut(body, outline ? 3000 : 6000), ...(links.length ? { links } : {}), ...(omitted ? { linksOmitted: omitted } : {}), ...(r.data.warn ? { warn: r.data.warn } : {}), ...(r.data.fallback ? { fallback: r.data.fallback } : {}), ...(st ? { stats: st } : {}), ...(outline ? { outline: true } : {}) }, telemetry: { execution_time_ms: Date.now() - t0, bridge_ms: bridgeMs }, next: nxt });
   },
 });
 
@@ -554,9 +605,13 @@ async function ubTabsFetch(args, tgt, timeoutMs) {
     ? ubListExtensions().filter((e) => e.id === tgt.id)
     : ubListExtensions().filter((e) => e.connected);
   if (exts.length <= 1) {
-    return { multi: false, single: await ubSend("tabs.list", args, timeoutMs, tgt.id), exts };
+    const single = await ubSend("tabs.list", args, timeoutMs, tgt.id);
+    ubRememberTabs(exts[0], single, args);
+    return { multi: false, single, exts };
   }
   const all = await Promise.all(exts.map((e) => ubSend("tabs.list", args, timeoutMs, e.id)));
+  all.forEach((r, i) => ubRememberTabs(exts[i], r, args));
+  if (!args.filter && all.every((r) => r?.ok)) for (const route of UB_TAB_ROUTES.values()) route.verifiedAt = Date.now();
   return { multi: true, all, exts };
 }
 // UB_OWNER_POWER_END
@@ -564,12 +619,12 @@ const UB_SHOT_LAST = new Map(); // hash do último shot por aba (frescor v14)
 
 reg("cv_ubrowser_snapshot", {
   description: "Clicáveis da aba → aja com SELECTOR ou ref (refs válidas até a próxima navegação — SEMPRE re-snapshot após goto/click que navega). find=\"texto\": localiza com ±3 contexto sem despejar tudo. layer=\"modal|menu|popover|tooltip\": foca SÓ na camada. Listas grandes dobram sozinhas; links duplicados são removidos. compact (padrão) retorna só ref/tag/texto/role e reduz tokens; max=30 por padrão. Lista virtualizada: já rola e varre sozinho (5 páginas, até 120 itens) — act scan é alias rápido p/ paginar. Rank: viewport→nome→papel.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 30, description: "máximo de elementos por página (default 30, máx 120)" }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" }, compact: { type: "boolean", default: true, description: "padrão true: só ref|tag|texto|role; false inclui mais campos por elemento" }, find: { type: "string", description: "busca texto no snapshot e devolve matches ±3 contexto (sem despejar tudo)" }, pages: { type: "number", default: 100, description: "find em lista virtual: janelas de rolagem (1-100, default 100; orçamento 6s)" }, layer: { type: "string", enum: ["modal", "menu", "popover", "tooltip"], description: "foco SÓ na camada (ex: modal de 2 botões sem ler a página inteira)" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, max: { type: "number", default: 30, description: "máximo de elementos por página (default 30, máx 120)" }, offset: { type: "number", default: 0, description: "pula N primeiros (paginação)" }, compact: { type: "boolean", default: true, description: "padrão true: só ref|tag|texto|role; false inclui mais campos por elemento" }, find: { type: "string", description: "busca texto no snapshot e devolve matches ±3 contexto (sem despejar tudo)" }, pages: { type: "number", default: 100, description: "find em lista virtual: janelas de rolagem (1-100, default 100; orçamento 6s)" }, layer: { type: "string", enum: ["modal", "menu", "popover", "tooltip"], description: "foco SÓ na camada (ex: modal de 2 botões sem ler a página inteira)" }, profile: { type: "string", description: "perfil opcional; tabId ou tab conhecido é roteado automaticamente" } }, required: [] },
   run: async ({ tabId, tab, max, offset, compact = true, find, layer, profile, pages }) => {
     const t0 = Date.now();
     const cappedMax = Math.min(Number(max) || 30, 120);
     const needle = String(find || "").trim().toLowerCase();
-    const tgt = ubTarget(profile);
+    const tgt = await ubTarget(profile, tabId, tab);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // pool FIXO 120: com pool adaptativo o `total` mudava conforme o max pedido (75 vs 120)
     // e a paginação mentia. A extensão já coleta 120; o custo extra é o fatiamento no background.
@@ -636,7 +691,10 @@ reg("cv_ubrowser_snapshot", {
     // projeção compacta única (find e compact): tag redundante some; ref continua agindo via cache.
     const slimEl = ({ ref, tag, text, role, name, layer, layerLabel }) => {
       const t = (!tag || !role || tag === role || (tag === "a" && role === "link")) ? undefined : tag;
-      return { ref, ...(t ? { tag: t } : {}), text: text || name || "", role, ...(layer ? { layer, ...(layerLabel ? { layerLabel } : {}) } : {}) };
+      // campo preenchido: text=valor e name=rótulo. Sem manter o name, o rótulo sumia e o
+      // agente via só "João" sem saber que o campo é "Seu nome".
+      const keepName = !!name && name !== text && /^(textbox|searchbox|combobox|spinbutton|checkbox|radio|switch|slider)$/.test(String(role || ""));
+      return { ref, ...(t ? { tag: t } : {}), text: text || name || "", role, ...(keepName ? { name } : {}), ...(layer ? { layer, ...(layerLabel ? { layerLabel } : {}) } : {}) };
     };
     // find: matches ±3 contexto, sem fold/dedup (previsível); resto do pipeline pula.
     if (needle) {
@@ -710,6 +768,7 @@ reg("cv_ubrowser_act", {
       direction: { type: "string", enum: ["up", "down", "top", "bottom"] },
       submit: { type: "boolean" }, waitMs: { type: "number" },
       snap: { type: "boolean", description: "p/ goto/new/back/forward/reload: volta top-10 do snapshot junto (economiza 1 call)" },
+      goal: { type: "string", description: "com snap:true após navegação, encontre até 5 controles para este objetivo sem outra tool" },
       filter: { type: "string", enum: ["all", "errors", "net", "console"], default: "all", description: "p/ console: all|errors|net|console" },
       limit: { type: "number", default: 30, description: "p/ console: máx entradas (1-120)" },
       clear: { type: "boolean", description: "p/ console: limpa o buffer após ler" },
@@ -734,7 +793,7 @@ reg("cv_ubrowser_act", {
     if (!a.action) return devOut({ status: "error", summary: `action ausente — ações válidas: goto|back|forward|reload|reload-extension|reinject|click|fill|type|select|press|scroll|highlight|waittext|wait|evaluate|cursor|tooltip|catchup|aesthetic|new|scan|count|attr|html|flow|console|close|activate|elem_pick | exemplos: {action:"goto", tab:"trecho", url:"https://..."} / {action:"click", ref:3} / {action:"activate", tab:"Gmail"}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     // roteamento multi-perfil: profile pedido SEM match = erro acionável (lista conectados),
     // nunca despacha em silêncio p/ outro perfil. Um só resolve vale p/ ida e retry.
-    const tgt = ubTarget(a.profile);
+    const tgt = await ubTarget(a.profile, a.tabId, a.tab);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { action: a.action, profile: String(a.profile ?? "") }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // #48: ref do snapshot resolve p/ selector (cache por aba); selector explícito vence.
     if (a.ref !== undefined && a.ref !== null && String(a.ref) !== "" && !a.selector) {
@@ -988,7 +1047,12 @@ reg("cv_ubrowser_act", {
     const afterTitle = d.title ?? null;
     const beforeUrl = (a.action === "goto" || a.action === "new") && a.url ? String(a.url) : null;
     const urlChanged = !!beforeUrl && !!afterUrl && beforeUrl !== afterUrl;
-    const navNewDoc = ["goto", "back", "forward", "new"].includes(a.action);
+    const navNewDoc = ["goto", "back", "forward", "reload", "new"].includes(a.action);
+    if (tgt.id && Number.isInteger(Number(d.tabId ?? d.id ?? a.tabId))) {
+      const id = Number(d.tabId ?? d.id ?? a.tabId), route = UB_TAB_ROUTES.get(id) || { owners: new Map() };
+      route.owners.set(tgt.id, { ts: Date.now(), title: String(d.title || ""), url: String(d.url || a.url || "") });
+      UB_TAB_ROUTES.set(id, route);
+    }
     const titleChanged = !!afterTitle && (urlChanged || navNewDoc);
     const afterLabel = String(afterTitle ? `${afterTitle} — ${afterUrl || ""}` : (afterUrl || d.selector || d.value || d.text || "ok")).slice(0, 120);
     const diff = urlChanged ? `navegou ${beforeUrl}→${afterUrl}` : (navNewDoc && afterUrl ? `navegou para ${afterLabel}` : `mesma página: ${afterLabel}`);
@@ -1048,20 +1112,30 @@ reg("cv_ubrowser_act", {
       }
     } catch {}
     // snap:true pós-navegação: top-10 rankeado junto (refs frescas sem call extra).
-    let snapNote = "", snapTop = null;
+    let snapNote = "", snapTop = null, snapTargets = null;
     if (navNewDoc && a.snap && afterUrl) {
       try {
-        const sr = await ubSend("tab.snapshot", { tabId: a.tabId, tab: a.tab, max: 40 }, UB_TIMEOUT_MS, tgt.id); // mesmo perfil da ação (multi-perfil)
-        const sels = Array.isArray(sr?.data) ? sr.data : (Array.isArray(sr?.data?.items) ? sr.data.items : []);
-        if (sr?.ok && sels.length) {
-          const ranked = ubSnapRank(sels).slice(0, 10);
-          snapTop = ranked.map((el) => `[${el.ref ?? "?"}] ${el.role || el.tag} "${String(el.text || el.name || "").slice(0, 60)}"`);
-          snapNote = ` | snap: ${sels.length} interativos (top 10 abaixo)`;
+        if (a.goal) {
+          const sr = await ubSend("tab.overview", { tabId: d.tabId || d.id || a.tabId, tab: a.tab, goal: String(a.goal).slice(0, 120), max: 10 }, UB_TIMEOUT_MS, tgt.id);
+          if (sr?.ok) {
+            const map = ubOverviewSlim(sr.data || {});
+            snapTargets = map.matches || [];
+            snapTop = snapTargets.map((el) => `${el.role || "controle"} "${el.name}" → ${el.sel}`);
+            snapNote = ` | objetivo "${String(a.goal).slice(0, 50)}": ${snapTargets.length} candidato(s)`;
+          }
+        } else {
+          const sr = await ubSend("tab.snapshot", { tabId: d.tabId || d.id || a.tabId, tab: a.tab, max: 40 }, UB_TIMEOUT_MS, tgt.id); // mesmo perfil da ação (multi-perfil)
+          const sels = Array.isArray(sr?.data) ? sr.data : (Array.isArray(sr?.data?.items) ? sr.data.items : []);
+          if (sr?.ok && sels.length) {
+            const ranked = ubSnapRank(sels).slice(0, 10);
+            snapTop = ranked.map((el) => `[${el.ref ?? "?"}] ${el.role || el.tag} "${String(el.text || el.name || "").slice(0, 60)}"`);
+            snapNote = ` | snap: ${sels.length} interativos (top 10 abaixo)`;
+          }
         }
       } catch {}
     }
     // next[] utile: URL mudou = domínio novo → snapshot (refs frescas) vale mais que print.
-    const nxtGen = urlChanged
+    const nxtGen = urlChanged && !snapTargets?.length
       ? [{ tool: "cv_ubrowser_snapshot", reason: "URL mudou — refs antigas expiraram; mapeie só se precisar agir de novo" }]
       : [];
     const compactExpect = expectFields.expect ? {
@@ -1070,17 +1144,17 @@ reg("cv_ubrowser_act", {
         checks: (expectFields.expect.checks || []).map(({ name, ok }) => ({ name, ok })),
       },
     } : {};
-    return devOut({ summary: `[${a.action}] ${diff}${deltaNote}${snapNote}${clickNote}${expectNote}${ubAlertsHint()}`, data: { action: a.action, ok: true, ...(d.title ? { title: d.title } : {}), ...(d.url ? { url: d.url } : {}), ...(d.text || d.value ? { result: trimOut(d.text ?? d.value, 240) } : {}), ...verifyFields, ...compactExpect, ...(snapTop ? { snapshotTop: snapTop } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: nxtGen });
+    return devOut({ summary: `[${a.action}] ${diff}${deltaNote}${snapNote}${clickNote}${expectNote}${ubAlertsHint()}`, data: { action: a.action, ok: true, ...(Number.isInteger(Number(d.tabId ?? d.id ?? a.tabId)) ? { tabId: Number(d.tabId ?? d.id ?? a.tabId) } : {}), ...(tgt.id ? { profile: tgt.id } : {}), ...(d.title ? { title: d.title } : {}), ...(d.url ? { url: d.url } : {}), ...(d.text || d.value ? { result: trimOut(d.text ?? d.value, 240) } : {}), ...verifyFields, ...compactExpect, ...(snapTop ? { snapshotTop: snapTop } : {}), ...(snapTargets ? { targets: snapTargets } : {}) }, telemetry: { execution_time_ms: Date.now() - t0 }, next: nxtGen });
   },
 });
 
 reg("cv_ubrowser_shot", {
   description: "Print da aba VISÍVEL do dono (imagem + arquivo). Aba em fundo NÃO imprime — use cv_browser_screenshot headless. Nunca troca de aba. scale:0.5 = metade dos bytes. Confirme visualmente após click/fill importantes. O texto da resposta traz tabId + título/url — aja na mesma aba com act/read sem re-listar tabs.",
-  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, scale: { type: "number", enum: [0.5, 1], default: 1, description: "deviceScaleFactor: 0.5 = metade dos bytes" }, profile: { type: "string", description: "clientId de um perfil conectado (multi-perfil) — obrigatório quando a aba é de outro perfil (tabs traz profile)" } }, required: [] },
+  inputSchema: { type: "object", properties: { tabId: { type: "number" }, tab: { type: "string", description: "trecho do título/URL (resolve p/ tabId; IDs mudam)" }, scale: { type: "number", enum: [0.5, 1], default: 1, description: "deviceScaleFactor: 0.5 = metade dos bytes" }, profile: { type: "string", description: "perfil opcional; tabId ou tab conhecido é roteado automaticamente" } }, required: [] },
   run: async ({ tabId, tab, scale, profile }) => {
     const t0 = Date.now();
     const dsf = Number(scale) === 0.5 ? 0.5 : 1;
-    const tgt = ubTarget(profile);
+    const tgt = await ubTarget(profile, tabId, tab);
     if (!tgt.ok) return devOut({ status: "error", summary: tgt.summary, data: { profile: String(profile) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     const r = await ubSend("tab.shot", { tabId, tab, scale: dsf }, UB_TIMEOUT_MS, tgt.id);
     if (r.__offline || r.__timeout) return devOut({ status: "error", summary: r.__offline ? UB_OFF_FULL : `${ubTimeoutMsg()} | ${UB_FB}`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
