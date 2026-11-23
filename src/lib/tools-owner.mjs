@@ -1083,7 +1083,7 @@ reg("cv_ubrowser_act", {
       if ((a.action === "click" || a.action === "cursor") && d && typeof d === "object" && typeof d.verified === "boolean") {
         const wc = Array.isArray(d.whatChanged) ? d.whatChanged : [];
         const meth = d.method || d.via || "?";
-        verifyFields = { verified: d.verified, whatChanged: wc, ...(d.method || d.via ? { method: d.method || d.via } : {}), ...(Array.isArray(d.escalations) ? { escalations: d.escalations } : {}) };
+        verifyFields = { verified: d.verified, whatChanged: wc, ...(d.method || d.via ? { method: d.method || d.via } : {}), ...(Array.isArray(d.escalations) ? { escalations: d.escalations } : {}), ...(d.hiddenViewport ? { hiddenViewport: true } : {}) };
         if (d.verified) clickNote = ` | click verified (${wc.join(",") || "?"} via ${meth})`;
         else {
           const esc = Array.isArray(d.escalations) && d.escalations.length ? ` após ${d.escalations.join("→")}` : "";
