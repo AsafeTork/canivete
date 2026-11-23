@@ -1054,7 +1054,12 @@ reg("cv_ubrowser_act", {
       UB_TAB_ROUTES.set(id, route);
     }
     const titleChanged = !!afterTitle && (urlChanged || navNewDoc);
-    const afterLabel = String(afterTitle ? `${afterTitle} — ${afterUrl || ""}` : (afterUrl || d.selector || d.value || d.text || "ok")).slice(0, 120);
+    // fill/type/select: o efeito é o valor do campo (não muda o DOM) — mostra alvo = valor
+    // em vez da URL da página, senão o agente não sabe se o campo recebeu o texto.
+    const fieldNote = ["fill", "type", "select"].includes(a.action)
+      ? `${String(a.selector || d.selector || "campo").slice(0, 80)} = ${String(a.action === "select" ? (a.value ?? d.value ?? "") : (a.text ?? d.text ?? "")).slice(0, 80)}`
+      : null;
+    const afterLabel = String(fieldNote ? `${fieldNote}${afterTitle ? ` — ${afterTitle}` : ""}` : (afterTitle ? `${afterTitle} — ${afterUrl || ""}` : (afterUrl || d.selector || d.value || d.text || "ok"))).slice(0, 120);
     const diff = urlChanged ? `navegou ${beforeUrl}→${afterUrl}` : (navNewDoc && afterUrl ? `navegou para ${afterLabel}` : `mesma página: ${afterLabel}`);
     // delta pós-ação: o que mudou no DOM (sem re-snapshot). Vazio = sem efeito visível.
     // transients (toast/aviso efêmero) em destaque: o agente vê o aviso sem call extra.
@@ -1070,7 +1075,8 @@ reg("cv_ubrowser_act", {
         if (dl.attrs) parts.push(`${dl.attrs} attr(s)`);
         if (parts.length) deltaNote = ` | mudou: ${parts.join(", ")}`;
       } else if (dl && typeof dl === "object") {
-        deltaNote = " | sem mudança no DOM";
+        // fill/type/select mudam value, não o DOM: "sem mudança" seria falso negativo.
+        if (!["fill", "type", "select"].includes(a.action)) deltaNote = " | sem mudança no DOM";
       }
     } catch {}
     // Verificação de clique (content+background): verified/whatChanged/method — o LLM
