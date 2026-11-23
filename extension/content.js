@@ -1595,8 +1595,27 @@ function ubDepth(el) {
 }
 // clone perfurado: cloneNode NÃO copia shadow — serializa shadow aberto p/ dentro
 // de <div data-ub-shadow> (recursivo, teto 25). Leitores (distill/read) enxergam tudo.
+// Shadow root aberto em qualquer descendente? Caminhada barata, sem alocar arrays.
+function ubHasShadowDeep(root) {
+  try {
+    const stack = [root];
+    while (stack.length) {
+      const el = stack.pop();
+      if (el.shadowRoot) return true;
+      const kids = el.children;
+      if (!kids) continue;
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+    }
+  } catch {}
+  return false;
+}
 function ubClonePierced(node, depth = 0) {
   if (!node || depth > 25) return null;
+  // fast path: subárvore sem shadow DOM → cloneNode(true) nativo. Em página de 8.800 nós:
+  // ~8ms contra ~100ms do clone nó-a-nó (distill/read de 2.200 cards caiu ~130→50ms).
+  if (depth === 0) {
+    try { if (!ubHasShadowDeep(node)) return node.cloneNode(true); } catch {}
+  }
   let c = null;
   try { c = node.cloneNode(false); } catch { return null; }
   if (!c) return null;
@@ -2158,9 +2177,12 @@ function ubDistill(maxChars = 4000, scopeEl = null) {
   const seenText = new Set();
   const seenHref = new Set();
   const lines = [];
-  let descartadas = 0;
+  let descartadas = 0, used = 0;
   const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
   for (const el of blocks) {
+    // já há texto suficiente p/ o cap: o resto seria cortado no slice final — parar aqui
+    // evita montar ~15k linhas em página grande (read de 2.200 cards custava ~130ms).
+    if (used >= cap) break;
     // 3) pula invisíveis e vazios (offsetParent só vale p/ nó conectado; clone é detached)
     try {
       if (el.isConnected && el.offsetParent === null) { descartadas++; continue; }
@@ -2232,6 +2254,7 @@ function ubDistill(maxChars = 4000, scopeEl = null) {
     if (!k || seenText.has(k)) { descartadas++; continue; }
     seenText.add(k);
     lines.push(line);
+    used += line.length + 1;
   }
   let markdown = lines.join("\n");
   if (markdown.length > cap) markdown = markdown.slice(0, cap);
