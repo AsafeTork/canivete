@@ -33,9 +33,9 @@ node src/server.mjs   # fala MCP via stdio; o token da extensão é gerado sozin
 
 ### Usar o Chrome com o Canivete
 
-Comece por `cv_owner_inspect {action:"overview", tab:"Gmail"}` para obter um mapa compacto com títulos, regiões, formulários e controles apontados por seletores. `max` e `offset` paginam a lista; use `nextOffset` para continuar. Para texto corrido, use `action:"read"`; para controles e refs de clique, `action:"snapshot"`.
+Se já conhece a aba, vá direto ao objetivo: `cv_owner_inspect {action:"overview", tab:"Gmail", goal:"encontrar configurações"}` devolve controles relevantes, seletores e contexto. `action:"read"` serve para texto corrido; `action:"snapshot", find:"trecho"` procura um alvo que não apareceu. Use `tabs` só para descobrir a aba e `status` quando a ponte falhar. Após listar, `tabId` é roteado automaticamente ao perfil certo.
 
-`cv_owner_act {action:"goto", tab:"Gmail", url:"https://…"}` navega para outro site na mesma guia. As ações preservam o app, foco e cursor atuais; use `focus:true` para trazer o Chrome à frente. Guias criadas com `action:"new"` entram em segundo plano no grupo **Canivete · agente** (`active:true` seleciona). O agente continua podendo escolher guias existentes de qualquer grupo.
+`cv_owner_act {action:"goto", tab:"Gmail", url:"https://…", snap:true, goal:"encontrar configurações"}` navega e já traz candidatos da nova página em uma chamada. As ações preservam o app, foco e cursor atuais; use `focus:true` para trazer o Chrome à frente. Guias criadas com `action:"new"` entram em segundo plano no grupo **Canivete · agente** (`active:true` seleciona). O agente continua podendo escolher guias existentes de qualquer grupo.
 
 Abra o painel de progresso na página com `cv_owner_act {action:"panel", mode:"open", tab:"Gmail", message:"Conferindo o formulário"}`. Ele mostra o status da tarefa, etapas e marcações visuais. Atualize com `mode:"update"`, `steps` e `annotations:[{selector,label}]`; as marcações usam uma camada isolada, sem alterar atributos do site. O painel permanece na mesma guia ao navegar e sobrevive a recargas enquanto o Chrome estiver aberto.
 
@@ -154,6 +154,12 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 - Ponte local (`127.0.0.1:19422`) + token (`~/.config/canivete/token.txt`, gerado sozinho, `0600`, no `.gitignore`).
 - Kill switch: pause na extensão = acesso zero.
 
+### Controles da extensão
+
+Clique no ícone do Canivete para ver a conexão real e pausar ou reativar o perfil. **Ler** permite consultas; **Navegar** também permite abrir e percorrer páginas; **Operar** libera interações. Em **Sites escolhidos**, adicione o domínio da aba atual ou digite outro domínio; o agente só recebe e opera abas nessa lista. A lista limita comandos do Canivete, enquanto as permissões de host da extensão são geridas pelo Chrome. **Captura essencial** reduz a coleta de diagnóstico; **Detalhada** registra erros da página. As opções são salvas imediatamente por perfil.
+
+O painel completo em `http://127.0.0.1:19422/painel` mostra perfis conectados, fila e itens pendentes antes das métricas. **Configurar perfil** abre os mesmos controles. Para reativar um perfil pausado, use o ícone da extensão no Chrome.
+
 ## Variáveis de ambiente
 
 | Var | Default | O quê |
@@ -196,7 +202,7 @@ a ponte guarda os clipes e um painel local mostra tudo junto do inbox `cv_report
 
 | Rota (127.0.0.1:19422) | Auth | O quê |
 |---|---|---|
-| `GET /painel` | público | painel web (Ledger) — erros/reports/replays |
+| `GET /painel` | público | painel web — perfis, pendências, erros/reports/replays |
 | `GET /uierr.js` | público | shim de evidência visual p/ sobrepor em app homolog |
 | `GET /assets/<arquivo>` | público | assets servidos (ex.: `rrweb.umd.min.js` vend) |
 | `GET /replays/<id>` | público | JSON do clipe rrweb gravado |

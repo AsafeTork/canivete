@@ -74,6 +74,26 @@ section[role="tabpanel"][hidden] { display: none; }
 .cardh { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s8); padding: var(--s16); border-bottom: 1px solid var(--hairline); font-weight: 650; font-size: 13px; }
 .cardh .mono { color: var(--muted); font-weight: 400; }
 .cardb { padding: var(--s16); display: grid; gap: var(--s16); }
+.overview { border: 1px solid var(--hairline); background: var(--card); border-radius: var(--raio); padding: var(--s24); margin-bottom: var(--s16); }
+.overviewHead { display: flex; justify-content: space-between; align-items: end; gap: var(--s16); flex-wrap: wrap; }
+.overview h1 { margin: 0; font-size: 28px; line-height: 32px; letter-spacing: -.5px; }
+.overview p { color: var(--muted); margin: var(--s8) 0 0; font-size: 14px; }
+.overviewStats { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); border-top: 1px solid var(--hairline); margin-top: var(--s24); padding-top: var(--s16); gap: var(--s16); }
+.overviewStats strong { display: block; font: 650 24px/32px 'Geist Mono',monospace; }
+.overviewStats span { color: var(--muted); font-size: 12px; }
+.profiles { display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: var(--s8); margin-top: var(--s16); }
+.profileCard { border: 1px solid var(--hairline); border-radius: var(--raio); padding: var(--s16); min-width: 0; }
+.profileCard header { position: static; border: 0; background: transparent; display: flex; gap: var(--s8); align-items: center; justify-content: space-between; }
+.profileCard b { font-size: 15px; overflow: hidden; text-overflow: ellipsis; }
+.profileCard small { display: block; color: var(--muted); margin-top: var(--s8); font-size: 12px; }
+.profileCard a { color: var(--texto); display: inline-block; margin-top: var(--s16); text-decoration: underline; text-underline-offset: 3px; }
+.profileCard a:hover { color: var(--acento); }
+.profileCard .pstate { color: var(--ok); font-size: 12px; }.profileCard .pstate.off { color: var(--erro); }
+.diagnostic { margin-top: var(--s16); }
+.diagnostic > summary { cursor: pointer; color: var(--muted); padding: var(--s8) 0; font-weight: 550; }
+.diagnostic > summary:hover { color: var(--texto); }
+.diagnostic > .grid { margin-top: var(--s8); }
+@media(max-width:550px){.overview{padding:var(--s16)}.overviewStats{gap:var(--s8)}.overviewStats strong{font-size:20px}}
 
 /* número grande (contador = mono) */
 .bignum { font: 650 28px/32px 'Geist Mono', ui-monospace, monospace; font-feature-settings: "tnum"; }
@@ -241,7 +261,12 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
 
   <!-- VISÃO: status de tudo, um card por grupo -->
   <section id="p-visao" role="tabpanel" aria-labelledby="t-visao">
-    <div class="grid">
+    <div class="overview">
+      <div class="overviewHead"><div><h1>Seu navegador, sob controle</h1><p id="overviewNote">Verificando perfis e trabalho pendente…</p></div><button class="acento" id="goItems">Revisar itens</button></div>
+      <div class="overviewStats"><div><strong id="overviewProfiles">—</strong><span>perfis conectados</span></div><div><strong id="overviewQueue">—</strong><span>comandos na fila</span></div><div><strong id="overviewOpen">—</strong><span>itens aguardando você</span></div></div>
+      <div class="profiles" id="profiles"></div>
+    </div>
+    <details class="diagnostic"><summary>Ver métricas e diagnóstico</summary><div class="grid">
       <div class="card">
         <div class="cardh">Ponte <output class="mono" id="statwhen" aria-live="polite">…</output></div>
         <div class="cardb">
@@ -300,7 +325,7 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
         <div class="cardh">Arquivos</div>
         <div class="cardb"><div class="rows" id="starq">…</div></div>
       </div>
-    </div>
+    </div></details>
   </section>
 
   <!-- ITENS: filtros + lista agrupada por tipo -->
@@ -549,6 +574,7 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
       }
     });
   });
+  $("goItems").addEventListener("click", function () { setTab("itens"); });
 
   /* — VISÃO — */
   function renderVisao(j) {
@@ -559,6 +585,19 @@ footer { padding: var(--s16); color: var(--muted); font-size: 11px; border-top: 
     $("stporta").textContent = "porta " + j.ponte.port;
     $("stponte").textContent = "fila " + j.ponte.queue + " · aguardando " + j.ponte.pending +
       " · expiradas " + j.ponte.expiredDropped + " · poll " + ago(j.ponte.lastPollAgoMs);
+    var online = j.extensoes.filter(function (e) { return e.connected; }).length;
+    var open = (j.captura.elem.aberto || 0) + (j.captura.elem.em_resolução || 0) + (j.captura.report.aberto || 0) + (j.captura.report.em_resolução || 0);
+    $("overviewProfiles").textContent = online;
+    $("overviewQueue").textContent = j.ponte.queue;
+    $("overviewOpen").textContent = open;
+    $("overviewNote").textContent = online ? online + (online === 1 ? " perfil pronto" : " perfis prontos") + " para o agente. Ajuste o alcance de cada um abaixo." : "Nenhum perfil conectado. Abra o popup do Canivete no Chrome para conectar ou reativar.";
+    $("goItems").textContent = open ? "Revisar " + open + " itens" : "Ver itens";
+    $("profiles").innerHTML = j.extensoes.length ? j.extensoes.map(function (e) {
+      var mode = { observe: "Ler", navigate: "Navegar", full: "Operar" }[e.actionMode] || "Operar";
+      var scope = e.accessMode === "selected" ? (e.allowedSites.length ? e.allowedSites.length + " site(s) escolhido(s)" : "Nenhum site permitido") : "Todos os sites";
+      var ext = /^[a-p]{32}$/.test(e.extId || "") ? '<a href="chrome-extension://' + e.extId + '/popup.html" target="_blank" rel="noopener">Configurar perfil ↗</a>' : '<small>Configure pelo ícone do Canivete no Chrome.</small>';
+      return '<article class="profileCard"><header><b>' + esc(e.label || e.id) + '</b><span class="pstate' + (e.connected ? '' : ' off') + '">' + (e.connected ? 'Conectado' : 'Offline') + '</span></header><small>' + esc(mode + ' · ' + scope + ' · ' + (Number.isFinite(e.tabs) ? e.tabs + ' abas' : 'abas não informadas') + ' · última resposta ' + ago(e.lastPollAgoMs)) + '</small>' + ext + '</article>';
+    }).join("") : '<div class="profileCard">Nenhum perfil encontrado. Abra o Chrome com a extensão ativa.</div>';
 
     $("stext").innerHTML = j.extensoes.length
       ? j.extensoes.map(function (e) {

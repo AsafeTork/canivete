@@ -1,65 +1,24 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head><meta charset="utf-8"><style>
+<!doctype html>
+<!-- Ácido-Noir: estado primeiro, um acento na ação principal. -->
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Canivete</title>
+<style>
 @font-face{font-family:'Space Grotesk';src:url('fonts/SpaceGrotesk-latin.woff2') format('woff2');font-weight:300 700;font-display:swap}
 @font-face{font-family:'Geist Mono';src:url('fonts/GeistMono-latin.woff2') format('woff2');font-weight:100 900;font-display:swap}
-:root{--fundo:#0b0b0b;--card:#141414;--hair:#262626;--luz:#faf9f5;--neutro:#9a9a95;--acento:#c2ff3d;--ok:#8fd4a8;--erro:#ff6b5e;--raio:6px}
-body{width:264px;background:var(--fundo);color:var(--luz);margin:0;padding:12px;
-  font:450 13px/20px 'Space Grotesk',system-ui,sans-serif}
-header{display:flex;align-items:center;gap:8px;margin-bottom:4px}
-header svg{width:18px;height:18px;color:var(--luz);flex:none}
-.word{font-weight:650;font-size:15px;letter-spacing:-0.3px;flex:1}
-#dot{width:8px;height:8px;border-radius:999px;background:var(--neutro);flex:none}
-#dot.on{background:var(--ok)} #dot.off{background:var(--erro)}
-#status{color:var(--neutro);font-size:13px;margin:0 0 12px}
-button{font:inherit;color:var(--luz);background:transparent;border:1px solid var(--hair);
-  border-radius:var(--raio);padding:6px 10px;cursor:pointer}
-button:hover{background:#1a1a1a}
-button:active{transform:translateY(1px)}
-:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
-#mark{width:100%;background:var(--acento);color:#0b0b0b;font-weight:650;border:0;padding:8px 10px;margin-bottom:8px}
-#mark:hover{filter:brightness(.92)}
-.duo{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
-details{border-top:1px solid var(--hair);padding-top:8px}
-summary{display:flex;align-items:center;justify-content:center;gap:6px;color:var(--neutro);
-  font:inherit;background:transparent;border:1px solid var(--hair);border-radius:var(--raio);
-  padding:6px 10px;cursor:pointer;list-style:none;margin-bottom:8px}
-summary::marker{content:''}
-summary::after{content:'';width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
-  transform:rotate(45deg) translateY(-1px);transition:transform 120ms ease-out;flex:none}
-details[open] summary::after{transform:rotate(225deg) translateY(-1px)}
-summary:hover{background:#1a1a1a;color:var(--luz)}
-details[open] summary{color:var(--luz)}
-label{display:block;color:var(--neutro);font-size:13px;margin-bottom:4px}
-input{width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--hair);
-  border-radius:var(--raio);color:var(--luz);font:inherit;padding:6px 8px;margin-bottom:8px}
-input::placeholder{color:var(--neutro)}
-.duo button:last-child{margin-bottom:0}
-.mono{font-family:'Geist Mono',monospace;font-size:11px;line-height:16px;color:var(--neutro);margin:8px 0 0;word-break:break-all}
-</style></head>
-<body>
-<header>
-  <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
-    <path d="M23.6 8.9 A9.8 9.8 0 1 0 22.8 23.9" stroke="currentColor" stroke-width="4.8" stroke-linecap="round"/>
-    <path d="M22.6 23.4 C24.6 18.2, 27.2 11.9, 30.6 5.8 L27.8 18.9 C26.4 20.3, 24.6 21.9, 23.3 23.6 Z" fill="#C2FF3D"/>
-    <circle cx="22.9" cy="23.4" r="1.3" fill="#0b0b0b"/>
-  </svg>
-  <span class="word">canivete</span><span id="dot"></span>
-</header>
-<p id="status">carregando…</p>
-<button id="mark">Marcar o que está quebrado</button>
-<div class="duo"><button id="toggle">Pausar</button><button id="test">Testar conexão</button></div>
-<button id="painel" style="width:100%;margin-bottom:8px">Painel</button>
-<details>
-  <summary>conectar…</summary>
-  <label for="token">Token — o arquivo token.txt desta extensão</label>
-  <input id="token" type="password" placeholder="cole o token.txt">
-  <button id="save" style="width:100%;margin-bottom:8px">Salvar token</button>
-  <label for="label">Nome deste perfil</label>
-  <input id="label" maxlength="60" placeholder="pessoal, trabalho…">
-  <button id="saveLabel" style="width:100%">Salvar nome</button>
-</details>
-<p class="mono" id="client">cliente: …</p>
-<p class="mono" id="diag"></p>
-<script src="popup.js"></script>
-</body></html>
+:root{--bg:#0b0b0b;--card:#141414;--line:#30302e;--text:#faf9f5;--muted:#aaa9a2;--acid:#c2ff3d;--good:#8fd4a8;--bad:#ff8378;--warn:#e7c266}
+*{box-sizing:border-box}body{width:360px;max-height:600px;overflow:auto;margin:0;background:var(--bg);color:var(--text);font:450 14px/20px 'Space Grotesk',system-ui,sans-serif}button,input,select{font:inherit}button{cursor:pointer;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:8px 12px}button:hover{border-color:var(--muted)}button:disabled{opacity:.45;cursor:not-allowed}button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--acid);outline-offset:2px}button:active{transform:translateY(1px)}
+header{display:flex;align-items:center;gap:8px;padding:16px 20px 8px}header svg{width:22px;height:22px;flex:none}.brand{font-size:17px;font-weight:700;letter-spacing:-.4px;flex:1}.profile{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:125px}
+main{padding:8px 20px 20px}.hero{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:16px;margin-bottom:16px}.statusline{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:650;letter-spacing:-.25px}.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}.dot.good{background:var(--good)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}.sub{color:var(--muted);font-size:13px;margin:4px 0 0}.herofoot{display:flex;justify-content:space-between;align-items:center;gap:8px;border-top:1px solid var(--line);margin-top:16px;padding-top:12px}.herofoot .sub{margin:0}.switch{min-width:94px;font-weight:650}.switch.off{background:var(--acid);color:var(--bg);border-color:var(--acid)}
+h2{font-size:13px;font-weight:650;letter-spacing:.1px;margin:0 0 8px}.block{margin-bottom:16px}.hint{color:var(--muted);font-size:12px;line-height:17px;margin:6px 0 0}.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;background:var(--card);padding:4px;border:1px solid var(--line);border-radius:6px}.seg button{border:0;background:transparent;padding:8px 2px;font-size:13px}.seg button[aria-pressed="true"]{background:#353631;color:var(--text)}.row{display:flex;justify-content:space-between;align-items:center;gap:8px}.row select{min-width:145px;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px}.site{color:var(--text);font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site small{color:var(--muted);display:block;font-weight:450}.sitebox{border:1px solid var(--line);border-radius:6px;padding:12px;margin-top:8px}.sitebox button{white-space:nowrap}.sites{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.sites button{font-size:12px;padding:4px 8px;color:var(--muted)}.empty{font-size:12px;color:var(--warn);margin-top:8px}
+.addrow{display:flex;gap:6px;margin-top:8px}.addrow input{min-width:0;flex:1;margin:0}.addrow button{flex:none}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.actions button{width:100%;text-align:center}.actions #panel{background:var(--acid);color:var(--bg);border-color:var(--acid);font-weight:700}.actions #panel:hover,.switch.off:hover{filter:brightness(.92)}.feedback{min-height:18px;color:var(--muted);font-size:12px;margin:8px 0 0}
+details{border-top:1px solid var(--line);margin-top:12px;padding-top:8px}summary{cursor:pointer;color:var(--muted);padding:8px 0;list-style:none}summary::-webkit-details-marker{display:none}summary::after{content:'⌄';float:right}details[open] summary::after{content:'⌃'}label{display:block;color:var(--muted);font-size:12px;margin:12px 0 4px}input{width:100%;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px}input::placeholder{color:var(--muted)}.formrow{display:flex;gap:8px;margin-top:8px}.formrow button{flex:none}.mono{font:450 11px/16px 'Geist Mono',monospace;color:var(--muted);word-break:break-all}.diag{border-top:1px solid var(--line);padding-top:8px;margin-top:12px}
+</style></head><body>
+<header><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M23.6 8.9 A9.8 9.8 0 1 0 22.8 23.9" stroke="currentColor" stroke-width="4.8" stroke-linecap="round"/><path d="M22.6 23.4 C24.6 18.2 27.2 11.9 30.6 5.8 L27.8 18.9 C26.4 20.3 24.6 21.9 23.3 23.6 Z" fill="#C2FF3D"/></svg><span class="brand">canivete</span><span class="profile" id="profile"></span></header>
+<main>
+  <div class="hero" aria-live="polite"><div class="statusline"><span class="dot" id="dot"></span><span id="status">Verificando conexão…</span></div><p class="sub" id="statusDetail">Aguardando resposta da ponte.</p><div class="herofoot"><span class="sub" id="queue">Aguardando resposta</span><button class="switch" id="toggle">Pausar</button></div></div>
+  <section class="block" aria-labelledby="modeTitle"><h2 id="modeTitle">O que o agente pode fazer</h2><div class="seg" role="group" aria-label="Modo de atuação"><button data-mode="observe" aria-pressed="false">Ler</button><button data-mode="navigate" aria-pressed="false">Navegar</button><button data-mode="full" aria-pressed="true">Operar</button></div><p class="hint" id="modeHint"></p></section>
+  <section class="block" aria-labelledby="scopeTitle"><div class="row"><h2 id="scopeTitle">Onde pode atuar</h2><select id="accessMode" aria-label="Acesso a sites"><option value="all">Todos os sites</option><option value="selected">Sites escolhidos</option></select></div><div class="sitebox"><div class="row"><span class="site" id="currentSite">Aba atual<small id="siteState">Carregando…</small></span><button id="siteButton">Permitir site</button></div><div class="addrow"><input id="newSite" aria-label="Domínio para permitir" placeholder="exemplo.com" spellcheck="false"><button id="addSite">Adicionar</button></div><div class="sites" id="sites"></div></div><p class="hint">A lista limita os comandos do agente. As permissões da extensão também podem ser ajustadas no Chrome.</p></section>
+  <section class="block" aria-labelledby="speedTitle"><div class="row"><h2 id="speedTitle">Captura de diagnóstico</h2><select id="telemetryMode" aria-label="Captura de diagnóstico"><option value="fast">Essencial · rápido</option><option value="diagnostic">Detalhada</option></select></div><p class="hint">Detalhada registra erros da página; essencial reduz coleta e interferência.</p></section>
+  <div class="actions"><button id="panel">Abrir painel</button><button id="mark">Marcar problema</button></div><p class="feedback" id="feedback" role="status"></p>
+  <details><summary>Conexão e perfil</summary><label for="token">Token da ponte</label><input id="token" type="password" placeholder="Cole o conteúdo de token.txt" autocomplete="off"><div class="formrow"><button id="saveToken">Salvar e testar</button><button id="test">Testar conexão</button></div><label for="label">Nome deste perfil</label><input id="label" maxlength="60" placeholder="Pessoal, trabalho…"><div class="formrow"><button id="saveLabel">Salvar nome</button><button id="permissions">Permissões no Chrome</button></div><p class="mono diag" id="diag">—</p></details>
+</main><script src="popup.js"></script></body></html>

@@ -327,7 +327,7 @@ function ubEnsure() {
           res.end(JSON.stringify({
             ok: true,
             ponte: { port: stats.port, uptimeS: Math.round(process.uptime()), queue: stats.queued, pending: stats.pending, expiredDropped: stats.expiredDropped, lastPollAgoMs: stats.lastPollAgoMs },
-            extensoes: stats.extensions.map((e) => ({ id: String(e.id).slice(0, 12) + "…", label: e.profileLabel || null, extId: e.info && e.info.extId ? String(e.info.extId) : null, connected: !!e.connected, lastPollAgoMs: e.lastPollAgoMs, queued: e.queued })),
+            extensoes: stats.extensions.map((e) => ({ id: String(e.id).slice(0, 12) + "…", label: e.profileLabel || null, extId: e.info && e.info.extId ? String(e.info.extId) : null, connected: !!e.connected, lastPollAgoMs: e.lastPollAgoMs, queued: e.queued, actionMode: e.info?.actionMode || "full", accessMode: e.info?.accessMode || "all", allowedSites: Array.isArray(e.info?.allowedSites) ? e.info.allowedSites : [], telemetryMode: e.info?.telemetryMode || "fast", tabs: e.info?.tabs || 0 })),
             arquivos: { issues: arq("issues.jsonl"), monlog: arq("mon-log.jsonl"), elemreports: arq("reports-elementos.jsonl"), replays: { count: replaysN } },
             captura: { total: issues.length, porFonte, porKind, elem, report: repEstado },
             lat: ubLat, // últimas ≤120 respostas da ponte (ms) — gráfico de velocidade

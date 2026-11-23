@@ -1,85 +1,98 @@
+const $ = (id) => document.getElementById(id);
+const modeHints = {
+  observe: "O agente pode consultar abas e páginas, sem alterá-las.",
+  navigate: "Pode ler, abrir e navegar entre páginas, sem clicar ou preencher.",
+  full: "Pode ler, navegar e interagir com as páginas permitidas."
+};
+let currentHost = "";
+let refreshing = false;
+const msg = (value) => { $("feedback").textContent = value; };
+function hostname(url) { try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.hostname.toLowerCase() : ""; } catch { return ""; } }
 async function refresh() {
-  const s = await chrome.storage.local.get(["token", "enabled", "profileLabel"]);
-  const on = s.enabled !== false && !!s.token;
-  document.getElementById("dot").className = on ? "on" : "off";
-  const tg = document.getElementById("toggle");
-  if (tg) tg.textContent = on ? "Pausar" : "Ativar";
-  document.getElementById("status").textContent = !s.token
-    ? "Sem ponte. Cole o token do token.txt."
-    : s.enabled !== false ? "Ligado — age no seu navegador só quando você pedir." : "Pausado — o agente não vê nem toca.";
-  if (s.token) document.getElementById("token").value = s.token;
-  const li = document.getElementById("label");
-  if (li && document.activeElement !== li) li.value = (s.profileLabel || "").slice(0, 60);
+  if (refreshing) return;
+  refreshing = true;
   try {
-    const st = await chrome.runtime.sendMessage({ cmd: "status" });
-    document.getElementById("client").textContent = "cliente " + (st && st.clientId ? String(st.clientId).slice(0, 12) + "…" : "—");
-  } catch { document.getElementById("client").textContent = "cliente — (service worker dormente)"; }
+    const [s, tab, d] = await Promise.all([
+      chrome.storage.local.get(["token", "enabled", "profileLabel", "actionMode", "accessMode", "allowedSites", "telemetryMode"]),
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }).then((v) => v[0]).catch(() => null),
+      chrome.runtime.sendMessage({ cmd: "diag" }).catch(() => null)
+    ]);
+    const sites = Array.isArray(s.allowedSites) ? s.allowedSites : [];
+    const enabled = s.enabled !== false;
+    currentHost = hostname(tab?.url);
+    $("profile").textContent = s.profileLabel || "perfil sem nome";
+    if (document.activeElement !== $("token")) $("token").value = s.token || "";
+    if (document.activeElement !== $("label")) $("label").value = s.profileLabel || "";
+    $("toggle").textContent = enabled ? "Pausar" : "Ativar";
+    $("toggle").classList.toggle("off", !enabled);
+    const state = !enabled ? "Pausado" : !s.token ? "Token necessário" : d?.online ? "Conectado" : "Ponte indisponível";
+    $("status").textContent = state;
+    $("dot").className = "dot " + (!enabled ? "warn" : d?.online && s.token ? "good" : "bad");
+    $("statusDetail").textContent = !enabled ? "O agente não recebe comandos neste perfil." : !s.token ? "Abra Conexão e perfil para conectar." : d?.online ? "Comandos do agente chegam a este Chrome." : "Verifique se o serviço local está ativo.";
+    $("queue").textContent = d?.online ? "Última resposta " + (d.lastPollOk || "agora") : "Sem resposta recente";
+    const mode = ["observe", "navigate", "full"].includes(s.actionMode) ? s.actionMode : "full";
+    document.querySelectorAll("[data-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+    $("modeHint").textContent = modeHints[mode];
+    $("accessMode").value = s.accessMode === "selected" ? "selected" : "all";
+    $("telemetryMode").value = s.telemetryMode === "diagnostic" ? "diagnostic" : "fast";
+    $("currentSite").firstChild.textContent = currentHost || "Esta aba";
+    $("siteState").textContent = !currentHost ? "Abra um site HTTP(S) para permitir" : s.accessMode !== "selected" ? "Incluído em todos os sites" : sites.includes(currentHost) ? "Permitido" : "Fora da lista";
+    $("siteButton").disabled = !currentHost;
+    $("siteButton").textContent = s.accessMode !== "selected" ? "Só este site" : sites.includes(currentHost) ? "Remover" : "Permitir site";
+    $("sites").replaceChildren();
+    if (s.accessMode === "selected" && !sites.length) {
+      const p = document.createElement("span"); p.className = "empty"; p.textContent = "Nenhum site permitido. O agente não acessa abas."; $("sites").append(p);
+    }
+    if (s.accessMode === "selected") for (const site of sites) {
+      const b = document.createElement("button"); b.type = "button"; b.textContent = site + " ×"; b.title = "Remover " + site;
+      b.onclick = async () => { await chrome.storage.local.set({ allowedSites: sites.filter((x) => x !== site) }); await refresh(); };
+      $("sites").append(b);
+    }
+    $("diag").textContent = "polls " + (d?.polls ?? "—") + " · último " + (d?.lastPollOk || "—") + (d?.lastError && d.lastError !== "-" ? " · " + d.lastError : "");
+  } finally { refreshing = false; }
 }
-document.getElementById("save").onclick = async () => {
-  const btn = document.getElementById("save");
-  const token = document.getElementById("token").value.trim();
-  await chrome.storage.local.set({ token });
-  await refresh();
-  // valida de verdade (Salvar sozinho aceitava qualquer texto — falso verde):
-  const d = document.getElementById("diag");
-  btn.disabled = true; btn.textContent = "Verificando…"; d.textContent = "";
-  try {
-    const r = await chrome.runtime.sendMessage({ cmd: "pingBridge" });
-    btn.textContent = r.ok ? "Ponte viva ✓" : "Recusado";
-    d.textContent = r.ok ? "" : (r.error || r.http);
-  } catch (e) { btn.textContent = "Sem resposta"; d.textContent = "service worker dormente — tente de novo em 1 min"; }
-  setTimeout(() => { btn.disabled = false; btn.textContent = "Salvar token"; }, 2500);
+async function update(patch, notice) { await chrome.storage.local.set(patch); msg(notice); await refresh(); }
+document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => update({ actionMode: b.dataset.mode }, "Modo atualizado."));
+$("toggle").onclick = async () => { const s = await chrome.storage.local.get("enabled"); await update({ enabled: s.enabled === false }, s.enabled === false ? "Canivete ativado." : "Canivete pausado."); };
+$("accessMode").onchange = (e) => update({ accessMode: e.target.value }, e.target.value === "selected" ? "Agora só os sites escolhidos estão disponíveis." : "Todos os sites estão disponíveis.");
+$("telemetryMode").onchange = (e) => update({ telemetryMode: e.target.value }, "Captura de diagnóstico atualizada.");
+$("siteButton").onclick = async () => {
+  if (!currentHost) return;
+  const s = await chrome.storage.local.get(["allowedSites", "accessMode"]);
+  const sites = Array.isArray(s.allowedSites) ? s.allowedSites : [];
+  const has = s.accessMode === "selected" && sites.includes(currentHost);
+  await update({ accessMode: "selected", allowedSites: s.accessMode !== "selected" ? [currentHost] : has ? sites.filter((x) => x !== currentHost) : [...sites, currentHost] }, has ? "Site removido." : "Site permitido.");
 };
-document.getElementById("toggle").onclick = async () => {
-  const s = await chrome.storage.local.get(["enabled"]);
-  await chrome.storage.local.set({ enabled: !(s.enabled !== false) });
-  refresh();
+$("addSite").onclick = async () => {
+  const raw = $("newSite").value.trim().toLowerCase();
+  const site = hostname(/^https?:\/\//.test(raw) ? raw : "https://" + raw);
+  if (!site || !/^[a-z0-9.-]+$/.test(site) || site.startsWith(".") || site.endsWith(".")) return msg("Digite um domínio válido, como exemplo.com.");
+  const s = await chrome.storage.local.get("allowedSites");
+  const sites = Array.isArray(s.allowedSites) ? s.allowedSites : [];
+  $("newSite").value = "";
+  await update({ accessMode: "selected", allowedSites: [...new Set([...sites, site])] }, site + " permitido.");
 };
-// marcação humana de elemento: liga o picker na aba ativa (o report vai p/ a ponte no "Marcar")
-document.getElementById("mark").onclick = async () => {
-  const d = document.getElementById("diag");
-  d.textContent = "abrindo marcação…";
+$("newSite").onkeydown = (e) => { if (e.key === "Enter") $("addSite").click(); };
+$("panel").onclick = async () => { const s = await chrome.storage.local.get("url"); await chrome.tabs.create({ url: (s.url || "http://127.0.0.1:19422") + "/painel", active: false }); };
+$("mark").onclick = async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!tab || !tab.id) { d.textContent = "sem aba ativa"; return; }
+    if (!tab?.id) return msg("Abra a página que deseja marcar.");
     const r = await chrome.tabs.sendMessage(tab.id, { cmd: "elem_pick", args: {} });
-    d.textContent = (r && r.ok)
-      ? "clique no elemento quebrado — Esc cancela"
-      : ("falha: " + ((r && r.error) || "sem resposta"));
-  } catch (e) { d.textContent = "esta aba ainda não tem o canivete — recarregue (F5) e tente"; }
+    msg(r?.ok ? "Clique no elemento quebrado. Esc cancela." : "Não foi possível marcar nesta aba.");
+  } catch { msg("Recarregue esta página e tente marcar novamente."); }
 };
-// painel de observabilidade na ponte — abre em aba nova (nunca rouba a aba ativa)
-document.getElementById("painel").onclick = async () => {
-  const s = await chrome.storage.local.get("url");
-  chrome.tabs.create({ url: (s.url || "http://127.0.0.1:19422") + "/painel" });
-};
-document.getElementById("test").onclick = async () => {
-  const d = document.getElementById("diag");
-  d.textContent = "testando…";
+async function test() {
+  msg("Testando conexão…");
   try {
     const r = await chrome.runtime.sendMessage({ cmd: "pingBridge" });
-    d.textContent = r.ok
-      ? ("ponte viva — HTTP " + r.http + " · " + (r.clientId ? "cliente " + String(r.clientId).slice(0, 8) + "…" : "sem cliente"))
-      : ("ponte recusou — " + (r.error || r.http));
-  } catch (e) { d.textContent = "service worker dormente — tente de novo em 1 min"; }
-};
-// nome do perfil: persiste e manda hello de teste na mesma tacada (rota p/ multi-perfil)
-document.getElementById("saveLabel").onclick = async () => {
-  const label = document.getElementById("label").value.trim().slice(0, 60);
-  await chrome.storage.local.set({ profileLabel: label });
-  refresh();
-  const d = document.getElementById("diag");
-  d.textContent = "salvando…";
-  try {
-    const r = await chrome.runtime.sendMessage({ cmd: "pingBridge" });
-    d.textContent = r.ok
-      ? ("'" + (label || "sem nome") + "' salvo · " + (r.clientId ? "cliente " + String(r.clientId).slice(0, 8) + "…" : "sem cliente"))
-      : ("ponte recusou — " + (r.error || r.http));
-  } catch (e) { d.textContent = "service worker dormente — tente de novo em 1 min"; }
-};
-(async () => {
-  const s = await chrome.storage.local.get(["diag"]);
-  if (s.diag) document.getElementById("diag").textContent =
-    `polls:${s.diag.polls} · último ok ${s.diag.lastPollOk}${s.diag.lastError ? " · erro: " + s.diag.lastError : ""}`;
-})();
-refresh();
+    msg(r?.ok ? "Ponte conectada." : "Ponte recusou: " + (r?.error || r?.http || "sem resposta"));
+  } catch { msg("Serviço da extensão sem resposta."); }
+  await refresh();
+}
+$("test").onclick = test;
+$("saveToken").onclick = async () => { await chrome.storage.local.set({ token: $("token").value.trim() }); await test(); };
+$("saveLabel").onclick = async () => { await update({ profileLabel: $("label").value.trim().slice(0, 60) }, "Nome salvo."); };
+$("permissions").onclick = () => chrome.tabs.create({ url: "chrome://extensions/?id=" + chrome.runtime.id });
+chrome.storage.onChanged.addListener((_changes, area) => { if (area === "local") refresh().catch(() => {}); });
+refresh().catch(() => msg("Não foi possível carregar as configurações."));

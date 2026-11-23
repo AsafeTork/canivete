@@ -91,6 +91,7 @@ export function ubOverviewSlim(d, { detail = "compact", headingsMax = 15 } = {})
     const page = src.page && typeof src.page === "object" ? src.page : {};
     const slimPage = { title: page.title || "", url: page.url || "", ...(page.readyState && page.readyState !== "complete" ? { readyState: page.readyState } : {}) };
     const heads = Array.isArray(src.headings) ? src.headings : [];
+    const headsTotal = Number(src.headingsTotal) || heads.length; // extensão capa em 80; total vem separado
     const capH = Math.max(0, Math.floor(Number(headingsMax) || 0)) || 15;
     // tuplas [nível, texto]: 30 títulos caem de ~990B p/ ~600B (chaves repetidas somem).
     const headings = heads.slice(0, capH).map((h) => [Number(h?.level) || 0, String(h?.text || "").slice(0, 100)]);
@@ -119,11 +120,13 @@ export function ubOverviewSlim(d, { detail = "compact", headingsMax = 15 } = {})
     return {
       page: slimPage,
       headings,
-      ...(heads.length > headings.length ? { headingsOmitted: heads.length - headings.length } : {}),
+      ...(headsTotal > headings.length ? { headingsOmitted: headsTotal - headings.length } : {}),
       landmarks,
       forms,
       controls,
       controlsTotal: Number(src.controlsTotal) || controls.length,
+      ...(Number(src.allControls) > Number(src.controlsTotal) ? { allControls: Number(src.allControls) } : {}),
+      ...(src.goal ? { goal: String(src.goal).slice(0, 120), goalMatched: !!src.goalMatched, matches: (Array.isArray(src.matches) ? src.matches : []).slice(0, 5).map((m) => ({ sel: String(m.selector || ""), name: String(m.name || "").slice(0, 100), role: String(m.role || ""), ...(m.context ? { context: String(m.context).slice(0, 80) } : {}), ...(m.href ? { href: String(m.href).slice(0, 240) } : {}) })) } : {}),
       // offset 0 é o caso comum; controlsOmitted é derivável de total-offset-length.
       ...(Number(src.controlsOffset) ? { controlsOffset: Number(src.controlsOffset) } : {}),
       ...(src.nextOffset != null ? { nextOffset: src.nextOffset } : {}),

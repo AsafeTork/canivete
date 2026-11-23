@@ -2883,7 +2883,8 @@ function ubElemPickStart(opts) {
 function ubPageOverview(max = 35, offset = 0, order = "action", goal = "") {
   const visible = (el) => { try { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden" && Number(s.opacity) !== 0; } catch { return false; } };
   const textOf = (el, n = 100) => String(el?.innerText || el?.value || el?.getAttribute?.("aria-label") || el?.getAttribute?.("title") || "").replace(/\s+/g, " ").trim().slice(0, n);
-  const headings = [...document.querySelectorAll("h1,h2,h3,[role=heading]")].filter(visible).map((el) => ({ level: Number(el.getAttribute("aria-level")) || Number(el.tagName.slice(1)) || 0, text: textOf(el, 140), selector: cssPath(el) }));
+  const allHeadings = [...document.querySelectorAll("h1,h2,h3,[role=heading]")].filter(visible);
+  const headings = allHeadings.slice(0, 80).map((el) => ({ level: Number(el.getAttribute("aria-level")) || Number(el.tagName.slice(1)) || 0, text: textOf(el, 140), selector: cssPath(el) }));
   // order=action (padrão): campos e botões antes de links — 40 links de menu deixavam de
   // esconder o formulário/CTAs nas primeiras páginas. order=dom preserva a ordem da página.
   const ctrlRank = (el) => {
@@ -2909,10 +2910,10 @@ function ubPageOverview(max = 35, offset = 0, order = "action", goal = "") {
       return value;
     } catch { return ""; }
   };
-  const controls = rawControls.map((el) => {
+  const buildItem = (el) => {
     const r = el.getBoundingClientRect(), name = ubAccessibleName(el, textOf(el, 100));
     return { tag: el.tagName.toLowerCase(), role: ubAriaRole(el), name: String(name || textOf(el, 100)).slice(0, 100), type: el.type || "", state: ubElementState(el), selector: cssPath(el), inViewport: r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth, ...(el.href ? { href: String(el.href).slice(0, 240) } : {}), ...(goal ? { context: contextOf(el) } : {}) };
-  });
+  };
   const norm = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const stop = new Set(["a","as","o","os","de","da","do","das","dos","em","no","na","para","por","um","uma","que","como","the","to","of","in","on","and","abrir","ir","ver","achar","encontrar"]);
   const phrase = norm(goal).slice(0, 120);
@@ -2930,17 +2931,26 @@ function ubPageOverview(max = 35, offset = 0, order = "action", goal = "") {
     if (n && String(c.state).includes("disabled")) n -= 4;
     return Math.max(0, n);
   };
-  const ordered = words.length ? controls.map((c, i) => ({ c, i, score: score(c) })).sort((a, b) => (b.score - a.score) || (a.i - b.i)) : controls.map((c, i) => ({ c, i, score: 0 }));
-  const matches = ordered.filter((x) => x.score >= 5).slice(0, 5).map((x) => ({ selector: x.c.selector, name: x.c.name, role: x.c.role, ...(x.c.context ? { context: x.c.context } : {}), ...(x.c.href ? { href: x.c.href } : {}) }));
   const cap = Number.isFinite(Number(max)) && Number(max) > 0 ? Math.floor(Number(max)) : 35;
   const start = Number.isFinite(Number(offset)) ? Math.max(0, Math.floor(Number(offset))) : 0;
+  // sem goal: monta item completo SÓ da fatia pedida (página com 4.900 controles montava
+  // 4.900 cssPath/accessible-name p/ devolver 35). Com goal o nome é necessário p/ score.
+  let relevant, pageControls, matches = [];
+  if (words.length) {
+    const controls = rawControls.map(buildItem);
+    const ordered = controls.map((c, i) => ({ c, i, score: score(c) })).sort((a, b) => (b.score - a.score) || (a.i - b.i));
+    matches = ordered.filter((x) => x.score >= 5).slice(0, 5).map((x) => ({ selector: x.c.selector, name: x.c.name, role: x.c.role, ...(x.c.context ? { context: x.c.context } : {}), ...(x.c.href ? { href: x.c.href } : {}) }));
+    relevant = matches.length ? ordered.filter((x) => x.score >= 5) : ordered;
+    pageControls = relevant.slice(start, start + cap).map((x) => x.c);
+  } else {
+    relevant = rawControls;
+    pageControls = rawControls.slice(start, start + cap).map(buildItem);
+  }
   // nome de landmark: aria-label > primeiro título > primeiro link/botão. innerText do container
   // inteiro concatenava o menu todo (80 chars de lixo por landmark, sem dizer nada).
   const landmarkName = (el) => String(el.getAttribute?.("aria-label") || el.querySelector?.("h1,h2,h3")?.innerText || el.querySelector?.("a,button")?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 60);
   const landmarks = [...document.querySelectorAll("main,nav,header,footer,aside,[role=main],[role=navigation],[role=search],[role=dialog]")].filter(visible).map((el) => ({ role: ubAriaRole(el) || el.tagName.toLowerCase(), name: landmarkName(el), selector: cssPath(el) }));
-  const relevant = words.length && matches.length ? ordered.filter((x) => x.score >= 5) : ordered;
-  const pageControls = relevant.slice(start, start + cap).map((x) => x.c);
-  return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: relevant.length, ...(relevant.length < controls.length ? { allControls: controls.length } : {}), controlsOffset: start, controlsOmitted: Math.max(0, relevant.length - start - pageControls.length), nextOffset: start + pageControls.length < relevant.length ? start + pageControls.length : null, ...(goal ? { goal: String(goal).slice(0, 120), goalMatched: matches.length > 0, matches } : {}), overlays: ubOverlayState() };
+  return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, headingsTotal: allHeadings.length, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: relevant.length, ...(relevant.length < rawControls.length ? { allControls: rawControls.length } : {}), controlsOffset: start, controlsOmitted: Math.max(0, relevant.length - start - pageControls.length), nextOffset: start + pageControls.length < relevant.length ? start + pageControls.length : null, ...(goal ? { goal: String(goal).slice(0, 120), goalMatched: matches.length > 0, matches } : {}), overlays: ubOverlayState() };
 }
 
 var ubProgressPanelState = globalThis.__ubProgressPanelState || { active: false, collapsed: false, steps: [], annotations: [], title: "Canivete", message: "" };

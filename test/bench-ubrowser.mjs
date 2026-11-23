@@ -54,6 +54,7 @@ const calls = [
   ["cv_ubrowser_status", {}],
   ["cv_ubrowser_tabs", { max: 30 }],
   ["cv_ubrowser_overview", { max: 35 }],
+  ["cv_ubrowser_overview", { goal: "Ferramentas" }, "overview-goal"],
   ["cv_ubrowser_read", { maxChars: 2500, maxLinks: 15 }],
   ["cv_ubrowser_read", { outline: true }, "read-outline"],
   ["cv_ubrowser_snapshot", { max: 30 }],
@@ -87,6 +88,7 @@ try {
   const d = JSON.parse(r.text);
   out.tabId = d?.data?.tabs?.[0]?.id ?? null;
   out.tabUrl = d?.data?.tabs?.[0]?.url ?? null;
+  out.tabProfile = d?.data?.tabs?.[0]?.profile ?? d?.data?.profiles?.[0]?.id ?? null;
 } catch (e) { out.tabError = String(e); }
 
 for (const [name, a, label] of calls) {
@@ -95,7 +97,7 @@ for (const [name, a, label] of calls) {
   for (let i = 0; i < runs; i++) {
     // _bench=i evita o guard de repetição (mesma tool+args+resultado vira "REPETIÇÃO 3×"
     // a partir da 3ª chamada) — sem isso a mediana mede o atalho, não o payload real.
-    const base = name === "cv_ubrowser_status" || name === "cv_ubrowser_tabs" ? a : { ...(out.tabId ? { tabId: out.tabId } : {}), ...a };
+    const base = name === "cv_ubrowser_status" || name === "cv_ubrowser_tabs" ? a : { ...(out.tabId ? { tabId: out.tabId } : {}), ...(out.tabProfile ? { profile: out.tabProfile } : {}), ...a };
     const r = await call(name, { ...base, _bench: i });
     samples.push(r);
     if (r.status === "error" && /offline|EXTENS/i.test(r.summary)) break;

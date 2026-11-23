@@ -257,7 +257,19 @@ async function runOnWs(wsUrl, target, fn, { urlHint } = {}) {
   } finally { try { ws.close(); } catch {} }
 }
 
-async function withCdp(fn, { url } = {}) {
+// Todas as tools headless reutilizam uma aba. A transação inteira (navegar → ler/agir)
+// precisa ser exclusiva; chamadas paralelas antes misturavam URL e conteúdo.
+let cdpTurn = Promise.resolve();
+async function withCdp(fn, options = {}) {
+  const previous = cdpTurn;
+  let release;
+  cdpTurn = new Promise((resolve) => { release = resolve; });
+  await previous;
+  try { return await withCdpUnlocked(fn, options); }
+  finally { release(); }
+}
+
+async function withCdpUnlocked(fn, { url } = {}) {
   lastUse = Date.now();
   await ensureBrowser();
   // Reconnect 1x em queda/stale com backoff 1s.
@@ -534,7 +546,8 @@ const RESOLVE_JS = (sel) => `(() => {
 })()`;
 
 async function cdpGoto(send, url, waitMs = 4000) {
-  await send("Page.navigate", { url });
+  const nav = await send("Page.navigate", { url });
+  if (nav?.errorText) throw new Error(`navegação para ${url} falhou: ${nav.errorText}`);
   const wait = Math.min(Math.max(Number(waitMs) || 4000, 500), 25000);
   // Fusão RTT: 1 evaluate in-page com awaitPromise (poll de readyState DENTRO da página,
   // a cada 100ms, com teto próprio) em vez de N polls via CDP (1 send a cada 400ms).

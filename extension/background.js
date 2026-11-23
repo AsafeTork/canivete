@@ -2,7 +2,7 @@
 // Conecta no bridge local (MCP) via long-poll HTTP e executa comandos NESTE Chrome logado.
 // Kill switch: enabled=false pausa tudo (popup).
 const DEFAULT_URL = "http://127.0.0.1:19422";
-let settings = { token: "", enabled: true, url: DEFAULT_URL };
+let settings = { token: "", enabled: true, url: DEFAULT_URL, actionMode: "full", accessMode: "all", allowedSites: [] };
 let running = false;
 
 // Log verboso opt-in: chrome.storage.local { UB_DEBUG: true } (default off).
@@ -15,11 +15,15 @@ function logd(...args) { if (UB_DEBUG) console.log(...args); }
 let UB_MON_QUIET = true;
 
 async function load() {
-  const s = await chrome.storage.local.get(["token", "enabled", "url", "UB_DEBUG", "profileLabel", "ubMonQuiet"]);
+  const s = await chrome.storage.local.get(["token", "enabled", "url", "UB_DEBUG", "profileLabel", "ubMonQuiet", "actionMode", "accessMode", "allowedSites", "telemetryMode"]);
   settings = { token: s.token || "", enabled: s.enabled !== false, url: s.url || DEFAULT_URL };
   settings.profileLabel = String(s.profileLabel || "").slice(0, 60); // rotas p/ perfil (ubResolveProfile na ponte)
+  settings.actionMode = ["observe", "navigate", "full"].includes(s.actionMode) ? s.actionMode : "full";
+  settings.accessMode = s.accessMode === "selected" ? "selected" : "all";
+  settings.allowedSites = cleanSites(s.allowedSites);
+  settings.telemetryMode = s.telemetryMode === "diagnostic" ? "diagnostic" : "fast";
   UB_DEBUG = s.UB_DEBUG === true;
-  if (typeof s.ubMonQuiet === "boolean") UB_MON_QUIET = s.ubMonQuiet; // last-inject flag sobra pro SW dormente
+  UB_MON_QUIET = settings.telemetryMode !== "diagnostic";
 }
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area !== "local") return;
@@ -27,6 +31,17 @@ chrome.storage.onChanged.addListener((ch, area) => {
   if (ch.enabled) settings.enabled = ch.enabled.newValue !== false;
   if (ch.url) settings.url = ch.url.newValue || DEFAULT_URL;
   if (ch.UB_DEBUG) UB_DEBUG = ch.UB_DEBUG.newValue === true;
+  if (ch.actionMode) settings.actionMode = ["observe", "navigate", "full"].includes(ch.actionMode.newValue) ? ch.actionMode.newValue : "full";
+  if (ch.accessMode) settings.accessMode = ch.accessMode.newValue === "selected" ? "selected" : "all";
+  if (ch.allowedSites) settings.allowedSites = cleanSites(ch.allowedSites.newValue);
+  if (ch.telemetryMode) {
+    settings.telemetryMode = ch.telemetryMode.newValue === "diagnostic" ? "diagnostic" : "fast";
+    UB_MON_QUIET = settings.telemetryMode !== "diagnostic";
+    chrome.storage.local.set({ ubMonQuiet: UB_MON_QUIET }).catch(() => {});
+  }
+  if (ch.actionMode || ch.accessMode || ch.allowedSites || ch.telemetryMode) {
+    try { setTimeout(() => { if (settings.enabled && settings.token) hello(true).catch(() => {}); }, 300); } catch {}
+  }
   if (ch.profileLabel !== undefined) {
     settings.profileLabel = String(ch.profileLabel.newValue || "").slice(0, 60);
     // label novo → /hello forçado (bypass da janela de 3s): a ponte roteia agora,
@@ -34,6 +49,19 @@ chrome.storage.onChanged.addListener((ch, area) => {
     try { setTimeout(() => { hello(true).catch(() => {}); }, 300); } catch {}
   }
 });
+function cleanSites(value) {
+  return [...new Set((Array.isArray(value) ? value : []).map((s) => String(s || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/:\d+$/, "")).filter((s) => s && /^[a-z0-9.-]+$/.test(s) && !s.startsWith(".") && !s.endsWith(".")))].slice(0, 100);
+}
+function siteAllowed(url) {
+  if (settings.accessMode !== "selected") return true;
+  let host; try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
+  return settings.allowedSites.some((site) => host === site || host.endsWith("." + site));
+}
+function modeAllowed(cmd) {
+  if (settings.actionMode === "full" || cmd === "ping" || cmd === "tab.diag") return true;
+  if (cmd === "tabs.list" || /^(tab\.(overview|read|snapshot|scan|shot|count|attr|html|state|wait|waittext))$/.test(cmd)) return true;
+  return settings.actionMode === "navigate" && /^(tab\.(goto|new|back|forward|reload|activate|focus|scroll|select))$/.test(cmd);
+}
 // cursor-remoto: detach best-effort ao fechar aba (evita sessão zombie que bloquearia o próximo attach).
 try {
   chrome.tabs.onRemoved.addListener((tabId) => {
@@ -42,7 +70,7 @@ try {
   });
 } catch {}
 
-const UB_EXPECTED = "24"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
+const UB_EXPECTED = "28"; // versão do content.js — mismatch = AUTO-REINJETA do disco (sem reload, sem tela)
 // Versão do próprio worker (manifest): reportada no /hello + tab.diag → cv_ubrowser_status
 // mostra o que está RODANDO aí (acaba com o adivinhar "será que recarregou?").
 const UB_BG = (() => { try { return chrome.runtime.getManifest().version; } catch { return "?"; } })();
@@ -292,10 +320,13 @@ function ubTabScore(needle, t) {
 }
 
 async function handle(cmd, a = {}) {
+  if (!modeAllowed(cmd)) throw new Error(`Modo ${settings.actionMode}: ação ${cmd} desativada pelo usuário no Canivete`);
+  if (settings.accessMode === "selected" && ["tab.new", "tab.goto"].includes(cmd) && !siteAllowed(a.url))
+    throw new Error(`Site fora da lista do usuário: ${String(a.url || "sem URL").slice(0, 120)}`);
   // Seleciona a aba alvo sem roubar foco do sistema por padrão. A janela do Chrome
   // só vem à frente quando o chamador pede focus:true/focused:true.
   if (cmd === "tab.activate") {
-    const all = (await chrome.tabs.query({})).filter((t) => Number.isInteger(t.id));
+    const all = (await chrome.tabs.query({})).filter((t) => Number.isInteger(t.id) && siteAllowed(t.url));
     let t = null;
     if (a.tabId != null && a.tabId !== "") {
       t = all.find((x) => x.id === Number(a.tabId)) || null;
@@ -331,13 +362,18 @@ async function handle(cmd, a = {}) {
   // (tab.activate tem resolver próprio acima, com erro dedicado).
   if (a && a.tab && !a.tabId) {
     const needle = String(a.tab).toLowerCase();
-    const all = await chrome.tabs.query({});
+    const all = (await chrome.tabs.query({})).filter((t) => siteAllowed(t.url));
     const scored = [];
     for (const t of all) { const s = ubTabScore(needle, t); if (s !== null) scored.push({ t, s }); }
     scored.sort((x, y) => y.s - x.s);
     const found = scored.length ? scored[0].t : null;
     if (!found) throw new Error(`aba "${a.tab}" não encontrada — veja cv_ubrowser_tabs`);
     a.tabId = found.id;
+  }
+  if (settings.accessMode === "selected" && cmd.startsWith("tab.") && cmd !== "tab.diag" && cmd !== "tab.new" && cmd !== "tab.goto" && !(cmd === "tab.close" && a.mode === "close_by_prefix")) {
+    const id = a.tabId || (await activeTabId());
+    const tab = await getTabOrThrow(id);
+    if (!siteAllowed(tab.url)) throw new Error(`Aba fora dos sites permitidos: ${String(tab.url || "").slice(0, 120)}`);
   }
   const foregroundActions = new Set(["tab.goto", "tab.back", "tab.forward", "tab.reload", "tab.click", "tab.fill", "tab.type", "tab.press", "tab.select", "tab.scroll", "tab.cursor", "tab.tooltip", "tab.cdp", "tab.flow", "tab.panel"]);
   if (foregroundActions.has(cmd) && a.focus === true) {
@@ -353,17 +389,19 @@ async function handle(cmd, a = {}) {
   if (cmd === "elem.changed") {
     const origin = String(a.origin || "");
     if (!origin) return { skipped: "sem origin" };
+    if (!siteAllowed(origin)) return { skipped: "site fora da lista do usuário" };
     const reports = await ubElemFetch(origin, true);
     await ubElemApplyToTabs(origin, reports);
     return { origin, reports: reports.filter((r) => r && r.status !== "resolvido").length };
   }
-  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, focusRule: "ações preservam o foco do sistema por padrão; use focus:true para trazer o Chrome à frente" };
+  if (cmd === "tab.diag") return { ...diag, bg: UB_BG, ub: UB_EXPECTED, enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, actionMode: settings.actionMode, accessMode: settings.accessMode, allowedSites: settings.allowedSites, telemetryMode: settings.telemetryMode, focusRule: "ações preservam o foco do sistema por padrão; use focus:true para trazer o Chrome à frente" };
   if (cmd === "tabs.list") {
-    const [tabs, wins, incog] = await Promise.all([
+    const [allTabs, wins, incog] = await Promise.all([
       chrome.tabs.query({}),
       chrome.windows.getAll({}),
       chrome.extension.isAllowedIncognitoAccess().catch(() => false),
     ]);
+    const tabs = allTabs.filter((t) => siteAllowed(t.url));
     const byWin = {};
     for (const t of tabs) byWin[t.windowId] = (byWin[t.windowId] || 0) + 1;
     // filter/max/offset são opcionais; não há teto de paginação.
@@ -433,7 +471,7 @@ async function handle(cmd, a = {}) {
     if (a.mode === "close_by_prefix") {
       const raw = String(a.urlPrefix || "about:blank").trim().toLowerCase();
       const prefix = raw === "blank" ? "about:blank" : raw;
-      const hits = (await chrome.tabs.query({})).filter((t) => String(t.url || "").startsWith(prefix));
+      const hits = (await chrome.tabs.query({})).filter((t) => siteAllowed(t.url) && String(t.url || "").startsWith(prefix));
       const closed = [];
       for (const t of hits) { try { await chrome.tabs.remove(t.id); closed.push(t.id); } catch {} }
       return { closed: closed.length, tabIds: closed, prefix, ...(closed.length ? {} : { note: `nenhuma aba com prefixo "${prefix}"` }) };
@@ -1007,6 +1045,8 @@ async function ubTrustedMove(tabId, x, y) {
       return { value: { ok: true, detached: true, tabId: idOff } };
     }
     if (!a.method || !String(a.method).trim()) throw new Error("cdp exige method (ex.: \"Runtime.evaluate\") — ver docs/SKILL.md Observabilidade");
+    if (settings.accessMode === "selected" && (/^Target\./.test(String(a.method)) || /^Page\.navigate/.test(String(a.method)) && !siteAllowed(a.params?.url)))
+      throw new Error("CDP não pode abrir outra aba ou navegar fora dos sites escolhidos");
     const id = a.tabId || (await activeTabId());
     await getTabOrThrow(id);
     const target = await ubDbgEnsure(id);
@@ -1219,7 +1259,8 @@ async function ubTrustedMove(tabId, x, y) {
   }
   if (cmd.startsWith("tab.")) {
     const id = a.tabId || (await activeTabId());
-    return await ask(id, cmd.slice(4), a);
+    const data = await ask(id, cmd.slice(4), a);
+    return cmd === "tab.overview" ? { ...data, tabId: id } : data;
   }
   throw new Error("cmd desconhecido: " + cmd);
 }
@@ -1271,14 +1312,14 @@ async function hello(force) {
   if (!force && ubHelloAt && Date.now() - ubHelloAt < 3000) return null;
   ubHelloP = (async () => {
     try {
-      const tabs = await chrome.tabs.query({});
+      const tabs = (await chrome.tabs.query({})).filter((t) => siteAllowed(t.url));
       const cid = await ubClientId();
       const r = await fetch(settings.url + "/hello", {
         method: "POST",
         headers: { "content-type": "application/json", "x-token": settings.token || "" },
-        body: JSON.stringify({ info: { clientId: cid, extId: chrome.runtime.id, tabs: tabs.length, tabUrls: tabs.map((t) => t.url).slice(0, 25), ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED, profileLabel: settings.profileLabel || "" } }),
+        body: JSON.stringify({ info: { clientId: cid, extId: chrome.runtime.id, tabs: tabs.length, tabUrls: tabs.map((t) => t.url).slice(0, 25), ua: navigator.userAgent.slice(0, 80), bg: UB_BG, ub: UB_EXPECTED, profileLabel: settings.profileLabel || "", actionMode: settings.actionMode, accessMode: settings.accessMode, allowedSites: settings.allowedSites, telemetryMode: settings.telemetryMode } }),
       });
-      try { const j = await r.json().catch(() => null); if (j && typeof j.cfg?.monQuiet !== "undefined") { UB_MON_QUIET = j.cfg.monQuiet === true; try { await chrome.storage.local.set({ ubMonQuiet: UB_MON_QUIET }); } catch {} } } catch {}
+      try { await r.json().catch(() => null); UB_MON_QUIET = settings.telemetryMode !== "diagnostic"; await chrome.storage.local.set({ ubMonQuiet: UB_MON_QUIET }); } catch {}
       diag.helloOk = new Date().toLocaleTimeString();
     } catch (e) { diag.lastError = "hello: " + (e.message || e); }
     finally { ubHelloAt = Date.now(); }
@@ -1416,7 +1457,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   }
   if (msg.cmd === "status") {
     // clientId na resposta (popup mostra; async reply — canal fica aberto):
-    ubClientId().then((cid) => { try { reply({ enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, clientId: cid }); } catch {} }).catch(() => {});
+    ubClientId().then((cid) => { try { reply({ enabled: settings.enabled, hasToken: !!settings.token, url: settings.url, clientId: cid, actionMode: settings.actionMode, accessMode: settings.accessMode, allowedSites: settings.allowedSites, telemetryMode: settings.telemetryMode }); } catch {} }).catch(() => {});
     return true;
   }
   if (msg.cmd === "diag") reply({ ...diag, enabled: settings.enabled, hasToken: !!settings.token });
@@ -1425,6 +1466,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg && msg.__ubMonAlert) {
     (async () => {
       try {
+        if (!siteAllowed(_s?.tab?.url)) return;
         const tabId = (_s && _s.tab && _s.tab.id) || 0;
         const now = Date.now();
         const last = ubPushLast.get(tabId) || 0;
