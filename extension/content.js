@@ -238,7 +238,15 @@ function ubDeltaArm() {
         try {
           if (m.type === "childList") {
             for (const n of (m.addedNodes || [])) {
-              if (!n || n.nodeType !== 1) continue;
+              if (!n) continue;
+              // textContent = "novo" troca o nó de texto (nodeType 3) via childList, NÃO
+              // characterData — sem isto o delta diz "sem mudança" em resposta de app.
+              if (n.nodeType === 3) {
+                const tx = String(n.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80);
+                if (tx) seen.push({ k: "txt", t: tx });
+                continue;
+              }
+              if (n.nodeType !== 1) continue;
               const t = (((n.innerText || n.textContent || "") + "").replace(/\s+/g, " ").trim().slice(0, 80));
               // toast-like (role/status, aria-live, classes toast): destaque no stop().
               let toast = 0;
@@ -613,6 +621,13 @@ function ubSynthClick(el, x, y) {
     const cx = Math.round(x !== undefined ? x : (elRect(el).x || 0));
     const cy = Math.round(y !== undefined ? y : (elRect(el).y || 0));
     const init = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
+    // pointer events primeiro: muito componente (React, drag/select, menus) só reage a
+    // pointerdown/up e ignora mousedown/click. Eventos sintéticos não disparam click
+    // sozinhos, então não há risco de ação dupla.
+    const P = (typeof PointerEvent !== "undefined") ? PointerEvent : MouseEvent;
+    try { el.dispatchEvent(new P("pointerover", { ...init, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true })); } catch {}
+    try { el.dispatchEvent(new P("pointerdown", { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true })); } catch {}
+    try { el.dispatchEvent(new P("pointerup", { ...init, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true })); } catch {}
     try { el.dispatchEvent(new MouseEvent("mouseover", { ...init, buttons: 0 })); } catch {}
     try { el.dispatchEvent(new MouseEvent("mousedown", init)); } catch {}
     try { el.dispatchEvent(new MouseEvent("mouseup", { ...init, buttons: 0 })); } catch {}
@@ -740,6 +755,9 @@ function ubSynthDblClick(el, x, y) {
     const cx = Math.round(x !== undefined ? x : 0), cy = Math.round(y !== undefined ? y : 0);
     const init = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
     const up = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 0 };
+    const P = (typeof PointerEvent !== "undefined") ? PointerEvent : MouseEvent;
+    try { el.dispatchEvent(new P("pointerdown", { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true })); } catch {}
+    try { el.dispatchEvent(new P("pointerup", { ...up, pointerId: 1, pointerType: "mouse", isPrimary: true })); } catch {}
     try { el.dispatchEvent(new MouseEvent("mousedown", init)); } catch {}
     try { el.dispatchEvent(new MouseEvent("mouseup", up)); } catch {}
     try { el.dispatchEvent(new MouseEvent("click", { ...up, detail: 1 })); } catch {}
