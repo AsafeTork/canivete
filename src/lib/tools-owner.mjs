@@ -1083,13 +1083,13 @@ reg("cv_ubrowser_act", {
       if ((a.action === "click" || a.action === "cursor") && d && typeof d === "object" && typeof d.verified === "boolean") {
         const wc = Array.isArray(d.whatChanged) ? d.whatChanged : [];
         const meth = d.method || d.via || "?";
-        verifyFields = { verified: d.verified, whatChanged: wc, ...(d.method || d.via ? { method: d.method || d.via } : {}), ...(Array.isArray(d.escalations) ? { escalations: d.escalations } : {}), ...(d.hiddenViewport ? { hiddenViewport: true } : {}) };
+        verifyFields = { verified: d.verified, whatChanged: wc, ...(d.method || d.via ? { method: d.method || d.via } : {}), ...(Array.isArray(d.escalations) ? { escalations: d.escalations } : {}), ...(d.hiddenViewport ? { hiddenViewport: true } : {}), ...(d.noDbl ? { noDbl: true } : {}) };
         if (d.verified) clickNote = ` | click verified (${wc.join(",") || "?"} via ${meth})`;
         else {
           const esc = Array.isArray(d.escalations) && d.escalations.length ? ` após ${d.escalations.join("→")}` : "";
           clickNote = ` | click UNVERIFIED${esc} — NÃO confie: re-snapshot e tente outro selector/ponto`;
         }
-        if (d.hiddenViewport) clickNote += " | aba em segundo plano: trusted não roda — ative a aba (act activate) se o site exigir isTrusted";
+        if (d.hiddenViewport) clickNote += " | aba em segundo plano: trusted com foco emulado — se ainda falhar, ative a aba (act activate)";
         if (d.childHit) clickNote += ` | aviso: ponto cai em filho (${String(d.childHit).slice(0, 80)} — ex: avatar abre perfil, não o chat)`;
         if (d.trustedFallback) clickNote += ` | trusted falhou (${String(d.trustedFallback).slice(0, 80)}) → sintético`;
         if (d.trustedError) clickNote += ` | trusted errou (${String(d.trustedError).slice(0, 80)})`;

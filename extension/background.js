@@ -535,6 +535,9 @@ async function handle(cmd, a = {}) {
     const cx = Number(data.x), cy = Number(data.y);
     if (!Number.isFinite(cx) || !Number.isFinite(cy)) return await complete(data);
     const method0 = data.method || "synthetic";
+    const focusHack = !!(data && data.hiddenViewport);
+    if (focusHack) await ubFocusEmulation(id, true);
+    try {
     try { await ask(id, "verify_arm", { selector: a.selector }).catch(() => {}); } catch {}
     const tr = await ubTrustedClick(id, cx, cy);
     await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
@@ -548,7 +551,9 @@ async function handle(cmd, a = {}) {
       const ex1 = await ubExpectEnsure(id, a, data, true); // re-checa pós-settle trusted (sintético ficou p/ trás)
       return { ...data, verified: true, whatChanged: wc, method: "trusted", via: "trusted", delta: (vv && vv.delta) || data.delta, ...(ex1 ? { expect: ex1 } : {}), ...st };
     }
-    // Duplo-clique trusted: ultimo degrau da cadeia.
+    // Duplo-clique trusted: ultimo degrau da cadeia. Botão/link/input não recebe
+    // (noDbl do content): clique duplo dispararia a ação 2×.
+    if (data.noDbl) return { ...data, verified: false, whatChanged: [], method: method0 + "+trusted(no-dbl)", via: "trusted", escalations: ["synthetic", "trusted"], ...(data.expect ? { expect: data.expect } : {}), ...st };
     try { await ask(id, "verify_arm", { selector: a.selector }).catch(() => {}); } catch {}
     const tr2 = await ubTrustedClick(id, cx, cy, { dblclick: true });
     await ask(id, "settle", { timeoutMs: 2000 }).catch(() => {});
@@ -569,6 +574,9 @@ async function handle(cmd, a = {}) {
       escalations: ["synthetic", "trusted", "dblclick"],
       ...(terr ? { trustedError: terr } : {}), ...(ex3 ? { expect: ex3 } : {}), ...st2,
     };
+    } finally {
+      if (focusHack) await ubFocusEmulation(id, false);
+    }
   }
   if (["tab.read", "tab.snapshot", "tab.fill", "tab.press", "tab.scroll", "tab.tooltip", "tab.catchup"].includes(cmd)) {
     const id = a.tabId || (await activeTabId());
@@ -760,6 +768,17 @@ async function ubDbgEnsure(tabId) {
 // sem mover o mouse físico, escopado na aba. Reutiliza o attach persistente da aba;
 // o aviso do Chrome aparece uma vez e permanece até o usuário ocultá-lo ou desligar CDP.
 // opts.dblclick=true: duplo-clique (2 ciclos press/release, clickCount 1 e 2).
+// aba em segundo plano: CDP Input.dispatchMouseEvent só entrega quando a página se
+// considera focada. Emular foco por alguns ms (sem trazer a aba à frente / roubar o foco
+// do dono) devolve clique trusted em aba oculta. Testado: contador isTrusted 0 → 1.
+async function ubFocusEmulation(tabId, on) {
+  try {
+    const target = await ubDbgEnsure(tabId);
+    await chrome.debugger.sendCommand(target, "Emulation.setFocusEmulationEnabled", { enabled: !!on });
+    return true;
+  } catch { return false; }
+}
+
 async function ubTrustedClick(tabId, x, y, opts) {
   try {
     const target = await ubDbgEnsure(tabId);

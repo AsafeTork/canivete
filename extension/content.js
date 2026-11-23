@@ -795,7 +795,7 @@ async function ubClickWithVerify(tgt, x, y, opts) {
     // mesmo com coordenada certa) — escalar trusted só queima ~12s. Ativar a aba resolve.
     const hiddenNow = (() => { try { return !!document.hidden; } catch { return false; } })();
     if (v.verified || opts.noEscalate || !dblWorth || hiddenNow) {
-      return { clickedTag: tag, delta: d, verified: !!v.verified, whatChanged: v.whatChanged || [], method: "synthetic", needsTrusted: !v.verified && !hiddenNow, ...(hiddenNow && !v.verified ? { hiddenViewport: true } : {}) };
+      return { clickedTag: tag, delta: d, verified: !!v.verified, whatChanged: v.whatChanged || [], method: "synthetic", needsTrusted: !v.verified, ...(hiddenNow && !v.verified ? { hiddenViewport: true } : {}), ...(!dblWorth ? { noDbl: true } : {}) };
     }
     try {
       const dl2 = ubDeltaArm();
@@ -3408,6 +3408,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
             ...ubResolveNote(fresh),
             ...(r.needsTrusted ? { needsTrusted: true } : {}),
             ...(r.hiddenViewport ? { hiddenViewport: true } : {}),
+            ...(r.noDbl ? { noDbl: true } : {}),
             ...(cover && cover.childHit ? { childHit: cover.child } : {}),
           },
         });
