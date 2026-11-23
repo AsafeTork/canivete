@@ -1,5 +1,4 @@
-// canivete — trava anti-destrutiva compartilhada (doutrina do dono:
-// acesso total quando ele pedir; NUNCA destrutivo/idiota sem pedido explícito)
+// canivete — classificação informativa de risco (a decisão de agir segue o pedido do usuário).
 // --- INFORMATIVO vs TRANSACIONAL ---
 // Regra: texto com "Pix/Total" em contexto de leitura (ex.: produto "Pix Total") NÃO é ação de pagar.
 //  - INFORMATIVO: "Pix Total", "Pix total" → LOW/MEDIUM (leitura, não pagamento)
@@ -19,7 +18,7 @@ const HIGH = [
   /desinstal|uninstall|format(ar)?\b/i,
   /chrome:\/\/extensions/i,
   /\.(exe|msi|dmg|deb|appimage|bat|ps1)(\?|$)/i,
-  // Bloqueio real mantido: shell destrutivo (excluir/apagar/senha em shell) + SQL destrutivo
+  // Sinais de risco para classificar shell destrutivo e SQL destrutivo.
   /rm\s+-[rf]/i, /shred|wipe|dd\s+/i, /chpasswd|passwd.*(change|set)/i,
   /\bdrop\s+(table|database)\b|delete\s+from\b|\btruncate\b/i,
 ];
@@ -29,7 +28,7 @@ const PIX_INFO = /pix[\s\/\-]*total|total[\s\/\-]*pix/i;
 const PIX_TRANS_WEAK = /\(pix\)|via pix|pelo pix|no pix/i; // em fill/type sem verbo: medium
 const PIX_TRANS_STRONG = /pix\s*:(?!\s*total\b)|chave pix/i; // sempre high (chave/similar)
 const PAY_VERB = /pag(?:ar|amento)|checkout|chave|qr\s*code|qrcode|copiar.*c[oó]digo|colar.*c[oó]digo|confirmar/i;
-// #43b: SQL read-only (SELECT/WITH/EXPLAIN/SHOW/...) nunca destrói — ignora a trava SQL.
+// #43b: SQL read-only (SELECT/WITH/EXPLAIN/SHOW/...) não recebe risco alto por SQL.
 const SQL_DESTRUCTIVE = /\bdrop\s+(table|database)\b|delete\s+from\b|\btruncate\b/i;
 const SQL_WRITE_STMT = /\b(insert|update|delete|drop|truncate|alter|create|grant|revoke|exec(?:ute)?|call|merge|replace)\b/i;
 function isReadOnlySql(js) {
@@ -91,7 +90,7 @@ export function riskOf(a = {}) {
   // Login no whats.web/magalu é leitura; NÃO exfiltra senha.
   if (isAllowlistURL(a.url) && !ALLOWLIST_BYPASS.test(blob)) return "low";
   // #43b: evaluate com SQL read-only (SELECT/WITH/...) nunca é high POR MOTIVO SQL
-  // (SELECT não destrói; outras travas — senha/pagar/rm — continuam valendo).
+  // (SELECT não destrói; outros sinais — senha/pagar/rm — continuam classificados).
   const HIGH_NOSQL = HIGH.filter((r) => r !== SQL_DESTRUCTIVE);
   if (a.action === "evaluate" && a.js && isReadOnlySql(a.js)) {
     if (HIGH_NOSQL.some((r) => r.test(blob))) return "high";
@@ -101,15 +100,11 @@ export function riskOf(a = {}) {
   return "low";
 }
 
-export function needConfirm(a = {}) {
-  return riskOf(a) === "high" && !(a.confirm && String(a.confirm).trim().length >= 4);
-}
-
 // Testes mentais (não executáveis, documentação de comportamento):
 //   riskOf({url:"https://web.whatsapp.com", action:"goto"}) → "low"  (allowlist)
 //   riskOf({url:"https://web.whatsapp.com", action:"fill", selector:"#senha"}) → "high" (sai do allowlist: shell de senha)
 //   riskOf({url:"https://www.magalu.com.br", action:"click", text:"produto"}) → "low" (allowlist)
 //   riskOf({text:"Pix Total"}) → "low" (informativo, não pix transacional)
 //   riskOf({text:"pagar via Pix"}) → "high" (transacional)
-//   riskOf({cmd:"rm -rf /", action:"cv_bash"}) → "high" (bloqueio real mantido)
-//   riskOf({action:"click", selector:"text=excluir conta"}) → "high" (bloqueio real mantido)
+//   riskOf({cmd:"rm -rf /", action:"cv_bash"}) → "high" (classificação informativa)
+//   riskOf({action:"click", selector:"text=excluir conta"}) → "high" (classificação informativa)

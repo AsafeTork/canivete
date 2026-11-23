@@ -849,18 +849,17 @@ reg("cv_inspect_ui_state", {
 // elementos, click/fill/press/scroll, screenshot PNG (com imagem no retorno) e PDF.
 
 reg("cv_orchestrate_task", {
-  description: "DevEngine: DAG de tarefas com checkpoint/resume/rollback (git stash). Quando usar: multi-step com rollback garantido. Ex: {action:\"init\", plan:{steps:[...]}}. rollback lista git stash list ANTES e exige confirm:true para executar.",
+  description: "DevEngine: DAG de tarefas com checkpoint/resume/rollback (git stash). Quando usar: multi-step com rollback garantido. Ex: {action:\"init\", plan:{steps:[...]}}. rollback restaura o stash mais recente.",
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["init", "checkpoint", "resume", "rollback"], default: "init", description: "Ação: init, checkpoint (git stash push), resume, rollback (prévia + confirm)" },
+      action: { type: "string", enum: ["init", "checkpoint", "resume", "rollback"], default: "init", description: "Ação: init, checkpoint (git stash push), resume, rollback (git stash pop)" },
       task_id: { type: "string", description: "ID do DAG (obrigatório para checkpoint/resume)" },
       plan: { type: "object", description: "Plano do DAG para init (ex: {title, steps:[...]})" },
-      confirm: { type: "boolean", description: "Obrigatório true para EXECUTAR o rollback; sem ele só retorna a prévia do que será restaurado" },
     },
     required: [],
   },
-  run: async ({ action, task_id, plan, confirm }) => {
+  run: async ({ action, task_id, plan }) => {
     const t0 = Date.now();
     const act = action || "init";
     if (act === "init") {
@@ -880,9 +879,6 @@ reg("cv_orchestrate_task", {
       const lst = await exec("bash", ["-lc", "git stash list 2>&1 | head -n 20"], { timeout: 15000 });
       const preview = trimOut(lst.so, 2000).trim();
       if (!preview) return devOut({ status: "error", summary: "nada a restaurar: git stash list vazio — nenhum checkpoint salvo", data: { preview: "" }, telemetry: { execution_time_ms: Date.now() - t0 } });
-      if (confirm !== true) {
-        return devOut({ status: "error", summary: `Rollback NÃO executado: passe confirm:true para restaurar o topo do stash. Prévia abaixo`, data: { preview, stash_list: preview, dica: 'cv_orchestrate_task({action:"rollback", confirm:true})' }, telemetry: { execution_time_ms: Date.now() - t0 } });
-      }
       const rb = await exec("bash", ["-lc", "git stash pop 2>&1 | tail -10"], { timeout: 15000 });
       return devOut({ summary: `Rollback executado`, data: { preview, result: trimOut(rb.so, 800) }, telemetry: { execution_time_ms: Date.now() - t0 } });
     }

@@ -322,7 +322,7 @@ function parseAgentOutput(so) {
 
 function orchestrationNote(id) {
   return `[CANIVETE · ${id}] Use cv_help quando precisar descobrir uma operação ou campo. Faça chamadas curtas e diretas; prefira a tool pública mais específica e leia só o necessário. Para arquivos use cv_file_read/write; para shell, cv_bash; para código, cv_code_inspect/edit/verify; para páginas públicas, cv_websearch/webfetch ou cv_browser_* conforme precisar de JavaScript.
-Chrome autenticado: cv_owner_inspect consulta; cv_owner_act opera. Acesse qualquer guia escolhida por tab/tabId, inclusive guias que já existiam. Guias criadas pelo agente entram no grupo “Canivete · agente”. As ações preservam o foco e o cursor; focus:true traz o Chrome à frente, e active:true seleciona uma guia nova. CDP pode ser usado quando a página exigir; cursor aceita coordenadas/selector, durationMs e hoverMs. Não invente limitações: respeite apenas limites reais do Chrome e confirmações de alto risco.
+Chrome autenticado: cv_owner_inspect consulta; cv_owner_act opera. Acesse qualquer guia escolhida por tab/tabId, inclusive guias que já existiam. Guias criadas pelo agente entram no grupo “Canivete · agente”. As ações preservam o foco e o cursor; focus:true traz o Chrome à frente, e active:true seleciona uma guia nova. CDP pode ser usado quando a página exigir; cursor aceita coordenadas/selector, durationMs e hoverMs. Execute o pedido do usuário sem pedir aprovação por chamada; respeite apenas limites reais do Chrome.
 Use o menor caminho: se já conhece a aba, cv_owner_inspect {action:"overview",tab:"trecho",goal:"o que procura"} encontra controles com seletores e contexto; {action:"read"} só para texto; {action:"snapshot",find:"trecho"} se o controle não aparecer. Navegação {action:"goto",url,tab,snap:true,goal:"..."} já devolve candidatos da página nova. Liste abas apenas para descobrir onde está; status apenas se a ponte falhar. Um tabId listado é roteado ao perfil correto. Após agir, leia o efeito retornado antes de inspecionar de novo. cv_owner_act {action:"panel"} mostra status; flow atualiza etapas.
 Para código, verifique paths e comportamento com tools e cite evidências. Faça o trabalho pedido e valide de forma proporcional. Se faltar capacidade, use o caminho alternativo disponível e registre cv_report quando houver uma lacuna real. Se tarefa estiver habilitada, siga o contrato cv_task_* e entregue resumo + ferramentas usadas.\n\n`;
 }
@@ -1446,21 +1446,19 @@ regTask("cv_task_send", {
 });
 
 regTask("cv_task_delete", {
-  description: "Exclui task(s)+mailbox p/ organizar. Em running encerra o processo (tombstone). Use p/ coletores de info. Auto: cv_task ephemeral:true exclui ~30s após done. Requer confirm:true p/ bulk all ou alvo running (sem confirm só preview). dryRun:true lista sem deletar.",
+  description: "Exclui task(s)+mailbox p/ organizar. Em running encerra o processo (tombstone). Use p/ coletores de info. Auto: cv_task ephemeral:true exclui ~30s após done. dryRun:true lista sem deletar.",
   inputSchema: {
     type: "object",
     properties: {
       task_id: { type: "string", description: "ID ou 'all' para todos done/failed, 'ephemeral' para só coletores" },
       delete_mailbox: { type: "boolean", description: "Também apaga mailbox (default true)" },
-      confirm: { type: "boolean", description: "Obrigatório quando task_id='all' ou alvo está running; sem ele retorna preview sem deletar" },
-      dryRun: { type: "boolean", description: "Se true, lista o que seria excluído sem deletar (preview, não requer confirm)" },
+      dryRun: { type: "boolean", description: "Se true, lista o que seria excluído sem deletar" },
     },
     required: ["task_id"],
   },
-  run: async ({ task_id, delete_mailbox, confirm, dryRun }) => {
+  run: async ({ task_id, delete_mailbox, dryRun }) => {
     const doDelMb = delete_mailbox !== false;
     const isDry = dryRun === true;
-    const isConfirmed = confirm === true;
     if (task_id === "all" || task_id === "ephemeral") {
       const ids = safeTaskIds();
       const targets = [];
@@ -1476,10 +1474,6 @@ regTask("cv_task_delete", {
         : "(nada a excluir)";
       if (isDry) {
         return out(`[dryRun] ${targets.length} task(s) seriam excluídas (${task_id}):\n${preview}`);
-      }
-      const needsConfirm = task_id === "all" || targets.some((x) => x.status === "running");
-      if (needsConfirm && !isConfirmed) {
-        return out(`confirm obrigatório para excluir ${targets.length} task(s) (${task_id}) — passe confirm:true para executar. Preview (nada foi deletado):\n${preview}`, true);
       }
       let n = 0, kills = 0;
       for (const { id } of targets) {
@@ -1500,9 +1494,6 @@ regTask("cv_task_delete", {
     const previewOne = `[${t.status || "unknown"}] ${task_id} ${t.description || ""}`.trim() + (t.status === "running" && t.pid ? ` (pid ${t.pid} seria encerrado)` : t.status === "running" ? " (processo running seria encerrado)" : "");
     if (isDry) {
       return out(`[dryRun] task ${task_id} seria excluída (nada foi deletado):\n${previewOne}`);
-    }
-    if (t.status === "running" && !isConfirmed) {
-      return out(`confirm obrigatório para excluir task running ${task_id} (encerra o processo) — passe confirm:true para executar. Preview (nada foi deletado):\n${previewOne}`, true);
     }
     const killedPid = tryKill(t);
     try {

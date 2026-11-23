@@ -11,6 +11,8 @@ const DESTRUCTIVE_RE = /write|edit|patch|bash|delete|send|fill|type|lifecycle|co
 const DESTRUCTIVE_ACT_RE = /(^|_)act(_|$)/i;
 
 export function annotationsFor(name = "") {
+  // cv_skill apenas lê SKILL.md; refresh:true refaz a busca em disco sem escrever.
+  if (name === "cv_skill") return { readOnlyHint: true, destructiveHint: false, idempotentHint: true };
   if (DESTRUCTIVE_RE.test(name) || DESTRUCTIVE_ACT_RE.test(name))
     return { readOnlyHint: false, destructiveHint: true, idempotentHint: false };
   if (READ_ONLY_RE.test(name)) return { readOnlyHint: true, destructiveHint: false, idempotentHint: true };

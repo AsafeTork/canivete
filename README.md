@@ -19,7 +19,7 @@ O catálogo é gerado do registro real em [docs/TOOLS.md](docs/TOOLS.md). Em run
 | Consultar e editar código | `cv_code_inspect`, `cv_code_edit`, `cv_code_verify` | use o `action` descrito por `cv_help` |
 | Entender o próprio Canivete | `cv_help`, `cv_ctx_status`, `cv_report` | descoberta, consumo de contexto e relato de falha |
 
-As tools especializadas restantes cobrem shell, web search/fetch, Codespaces, mídia, WhatsApp, reports de elementos, skills e processos em segundo plano. Consulte `docs/TOOLS.md` para a lista completa e modos. Operações com efeitos continuam separadas das consultas, e ações destrutivas preservam suas confirmações.
+As tools especializadas restantes cobrem shell, web search/fetch, Codespaces, mídia, WhatsApp, reports de elementos, skills e processos em segundo plano. Consulte `docs/TOOLS.md` para a lista completa e modos. Operações com efeitos continuam separadas das consultas.
 
 ## Quickstart (5 min)
 
@@ -94,7 +94,10 @@ a outra metade do problema):
 [mcp_servers.canivete]
 command = "node"
 args = ["/home/voce/.codex/mcp/canivete/src/server.mjs"]
+default_tools_approval_mode = "approve"
 ```
+
+No Codex, `approve` autoriza as chamadas de todas as tools deste servidor MCP sem pedir aprovação por chamada. A política é do app de IA; outros clientes MCP precisam configurar sua própria regra. [Referência da configuração](https://learn.chatgpt.com/docs/config-file/config-reference).
 
 ```bash
 ln -sfn /caminho/canivete ~/.codex/mcp/canivete   # o caminho do args resolve pro repo
@@ -150,7 +153,7 @@ Spawn de subagentes **desativado por padrão**: cada spawn é um processo `openc
 
 - O agente pode atuar nas guias incluídas no pedido. Guias criadas por ele ficam no grupo “Canivete · agente”; guias existentes continuam acessíveis.
 - O Chrome preserva o foco e o cursor atuais por padrão; `focus:true` traz a janela à frente. `action:"new"` abre guias em segundo plano por padrão; `active:true` seleciona a nova guia.
-- Alto risco (pagamento, senha/2FA, excluir conta, apagar tudo, fechar guias em lote) exige `confirm="<frase do dono>"`.
+- O Canivete não exige confirmação por chamada. O agente executa ações dentro do pedido e das escolhas de alcance do usuário na extensão.
 - Ponte local (`127.0.0.1:19422`) + token (`~/.config/canivete/token.txt`, gerado sozinho, `0600`, no `.gitignore`).
 - Kill switch: pause na extensão = acesso zero.
 
@@ -260,7 +263,7 @@ src/lib/feedback.mjs    cv_report (inbox jsonl com rotação atômica)
 src/lib/gh.mjs          gh (cv_lookup source=github + contas gh p/ Codespace)
 src/lib/llm.mjs         slots LLM (fallbacks 2-5, presets)
 src/lib/tools-codespace.mjs  cv_codespace_* (ambiente de teste na nuvem gh)
-src/lib/risk.mjs        trava anti-destrutiva (compartilhada)
+src/lib/risk.mjs        classificação informativa de risco
 config/models.json      modelos (modo opencode)
 extension/              extensão MV3 do Chrome autenticado (background.js ponte/CDP/grupos/interrupção de fluxo, content.js overview/progresso/anotações em overlay imersivo, mon-hook.js observabilidade, wa-hook.js WhatsApp, popup)
 examples/               configs prontas por CLI

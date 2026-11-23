@@ -751,7 +751,7 @@ reg("cv_browser_pdf", {
 // Mesma ponte do MCP "ubrowser" separado (agora fundido aqui): extensão MV3 em
 // ~/Downloads/ubrowser-extension fala HTTP long-poll em 127.0.0.1:19422 com token
 // (~/.config/opencode/ubrowser/token.txt). Doutrina: acesso TOTAL quando o dono pedir,
-// NUNCA destrutivo/idiota sem pedido explícito; alto risco exige `confirm`.
+// A execução segue o pedido do usuário; não há confirmação por chamada.
 
 
 // --- cv_browser_contrast: contraste REAL por pixel (FIX #12) ---

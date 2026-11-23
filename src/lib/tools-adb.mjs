@@ -2,8 +2,7 @@
 // e EXTRAÇÃO INTELIGENTE da tela em 1 RTT (uiautomator + dumpsys com marcadores — 1 call =
 // o que está na tela do celular, tudo estruturado), controle (tap por texto, teclado, swipe)
 // e screenshot. Doutrina: o input do adb É o toque do usuário real no Android (não há "CDP"
-// aqui — shell input é o input sintético confiável); destrutivo (install/uninstall/clear)
-// exige confirm ≥4 chars. Sem device? erro acionável com os passos de pareamento.
+// aqui — shell input é o input sintético confiável). Sem device? erro acionável com os passos de pareamento.
 // ENV: CANIVETE_ADB_BIN (binário; padrão "adb" no PATH), CANIVETE_ADB_TMO (timeout base ms,
 // 3000-60000, padrão 15000), CANIVETE_CONFIG_DIR (perfil WiFi em <config>/adb.json).
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
@@ -14,8 +13,6 @@ import { reg, devOut, exec } from "./ctx.mjs";
 const ADB_BIN = () => process.env.CANIVETE_ADB_BIN || "adb";
 const ADB_TMO = () => Math.min(Math.max(Number(process.env.CANIVETE_ADB_TMO) || 15000, 3000), 60000);
 const ADB_CFG = () => join(process.env.CANIVETE_CONFIG_DIR || join(homedir(), ".config/canivete"), "adb.json");
-
-const DESTRUCTIVE = /uninstall|clear|wipe|factory|format|reboot|remount/i;
 
 function loadProfile() {
   try { const p = JSON.parse(readFileSync(ADB_CFG(), "utf8")); return p && typeof p === "object" ? p : {}; } catch { return {}; }
@@ -199,12 +196,10 @@ reg("cv_adb_extract", {
 
 // ---- cv_adb_act: controle (tap por texto!, text, key, swipe, open, pull/push, install...) ----
 reg("cv_adb_act", {
-  description: "AGE no Android: tap (por x/y OU text=\"rótulo\" — acha na tela e toca o centro, 1 call), text (digita, espaços viram %s), key (BACK/HOME/ENTER/DEL/VOLUP/…), swipe {x,y,x2,y2,ms}, open {pkg}, install/uninstall/clear {pkg, confirm:\"<frase>\"} (DESTRUTIVO exige confirm ≥4 chars), pull/push {local, remote}, wake. Depois: cv_adb_extract p/ ver o efeito (delta). O toque do adb É o input de usuário real.",
-  inputSchema: { type: "object", properties: { serial: { type: "string" }, action: { type: "string", enum: ["tap", "text", "key", "swipe", "open", "install", "uninstall", "clear", "pull", "push", "wake"], description: "tap x/y ou text=\"rótulo\" · text {text} · key {key: BACK|HOME|ENTER|DEL|TAB|VOLUP|VOLDOWN|POWER} · swipe {x,y,x2,y2,ms} · open {pkg} · install {local, confirm} · uninstall/clear {pkg, confirm} · pull/push {local, remote} · wake" }, x: { type: "number" }, y: { type: "number" }, x2: { type: "number" }, y2: { type: "number" }, ms: { type: "number", description: "duração do swipe (padrão 300)" }, text: { type: "string", description: "tap: rótulo na tela (texto ou content-desc) · text: string a digitar" }, key: { type: "string" }, pkg: { type: "string" }, local: { type: "string" }, remote: { type: "string" }, confirm: { type: "string", description: "frase ≥4 chars p/ destrutivo (install/uninstall/clear)" } }, required: ["action"] },
+  description: "AGE no Android: tap (por x/y OU text=\"rótulo\" — acha na tela e toca o centro, 1 call), text (digita, espaços viram %s), key (BACK/HOME/ENTER/DEL/VOLUP/…), swipe {x,y,x2,y2,ms}, open {pkg}, install/uninstall/clear {pkg}, pull/push {local, remote}, wake. Depois: cv_adb_extract p/ ver o efeito (delta). O toque do adb É o input de usuário real.",
+  inputSchema: { type: "object", properties: { serial: { type: "string" }, action: { type: "string", enum: ["tap", "text", "key", "swipe", "open", "install", "uninstall", "clear", "pull", "push", "wake"], description: "tap x/y ou text=\"rótulo\" · text {text} · key {key: BACK|HOME|ENTER|DEL|TAB|VOLUP|VOLDOWN|POWER} · swipe {x,y,x2,y2,ms} · open {pkg} · install {local} · uninstall/clear {pkg} · pull/push {local, remote} · wake" }, x: { type: "number" }, y: { type: "number" }, x2: { type: "number" }, y2: { type: "number" }, ms: { type: "number", description: "duração do swipe (padrão 300)" }, text: { type: "string", description: "tap: rótulo na tela (texto ou content-desc) · text: string a digitar" }, key: { type: "string" }, pkg: { type: "string" }, local: { type: "string" }, remote: { type: "string" } }, required: ["action"] },
   run: async (a) => {
     const t0 = Date.now();
-    if (DESTRUCTIVE.test(a.action) && !(a.confirm && String(a.confirm).trim().length >= 4))
-      return devOut({ status: "error", summary: `action "${a.action}" mexe com dados/apps do celular — exige confirm:"<frase ≥4 chars>" (doutrina do dono: destrutivo só com confirmação)`, data: { action: a.action }, telemetry: { execution_time_ms: Date.now() - t0 } });
     const g = await ensureDevice(a.serial);
     if (!g.ok) return devOut({ status: "error", summary: g.summary, data: g.data || {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const S = ["-s", g.dev.serial];
@@ -246,15 +241,15 @@ reg("cv_adb_act", {
         const r = await sh(`monkey -p ${String(a.pkg).replace(/[^A-Za-z0-9._]/g, "")} -c android.intent.category.LAUNCHER 1`, 20000);
         summary = `open ${a.pkg} — ${/Events injected: 1/i.test(r.so) ? "aberto" : `falhou: ${(r.so || r.se).split("\n")[0] || "rc " + r.code}`}`;
       } else if (a.action === "install") {
-        if (!a.local) return devOut({ status: "error", summary: "install precisa {local: caminho do .apk, confirm}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+        if (!a.local) return devOut({ status: "error", summary: "install precisa {local: caminho do .apk}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
         const r = await adbRun([...S, "install", "-r", a.local], 120000);
         summary = `install ${a.local} — ${/Success|sucesso/i.test(r.so) ? "OK" : r.se || r.so || "falhou"}`;
       } else if (a.action === "uninstall") {
-        if (!a.pkg) return devOut({ status: "error", summary: "uninstall precisa {pkg, confirm}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+        if (!a.pkg) return devOut({ status: "error", summary: "uninstall precisa {pkg}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
         const r = await adbRun([...S, "uninstall", String(a.pkg).replace(/[^A-Za-z0-9._]/g, "")], 60000);
         summary = `uninstall ${a.pkg} — ${/Success/i.test(r.so) ? "OK" : r.se || r.so || "falhou"}`;
       } else if (a.action === "clear") {
-        if (!a.pkg) return devOut({ status: "error", summary: "clear precisa {pkg, confirm}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
+        if (!a.pkg) return devOut({ status: "error", summary: "clear precisa {pkg}", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
         const r = await sh(`pm clear ${String(a.pkg).replace(/[^A-Za-z0-9._]/g, "")}`);
         summary = `pm clear ${a.pkg} — ${/Success/i.test(r.so) ? "dados apagados" : r.se || r.so || "falhou"}`;
       } else if (a.action === "pull" || a.action === "push") {

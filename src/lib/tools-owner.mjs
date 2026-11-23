@@ -737,7 +737,7 @@ reg("cv_ubrowser_snapshot", {
 });
 
 reg("cv_ubrowser_act", {
-  description: "Opera o Chrome autenticado sem tirar o foco do usuário por padrão; use `focus:true` só quando quiser trazer o Chrome à frente. Guias novas são abertas em segundo plano (`active:true` para selecionar). `goto` troca o site na guia escolhida. Use CDP quando necessário. `panel` exibe progresso e marcações; `flow` atualiza cada passo. Alto risco requer confirmação.",
+  description: "Opera o Chrome autenticado sem tirar o foco do usuário por padrão; use `focus:true` só quando quiser trazer o Chrome à frente. Guias novas são abertas em segundo plano (`active:true` para selecionar). `goto` troca o site na guia escolhida. Use CDP quando necessário. `panel` exibe progresso e marcações; `flow` atualiza cada passo.",
   inputSchema: {
     type: "object",
     properties: {
@@ -776,12 +776,11 @@ reg("cv_ubrowser_act", {
       offset: { type: "number", description: "p/ scan: pula N itens (paginação via nextOffset)" },
       durationMs: { type: "number", description: "duração do movimento do cursor; janela do catchup quando action=catchup" },
       intervalMs: { type: "number", description: "intervalo entre amostras do catchup (ms)" },
-      urlPrefix: { type: "string", description: "prefixo para fechar guias correspondentes; operação em lote exige confirm" },
+      urlPrefix: { type: "string", description: "prefixo para fechar guias correspondentes" },
       expectUrl: { type: "string", description: "p/ click/fill/type/select: substring que deve aparecer na URL após settle" },
       expectText: { type: "string", description: "p/ click/fill/type/select: substring que deve aparecer no texto após settle" },
       expectGone: { type: "string", description: "p/ click/fill/type/select: selector que deve SUMIR após settle" },
       focused: { type: "boolean", default: false, description: "p/ activate: focar a janela (padrão false; true traz o Chrome à frente)" },
-      confirm: { type: "string", description: "Confirmação de ações sensíveis de alto risco" },
       focus: { type: "boolean", default: false, description: "opcionalmente traz o Chrome à frente (padrão false; preserva o foco e o cursor atuais)" },
       windowId: { type: "number", description: "janela em que criar uma nova guia" },
       active: { type: "boolean", default: false, description: "para action=new: abre a guia ativa (padrão false; mantém a guia atual)" },
@@ -801,12 +800,9 @@ reg("cv_ubrowser_act", {
       if (!res.ok) return devOut({ status: "error", summary: `${res.error} | ${UB_FB}`, data: { action: a.action, ref: a.ref }, telemetry: { execution_time_ms: Date.now() - t0 } });
       a = { ...a, selector: res.selector };
     }
-    // cdp: method+params viram texto ANTES da trava — mesma régua de risco do evaluate
-    // (pagamento/senha/rm em Runtime.evaluate NÃO passam sem confirm do dono).
+    // cdp: method+params entram na classificação de risco informativa.
     if (a.action === "cdp") a = { ...a, text: String(a.method || "") + " " + JSON.stringify(a.params || {}).slice(0, 1500) };
     const risk = ubRisk(a);
-    if (risk === "high" && !(a.confirm && a.confirm.trim().length >= 4))
-      return devOut({ status: "error", summary: `BLOQUEADO (alto risco). Só com pedido EXPLÍCITO + confirm="<frase do dono>". Ação: ${a.action} ${a.selector || a.url || ""}`, data: { action: a.action, risk }, telemetry: { execution_time_ms: Date.now() - t0 } });
     // CDP do dono (porta 9222, WS persistente): tenta PRIMEIRO se o toggle estiver armado —
     // sem banner e alcança chrome://. Modo em efeito (escolha do dono): toggle OFF → o fast-fail
     // do ownerConnect recusa em ms e a extensão abaixo responde tudo (zero cliques). tab:"trecho" casa URL/título; indisponível
@@ -1010,7 +1006,7 @@ reg("cv_ubrowser_act", {
     }
     if (a.action === "close") {
       // #67: fechar aba-fantasma (about:blank) do agente. Aba do dono com http(s) ativo
-      // é RECUSADA pela extensão sem confirm explícito — recai aqui como erro do bridge.
+      // retorna erro do bridge quando a extensão não consegue executar.
       if (a.mode === "close_by_prefix") {
         const n = Number(d.closed) || 0;
         const pfx = String(d.prefix || a.urlPrefix || "about:blank");
@@ -1093,6 +1089,7 @@ reg("cv_ubrowser_act", {
           const esc = Array.isArray(d.escalations) && d.escalations.length ? ` após ${d.escalations.join("→")}` : "";
           clickNote = ` | click UNVERIFIED${esc} — NÃO confie: re-snapshot e tente outro selector/ponto`;
         }
+        if (d.hiddenViewport) clickNote += " | aba em segundo plano: trusted não roda — ative a aba (act activate) se o site exigir isTrusted";
         if (d.childHit) clickNote += ` | aviso: ponto cai em filho (${String(d.childHit).slice(0, 80)} — ex: avatar abre perfil, não o chat)`;
         if (d.trustedFallback) clickNote += ` | trusted falhou (${String(d.trustedFallback).slice(0, 80)}) → sintético`;
         if (d.trustedError) clickNote += ` | trusted errou (${String(d.trustedError).slice(0, 80)})`;

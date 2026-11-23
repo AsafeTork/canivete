@@ -550,15 +550,10 @@ function ubEnsure() {
         }
         else if (u.pathname === "/result") { let p = {}; try { p = JSON.parse(body); } catch (e) { process.stderr.write(`[canivete] ub /result json inválido (${e?.message || e})\n`); } const payBytes = Buffer.byteLength(body || "", "utf8"); if (payBytes > UB_WARNPAY) process.stderr.write(`[canivete] ub /result grande (${payBytes}B id=${p?.id || "?"})\n`); const q = ubPending.get(p.id); if (q) { ubPending.delete(p.id); clearTimeout(q.timer); if (payBytes > UB_MAXPAY) { const s = body || ""; const chunks = []; for (let i = 0; i < s.length; i += UB_CHUNK) chunks.push(s.slice(i, i + UB_CHUNK)); q.resolve({ id: p.id, ok: true, chunks, chunked: true, bytes: payBytes, note: "resposta fatiada em chunks; use max/compact/offset p/ refinar" }); } else q.resolve(p); } }
         else {
-          // /exec: drive local (localhost+token) sem MCP stdio — mesma trava anti-destrutiva
+          // /exec: drive local (localhost+token) sem MCP stdio.
           let p = {};
           try { p = JSON.parse(body); } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"ok":false,"error":"bad json"}'); return; }
           const a = p.args || {};
-          if (ubRisk({ action: p.cmd, ...a }) === "high" && !(a.confirm && String(a.confirm).trim().length >= 4)) {
-            res.writeHead(200, { "content-type": "application/json" });
-            res.end(JSON.stringify({ ok: false, error: `BLOQUEADO (alto risco). Só com pedido EXPLÍCITO + confirm. Ação: ${p.cmd}` }));
-            return;
-          }
           const map = { status: null, diag: "tab.diag", tabs: "tabs.list", read: "tab.read", snapshot: "tab.snapshot", scan: "tab.scan", shot: "tab.shot", goto: "tab.goto", back: "tab.back", forward: "tab.forward", reload: "tab.reload", click: "tab.click", fill: "tab.fill", press: "tab.press", scroll: "tab.scroll", wait: "tab.wait", evaluate: "tab.evaluate", cursor: "tab.cursor", new: "tab.new", close: "tab.close", select: "tab.select", highlight: "tab.highlight", waittext: "tab.waittext", type: "tab.type", count: "tab.count", attr: "tab.attr", html: "tab.html", flow: "tab.flow" };
           // fallthrough: qualquer tab.* futuro encaminha cru (a extensão valida e responde)
           const bridged = map[p.cmd] || (String(p.cmd || "").startsWith("tab.") ? p.cmd : null);

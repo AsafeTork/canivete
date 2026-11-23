@@ -1,6 +1,6 @@
 // canivete simulate: suite intensiva SIMULADA — tudo além de código, sem rede externa, sem spawn opencode.
 // Padrão smoke.mjs: spawn stdio local + helpers call/t. RAM limitada: só stdio local + fs + risk local.
-// Cobre: mailbox roundtrip/ttl/filter, risk matriz, doom-guard, paginação next exato,
+// Cobre: mailbox roundtrip/ttl/filter, classificação de risco, respostas repetidas, paginação,
 // erros acionáveis, ubrowser offline, task_delete preview, find_tools. OFFLINE por construção.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -60,16 +60,16 @@ const t = async (label, id, name, args, expect = /./, allowError = null) => {
 };
 
 // 1) catálogo
-await t("tools_info conta 75 com subagentes habilitados", 1, "cv_tools_info", {}, /75 tools/);
+await t("tools_info com subagentes habilitados", 1, "cv_tools_info", {}, /40 tools/);
 
 // 2-4) risk matriz via risk.mjs local (sem rede)
 await t("risk Pix Total=low", 2, "cv_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({text:'Pix Total'})))\"" }, /low/);
 await t("risk rm -rf=high", 3, "cv_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({cmd:'rm -rf /',action:'cv_bash'})))\"" }, /\bhigh\b/);
 await t("risk Entrar sem senha≠high (medium)", 4, "cv_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({text:'Entrar sem senha',action:'click'})))\"" }, /medium/);
 
-// 5-6) risk via guard real do ubrowser (offline, sem rede)
+// 5-6) a classificação de risco não exige confirmação do ubrowser (offline, sem rede)
 await t("risk permite Pix Total via ubrowser (offline, sem BLOQUEIO)", 5, "cv_ubrowser_act", { action: "click", text: "Pix Total" }, /./, /EXTENSÃO OFFLINE/);
-await t("doom-guard risk bloqueia excluir conta", 6, "cv_ubrowser_act", { action: "click", selector: "text=excluir conta" }, /./, /BLOQUEADO/);
+await t("risk não bloqueia excluir conta", 6, "cv_ubrowser_act", { action: "click", selector: "text=excluir conta" }, /./, /EXTENSÃO OFFLINE/);
 
 // 7-11) mailbox roundtrip + ttl + filter (filesystem local, sem spawn, sem rede)
 const simBase = `sim-${Date.now()}`;
@@ -105,8 +105,8 @@ try {
   ok ? pass++ : fail++;
 } catch (e) { console.log(`FAIL doom-guard 3x idênticas :: ${e.message}`); fail++; }
 
-// 13-14) paginação read offset/limit next exato (src/lib/risk.mjs — nunca editado)
-await t("paginacao p1 next exato offset:4", 40, "cv_read", { filePath: "src/lib/risk.mjs", offset: 1, limit: 3 }, /next: cv_read\(\{filePath:.*offset:4.*limit:3/);
+// 13-14) paginação read offset/limit next exato
+await t("paginacao p1 next exato offset:4", 40, "cv_read", { filePath: "src/lib/risk.mjs", offset: 1, limit: 3 }, /next: offset:4, limit:3/);
 await t("paginacao p2 exata lines 4-6", 41, "cv_read", { filePath: "src/lib/risk.mjs", offset: 4, limit: 3 }, /lines 4-6 of/);
 
 // 15-18) erros acionáveis (sem rede, sem escrita)
@@ -123,18 +123,17 @@ await t("ubrowser read offline", 62, "cv_ubrowser_read", {}, /./, /EXTENSÃO OFF
 // 19b-19e) ubrowser economia dentro de cv_task (offline, sem extensão, sem rede, sem spawn)
 // Motivo: subagente com browser = 500MB filho + snapshots gigantes retidos em tailRaw.
 await t("ubrowser snapshot compact registrado no schema (offline, sem CDP)", 63, "cv_bash", { command: "node -e \"import('node:fs').then(fs=>console.log(fs.readFileSync('src/lib/tools-owner.mjs','utf8').includes('compact')?'has-compact':'no-compact'))\"" }, /has-compact/);
-await t("ubrowser act changed/after no código (state-diff, sem round-trip)", 64, "cv_bash", { command: "node -e \"import('node:fs').then(fs=>{const s=fs.readFileSync('src/lib/tools-owner.mjs','utf8');console.log(s.includes('changed')&&s.includes('after')?'has-diff':'no-diff')})\"" }, /has-diff/);
+await t("ubrowser act devolve efeito verificado", 64, "cv_bash", { command: "node -e \"import('node:fs').then(fs=>{const s=fs.readFileSync('src/lib/tools-owner.mjs','utf8');console.log(s.includes('whatChanged')&&s.includes('afterUrl')?'has-diff':'no-diff')})\"" }, /has-diff/);
 await t("ubrowser shot scale param offline (aceito, economia metade bytes)", 65, "cv_ubrowser_shot", { scale: 0.5 }, /./, /EXTENSÃO OFFLINE/);
 await t("ubrowser error inclui fallback headless", 66, "cv_ubrowser_snapshot", {}, /./, /fallback headless/);
 
 // 22-24) task_delete preview (sem deletar nada real, sem spawn)
 await t("task_delete dryRun preview", 70, "cv_task_delete", { task_id: "all", dryRun: true }, /\[dryRun\]/);
-await t("task_delete confirm preview all", 71, "cv_task_delete", { task_id: "all" }, /./, /confirm obrigatório/);
 await t("task_delete unknown not found", 72, "cv_task_delete", { task_id: "sim-nao-existe-xyz" }, /./, /not found/);
 
 // 25-27) find_tools query (local, sem rede)
-await t("find_tools mailbox", 80, "cv_find_tools", { query: "mailbox" }, /cv_task_send/);
-await t("find_tools read", 81, "cv_find_tools", { query: "read" }, /cv_read/);
+await t("find_tools mailbox", 80, "cv_find_tools", { query: "mailbox" }, /cv_task_mailbox/);
+await t("find_tools read", 81, "cv_find_tools", { query: "read" }, /cv_file_read/);
 await t("find_tools query vazia", 82, "cv_find_tools", { query: "" }, /query vazia/);
 
 console.log(`\nSIMULATE: ${pass} pass, ${fail} fail`);

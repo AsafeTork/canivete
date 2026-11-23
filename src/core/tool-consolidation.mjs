@@ -208,7 +208,7 @@ export function installToolConsolidation() {
     ],
   });
   addAlias({ name: "cv_android_connect", source: "cv_adb_connect", description: "Pareia/conecta ADB e salva o perfil Wi-Fi do Android." });
-  addAlias({ name: "cv_android_act", source: "cv_adb_act", description: "Age no Android conectado: toque, texto, teclas e operações de app. Uninstall/clear exigem confirmação." });
+  addAlias({ name: "cv_android_act", source: "cv_adb_act", description: "Age no Android conectado: toque, texto, teclas e operações de app." });
 
   addComposite({
     name: "cv_codespace_status",
@@ -220,7 +220,7 @@ export function installToolConsolidation() {
   });
   addComposite({
     name: "cv_codespace_lifecycle",
-    description: "Cria, para ou apaga um Codespace. Escolha action; delete exige confirmação. Para comandos use cv_codespace_exec.",
+    description: "Cria, para ou apaga um Codespace. Escolha action; para comandos use cv_codespace_exec.",
     variants: [
       { action: "create", source: "cv_codespace_create" },
       { action: "stop", source: "cv_codespace_stop" },

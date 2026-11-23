@@ -231,14 +231,13 @@ reg("cv_codespace_stop", {
 });
 const rz = (results) => ({ se: results.filter((x) => x.error).map((x) => x.error).join("; ") });
 
-// ---- 5) DELETE (destrutivo: confirm exigido) ----
+// ---- 5) DELETE ----
 reg("cv_codespace_delete", {
-  description: "APAGA codespace (estado+arquivos não commitados somem — commit antes!). exige confirm com a frase \"apagar\" (proteção do dono). Libera os 15GB/mês de storage (código se salva: push do repo antes). name errado → devolve os names que EXISTEM na conta c/ sugestão de cv_codespace_list.",
-  inputSchema: { type: "object", properties: { name: { type: "string" }, confirm: { type: "string", description: "exatamente: apagar" }, account: { type: "string", description: "case-insensitive" } }, required: ["name", "confirm"] },
-  run: guard(async ({ name, confirm, account } = {}) => {
+  description: "APAGA codespace (estado+arquivos não commitados somem). Libera storage; name errado devolve os names existentes e sugere cv_codespace_list.",
+  inputSchema: { type: "object", properties: { name: { type: "string" }, account: { type: "string", description: "case-insensitive" } }, required: ["name"] },
+  run: guard(async ({ name, account } = {}) => {
     const t0 = Date.now();
     if (!name) return devOut({ status: "error", summary: "name obrigatório (cv_codespace_list)", data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
-    if (String(confirm || "").trim() !== "apagar") return devOut({ status: "error", summary: `destrutivo bloqueado — passe confirm:"apagar" (estado não commitado VAI SER PERDIDO; faça push primeiro)`, data: {}, telemetry: { execution_time_ms: Date.now() - t0 } });
     const nm = String(name).trim();
     const r = await runGh(["gh", "codespace", "delete", "-c", nm, "--force"], { account, timeoutMs: 60000 });
     if (!(r.killed || r.code !== 0))

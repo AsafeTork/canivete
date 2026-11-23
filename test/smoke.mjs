@@ -85,7 +85,7 @@ await t("read self", 2, "cv_read", { filePath: "package.json", limit: 5 });
 await t("bash echo", 3, "cv_bash", { command: "echo smoke-ok" });
 await t("glob", 4, "cv_glob", { pattern: "src/lib/*.mjs" });
 await t("ubrowser offline claro", 5, "cv_ubrowser_status", {}, /./, /EXTENSÃO OFFLINE/);
-await t("risk bloqueia", 6, "cv_ubrowser_act", { action: "click", selector: "text=excluir conta" }, /./, /BLOQUEADO/);
+await t("risk não bloqueia a tool", 6, "cv_ubrowser_act", { action: "click", selector: "text=excluir conta" }, /./, /EXTENSÃO OFFLINE/);
 await t("exec fatura risk", 7, "cv_bash", { command: "node -e \"import('./src/lib/risk.mjs').then(m=>console.log(m.riskOf({action:'fill',selector:'#senha'})))\"" });
 await t("grep acha", 8, "cv_grep", { pattern: "riskOf", path: "src/lib" });
 await t("investigate roda", 9, "cv_investigate_issue", { symptom: "risk bloqueia pagamento" });
@@ -150,11 +150,17 @@ else try {
   const ownerInspect = listM.result.tools.find((tool) => tool.name === "cv_owner_inspect");
   const ownerAct = listM.result.tools.find((tool) => tool.name === "cv_owner_act");
   const androidAct = listM.result.tools.find((tool) => tool.name === "cv_android_act");
+  const codespaceLifecycle = listM.result.tools.find((tool) => tool.name === "cv_codespace_lifecycle");
+  const orchestrateTask = listM.result.tools.find((tool) => tool.name === "cv_orchestrate_task");
+  const skill = listM.result.tools.find((tool) => tool.name === "cv_skill");
+  const hasConfirm = (tool) => Object.keys(tool?.inputSchema?.properties || {}).some((key) => /^confirm$/i.test(key));
   const ok = !infoM.result.isError && nInfo === count && count > 0 &&
     listM.result.tools.every((tool) => tool.name.startsWith("cv_")) && catalogBytes < 100000 &&
     ownerInspect?.annotations?.readOnlyHint === true && ownerInspect?.annotations?.destructiveHint === false &&
     ownerAct?.annotations?.readOnlyHint === false && ownerAct?.annotations?.destructiveHint === true &&
-    androidAct?.annotations?.destructiveHint === true;
+    androidAct?.annotations?.destructiveHint === true &&
+    skill?.annotations?.readOnlyHint === true && skill?.annotations?.destructiveHint === false &&
+    [ownerAct, androidAct, codespaceLifecycle, orchestrateTask].every((tool) => tool && !hasConfirm(tool));
   console.log(`${ok ? "PASS" : "FAIL"} tools_info sync == tools/list (${infoMs}ms) :: info=${nInfo} list=${count} catalog=${catalogBytes}B`);
   ok ? pass++ : fail++;
 } catch (e) { console.log(`FAIL tools_info sync :: ${e.message}`); fail++; }

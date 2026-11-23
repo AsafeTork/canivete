@@ -768,8 +768,16 @@ async function ubClickWithVerify(tgt, x, y, opts) {
     catch { after = before; }
     let v = null;
     try { v = ubClickVerifyResult(before, after, d); } catch { v = { verified: false, whatChanged: [] }; }
-    if (v.verified || opts.noEscalate) {
-      return { clickedTag: tag, delta: d, verified: !!v.verified, whatChanged: v.whatChanged || [], method: "synthetic", needsTrusted: !v.verified };
+    // duplo-clique só em linha/card: em botão/link/input pode disparar a ação 2× (submit duplo)
+    // e o trusted dblclick do background cobre o caso raro de site que exige dblclick.
+    const tag0 = (tgt.tagName || "").toLowerCase();
+    const role0 = (tgt.getAttribute && tgt.getAttribute("role")) || "";
+    const dblWorth = !/^(button|a|input|select|textarea|label|summary|option)$/.test(tag0) && !/^(button|link|tab|menuitem|option|checkbox|radio|switch)$/.test(role0);
+    // aba oculta: CDP Input.dispatchMouseEvent não entrega (testado: contador isTrusted fica 0
+    // mesmo com coordenada certa) — escalar trusted só queima ~12s. Ativar a aba resolve.
+    const hiddenNow = (() => { try { return !!document.hidden; } catch { return false; } })();
+    if (v.verified || opts.noEscalate || !dblWorth || hiddenNow) {
+      return { clickedTag: tag, delta: d, verified: !!v.verified, whatChanged: v.whatChanged || [], method: "synthetic", needsTrusted: !v.verified && !hiddenNow, ...(hiddenNow && !v.verified ? { hiddenViewport: true } : {}) };
     }
     try {
       const dl2 = ubDeltaArm();
@@ -1503,23 +1511,21 @@ function ubTooltipNodes() {
 // Cadeia shadow p/ interação: item dentro de shadow ganha selector "shadow:[s1,s2,leaf]".
 function ubAllRoots() {
   const roots = [document];
-  let stack = [];
-  try { stack = [...(document.documentElement ? document.documentElement.children : [])]; } catch {}
-  let guard = 0;
-  while (stack.length && guard++ < 4000) {
-    const el = stack.pop();
-    let kids = [];
-    try { kids = [...(el.children || [])]; } catch { continue; }
-    for (const k of kids) {
-      stack.push(k);
+  // qsa("*") nativo + checagem de shadowRoot: sem alocar array por nó (a caminhada antiga
+  // custava ~11ms em 9.300 nós) e sem o teto de 4.000 nós que perdia hosts no fim da página.
+  const scan = (root) => {
+    let all = [];
+    try { all = root.querySelectorAll ? root.querySelectorAll("*") : []; } catch { return; }
+    for (const el of all) {
+      if (roots.length >= 60) return;
       try {
-        if (k.shadowRoot) {
-          if (roots.length < 60) roots.push(k.shadowRoot);
-          try { for (const sk of (k.shadowRoot.children || [])) stack.push(sk); } catch {}
-        }
+        if (!el.shadowRoot) continue;
+        roots.push(el.shadowRoot);
+        scan(el.shadowRoot);
       } catch {}
     }
-  }
+  };
+  scan(document);
   return roots;
 }
 function ubShadowQueryAll(sel, max = 2000) {
@@ -2920,8 +2926,14 @@ function ubPageOverview(max = 35, offset = 0, order = "action", goal = "") {
       return 3;
     } catch { return 3; }
   };
-  const rawControls = ubShadowQueryAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[contenteditable="true"]').filter(visible);
-  if (String(order || "").toLowerCase() !== "dom") rawControls.sort((x, y) => ctrlRank(x) - ctrlRank(y));
+  let rawControls = ubShadowQueryAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[contenteditable="true"]').filter(visible);
+  if (String(order || "").toLowerCase() !== "dom") {
+    // rank calculado uma vez por elemento (o sort comparava e recalculava ~n log n vezes);
+    // índice como desempate mantém a ordem estável do DOM.
+    rawControls = rawControls.map((el, i) => ({ el, r: ctrlRank(el), i }))
+      .sort((a, b) => (a.r - b.r) || (a.i - b.i))
+      .map((x) => x.el);
+  }
   const contextCache = new WeakMap();
   const headingLike = (n) => {
     try {
@@ -2949,8 +2961,9 @@ function ubPageOverview(max = 35, offset = 0, order = "action", goal = "") {
     } catch { return ""; }
   };
   const buildItem = (el) => {
-    const r = el.getBoundingClientRect(), name = ubAccessibleName(el, textOf(el, 100));
-    return { tag: el.tagName.toLowerCase(), role: ubAriaRole(el), name: String(name || textOf(el, 100)).slice(0, 100), type: el.type || "", state: ubElementState(el), selector: cssPath(el), inViewport: r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth, ...(el.href ? { href: String(el.href).slice(0, 240) } : {}), ...(goal ? { context: contextOf(el) } : {}) };
+    // textOf usa innerText (força layout): uma vez só por elemento, não duas quando o nome vem vazio.
+    const r = el.getBoundingClientRect(), t = textOf(el, 100), name = ubAccessibleName(el, t);
+    return { tag: el.tagName.toLowerCase(), role: ubAriaRole(el), name: String(name || t).slice(0, 100), type: el.type || "", state: ubElementState(el), selector: cssPath(el), inViewport: r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth, ...(el.href ? { href: String(el.href).slice(0, 240) } : {}), ...(goal ? { context: contextOf(el) } : {}) };
   };
   const norm = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const stop = new Set(["a","as","o","os","de","da","do","das","dos","em","no","na","para","por","um","uma","que","como","the","to","of","in","on","and","abrir","ir","ver","achar","encontrar"]);
@@ -2971,24 +2984,56 @@ function ubPageOverview(max = 35, offset = 0, order = "action", goal = "") {
   };
   const cap = Number.isFinite(Number(max)) && Number(max) > 0 ? Math.floor(Number(max)) : 35;
   const start = Number.isFinite(Number(offset)) ? Math.max(0, Math.floor(Number(offset))) : 0;
-  // sem goal: monta item completo SÓ da fatia pedida (página com 4.900 controles montava
-  // 4.900 cssPath/accessible-name p/ devolver 35). Com goal o nome é necessário p/ score.
-  let relevant, pageControls, matches = [];
+  // item completo (cssPath/nome acessível) é caro: monta só o necessário.
+  // sem goal: a fatia pedida. com goal: pré-filtro barato (texto/aria/href/contexto) e item
+  // completo só dos candidatos — página de 4.900 controles deixa de montar 4.900.
+  let controlsTotal, pageControls, matches = [];
   if (words.length) {
-    const controls = rawControls.map(buildItem);
-    const ordered = controls.map((c, i) => ({ c, i, score: score(c) })).sort((a, b) => (b.score - a.score) || (a.i - b.i));
-    matches = ordered.filter((x) => x.score >= 5).slice(0, 5).map((x) => ({ selector: x.c.selector, name: x.c.name, role: x.c.role, ...(x.c.context ? { context: x.c.context } : {}), ...(x.c.href ? { href: x.c.href } : {}) }));
-    relevant = matches.length ? ordered.filter((x) => x.score >= 5) : ordered;
-    pageControls = relevant.slice(start, start + cap).map((x) => x.c);
+    const cheapName = (el) => {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "input" || tag === "select" || tag === "textarea") return ubAccessibleName(el, "");
+      try {
+        const al = el.getAttribute("aria-label");
+        if (al && String(al).trim()) return String(al).replace(/\s+/g, " ").trim().slice(0, 100);
+        if (tag === "img") { const alt = el.getAttribute("alt"); if (alt && String(alt).trim()) return String(alt).replace(/\s+/g, " ").trim().slice(0, 100); }
+        return String(el.textContent || el.value || el.getAttribute("placeholder") || el.getAttribute("title") || "").replace(/\s+/g, " ").trim().slice(0, 100);
+      } catch { return ""; }
+    };
+    const cheapScore = (el) => {
+      const name = norm(cheapName(el)), context = norm(contextOf(el)), href = norm(el.href || "");
+      let n = phrase && name.includes(phrase) ? 16 : 0;
+      for (const w of words) {
+        if (name.split(" ").some((part) => part === w || part.startsWith(w) || (w.startsWith(part) && part.length > 3) || (part.length >= 6 && w.length >= 6 && part.slice(0, 6) === w.slice(0, 6)))) n += 8;
+        else if (context.includes(w)) n += 2;
+        if (href.includes(w)) n += 5;
+      }
+      return n;
+    };
+    // 4 = pode virar 5 com inViewport (+1); abaixo disso não alcança o corte de matches.
+    const cand = rawControls.filter((el) => cheapScore(el) >= 4);
+    if (!cand.length) {
+      // ninguém pontua: a ordem final é a do DOM, então só a fatia precisa de item completo.
+      controlsTotal = rawControls.length;
+      pageControls = rawControls.slice(start, start + cap).map(buildItem);
+    } else {
+      const orderedOf = (els) => els.map(buildItem).map((c, i) => ({ c, i, score: score(c) })).sort((a, b) => (b.score - a.score) || (a.i - b.i));
+      let ordered = orderedOf(cand), strong = ordered.filter((x) => x.score >= 5);
+      // candidato barato que não fecha 5: volta ao caminho completo (mesmo resultado de antes).
+      if (!strong.length) { ordered = orderedOf(rawControls); strong = []; }
+      const final = strong.length ? strong : ordered;
+      matches = strong.slice(0, 5).map((x) => ({ selector: x.c.selector, name: x.c.name, role: x.c.role, ...(x.c.context ? { context: x.c.context } : {}), ...(x.c.href ? { href: x.c.href } : {}) }));
+      controlsTotal = final.length;
+      pageControls = final.slice(start, start + cap).map((x) => x.c);
+    }
   } else {
-    relevant = rawControls;
+    controlsTotal = rawControls.length;
     pageControls = rawControls.slice(start, start + cap).map(buildItem);
   }
   // nome de landmark: aria-label > primeiro título > primeiro link/botão. innerText do container
   // inteiro concatenava o menu todo (80 chars de lixo por landmark, sem dizer nada).
   const landmarkName = (el) => String(el.getAttribute?.("aria-label") || el.querySelector?.("h1,h2,h3")?.innerText || el.querySelector?.("a,button")?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 60);
   const landmarks = [...document.querySelectorAll("main,nav,header,footer,aside,[role=main],[role=navigation],[role=search],[role=dialog]")].filter(visible).map((el) => ({ role: ubAriaRole(el) || el.tagName.toLowerCase(), name: landmarkName(el), selector: cssPath(el) }));
-  return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, headingsTotal: allHeadings.length, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal: relevant.length, ...(relevant.length < rawControls.length ? { allControls: rawControls.length } : {}), controlsOffset: start, controlsOmitted: Math.max(0, relevant.length - start - pageControls.length), nextOffset: start + pageControls.length < relevant.length ? start + pageControls.length : null, ...(goal ? { goal: String(goal).slice(0, 120), goalMatched: matches.length > 0, matches } : {}), overlays: ubOverlayState() };
+  return { page: { title: document.title, url: location.href, readyState: document.readyState, lang: document.documentElement.lang || "", viewport: { width: innerWidth, height: innerHeight }, scroll: { x: scrollX, y: scrollY } }, headings, headingsTotal: allHeadings.length, landmarks, forms: [...document.forms].filter(visible).map((form) => ({ name: textOf(form, 80), selector: cssPath(form), fields: form.querySelectorAll("input,select,textarea,[contenteditable=true]").length })), controls: pageControls, controlsTotal, ...(controlsTotal < rawControls.length ? { allControls: rawControls.length } : {}), controlsOffset: start, controlsOmitted: Math.max(0, controlsTotal - start - pageControls.length), nextOffset: start + pageControls.length < controlsTotal ? start + pageControls.length : null, ...(goal ? { goal: String(goal).slice(0, 120), goalMatched: matches.length > 0, matches } : {}), overlays: ubOverlayState() };
 }
 
 var ubProgressPanelState = globalThis.__ubProgressPanelState || { active: false, collapsed: false, steps: [], annotations: [], title: "Canivete", message: "" };
@@ -3344,6 +3389,7 @@ chrome.runtime.onMessage.addListener(((myN) => (msg, _sender, reply) => {  if (m
             ...(expClick ? { expect: expClick } : {}),
             ...ubResolveNote(fresh),
             ...(r.needsTrusted ? { needsTrusted: true } : {}),
+            ...(r.hiddenViewport ? { hiddenViewport: true } : {}),
             ...(cover && cover.childHit ? { childHit: cover.child } : {}),
           },
         });
