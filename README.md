@@ -110,7 +110,8 @@ a cada 5 min (15s no boot) ele dá `git fetch origin main`, aplica `git merge --
 somente com árvore limpa em `main`, recarrega as extensões conectadas pela ponte e agenda
 o reinício do daemon **fora do próprio cgroup** (`systemd-run --user --on-active=2`).
 O desligamento espera chamadas HTTP em andamento (máx. 60s). Estado em
-`~/.config/canivete/auto-update.json` e em `GET /health` (`autoUpdate`).
+`~/.config/canivete/auto-update.json` e em `GET /health` (`autoUpdate`, com `bootCommit` —
+comparado ao `HEAD` para detectar commit local e reiniciar mesmo sem `git pull`).
 A única dependência externa é a conexão com a internet; `CANIVETE_NO_AUTOUPDATE=1` desliga.
 
 A extensão também se atualiza sozinha: o `background.js` compara o `manifest.json` do disco
