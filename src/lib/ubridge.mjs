@@ -79,6 +79,9 @@ function ubAlertsPush(tabId, title, url, entries) {
   try {
     const now = Date.now();
     for (const e of (Array.isArray(entries) ? entries : []).slice(0, 3)) {
+      // ruído ambiente (Statsig/CSP de widgets/telemetria) não polui ring, mon-log
+      // nem o hint do agente. `filter:"all"` no console segue mostrando tudo.
+      if (e && (e.noise === true || isMonNoise(e))) continue;
       const alert = { at: new Date().toISOString(), tabId, title: String(title || "").slice(0, 80), url: String(url || "").slice(0, 120), kind: e.kind, level: e.level, text: String(e.text || e.url || "").slice(0, 220), status: e.status ?? null };
       ubAlerts.push(alert);
       // vigia persiste no mon-log (source:"auto") — painel lê junto do inbox cv_report
@@ -656,6 +659,7 @@ export function ubListExtensions() {
 }
 
 import { riskOf as ubRisk } from "./risk.mjs";
+import { isMonNoise } from "../core/mon-noise.mjs";
 
 export { ubEnsure, ubSend, ubConnected, UB_OFF, ubRisk, UB_PORT, ubAlertsPush, ubAlertsPending, ubAlertsRead, ubAlertsList, ubAlertsHint };
 export function ubStats() {

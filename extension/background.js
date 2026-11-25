@@ -1115,11 +1115,13 @@ async function ubTrustedMove(tabId, x, y) {
     const out = (sr && sr.result) || { hooked: false, entries: [] };
     if (!out.hooked) return { hooked: false, entries: [], note: "hook ainda não injetado nesta página — rode qualquer ação antes (goto/click) e leia de novo" };
     let entries = Array.isArray(out.entries) ? out.entries : [];
-    const flt = String(a.filter || "all").toLowerCase();
+    const flt = String(a.filter || "actionable").toLowerCase();
+    // default: só o que é acionável. `filter:"all"` devolve o buffer cru (inclui ruído).
+    if (flt !== "all") entries = entries.filter((e) => e && e.noise !== true);
     if (flt === "errors") entries = entries.filter((e) => e && (e.kind === "js-error" || e.kind === "promise" || e.level === "error" || (e.kind === "net" && (e.status === 0 || e.status >= 400))));
     else if (flt === "net") entries = entries.filter((e) => e && e.kind === "net");
     else if (flt === "console") entries = entries.filter((e) => e && e.kind === "console");
-    return { hooked: true, filter: flt, count: entries.length, entries: entries.slice(-Math.min(Math.max(Number(a.limit) || 30, 1), 120)) };
+    return { hooked: true, filter: flt, count: entries.length, noiseOmitted: flt === "all" ? 0 : out.entries.length - entries.length, entries: entries.slice(-Math.min(Math.max(Number(a.limit) || 30, 1), 120)) };
   }
   if (cmd === "tab.reload-extension") {
     // auto-reload remoto: aplica código novo do disco sem passar pelo chrome://extensions
@@ -1447,6 +1449,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     (async () => {
       try {
         if (!siteAllowed(_s?.tab?.url)) return;
+        if (msg.__ubMonAlert.noise === true) return; // ruído ambiente: não vira alerta
         const tabId = (_s && _s.tab && _s.tab.id) || 0;
         const now = Date.now();
         const last = ubPushLast.get(tabId) || 0;

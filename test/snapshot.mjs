@@ -2,6 +2,7 @@
 // Cobrem os bugs que custaram tokens/latência no bench: dedup de fragmentos, overview slim, fold.
 import { snapDedupLinks, ubOverviewSlim, snapFold, snapFoldKey } from "../src/core/snapshot.mjs";
 import { toolsHashOf } from "../src/core/tool-version.mjs";
+import { isMonNoise } from "../src/core/mon-noise.mjs";
 
 let fail = 0;
 const t = (label, cond, extra = "") => {
@@ -77,6 +78,18 @@ const t = (label, cond, extra = "") => {
   const b = new Map([["cv_a", { public: true }], ["cv_b", { public: true }]]);
   const c = new Map([["cv_a", { public: true }], ["cv_b", { public: true }], ["cv_c", { public: true }]]);
   t("toolsHash estável e muda com o catálogo", toolsHashOf(a) === toolsHashOf(b) && toolsHashOf(c) !== toolsHashOf(a));
+}
+
+// 6) filtro de ruído do mon-hook: site barulhento fora, erro real dentro.
+{
+  t("Statsig/CSP/telemetria são ruído",
+    isMonNoise({ kind: "console", level: "warn", text: "[Statsig] Caught error in _writeToCache" }) &&
+    isMonNoise({ kind: "console", level: "error", text: "Creating a worker from 'blob:https://x.test/abc' violates the following Content Security Policy directive" }) &&
+    isMonNoise({ kind: "net", status: 0, url: "/forms/x/naLogImpressions?id=1" }) &&
+    isMonNoise({ kind: "js-error", text: "" }));
+  t("erro real não é ruído",
+    !isMonNoise({ kind: "js-error", text: "TypeError: Cannot read properties of null" }) &&
+    !isMonNoise({ kind: "net", status: 500, url: "/api/checkout", text: "internal" }));
 }
 
 if (fail) {

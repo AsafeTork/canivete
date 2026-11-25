@@ -12,9 +12,31 @@
   // DEPOIS do mon-hook: mount roubado por reinício de SW se autocorrige sem F5).
   // Buffer push SEMPRE (diagnóstico completo); o console só re-emit quando !quiet
   // (com dedupe 60s/assinatura). Miten error/unhandledrejection/fetch/XHR intactos.
-  if (window.__ubMon && window.__ubMon.v >= 4) return;
+  if (window.__ubMon && window.__ubMon.v >= 6) return;
   const EVENTS_MAX = 2400; // janela rolling do replay (cap de memória do clipe)
   const log = [];
+  // Ruído ambiente de sites (Statsig, CSP de widgets, telemetria) — mesmo filtro de
+  // src/core/mon-noise.mjs na ponte. O buffer guarda TUDO com noise:true; só o
+  // alerta proativo e a visão padrão do console escondem. filter:"all" mostra tudo.
+  const NOISE = [
+    /\[Statsig\]/i,
+    /content security policy directive/i,
+    /creating a worker from 'blob:/i,
+    /unsatisfied version .* shared singleton module/i,
+    /descendant <Routes>|parent route path has no trailing/i,
+    /\[Kumo Input\]: Input must have an accessible name/i,
+    /GetMe error DSFetchError: Usuário não logado/i,
+    /error fetching location data|no object found in localStorage with the specified key: locationData|no data available in localStorage/i,
+    /ErrorUtils caught an error:\s*voip: first init attempt/i,
+    /\/naLogImpressions\b|\/__l5e\/trackevents\b/i,
+  ];
+  const isNoise = (e) => {
+    try {
+      if (!e || typeof e !== "object") return false;
+      if ((e.kind === "js-error" || e.kind === "promise") && !String(e.text || "").trim()) return true;
+      return NOISE.some((re) => re.test(String(e.text || "") + " " + String(e.url || "")));
+    } catch { return false; }
+  };
   // tags de contexto: só area/agent/app, String ≤40, valores truthy (a página/agente seta __ubTags)
   function ubTags() {
     try {
@@ -27,12 +49,13 @@
   }
   const push = (e) => {
     try {
-      log.push({ t: Date.now(), ...e });
+      const noisy = isNoise(e);
+      log.push({ t: Date.now(), ...e, noise: noisy });
       if (log.length > 120) log.splice(0, log.length - 120);
       // push proativo: erro pula na hora p/ content (→ background → bridge → MCP),
-      // sem esperar poll. Só erro (js-error/promise/console.error/net-fail).
+      // sem esperar poll. Só erro (js-error/promise/console.error/net-fail) e não-ruído.
       const k = e.kind, lv = e.level;
-      const isErr = k === "js-error" || k === "promise" || lv === "error" || (k === "net" && (e.status === 0 || e.status >= 400));
+      const isErr = !noisy && (k === "js-error" || k === "promise" || lv === "error" || (k === "net" && (e.status === 0 || e.status >= 400)));
       if (isErr) {
         const tags = ubTags();
         try { window.dispatchEvent(new CustomEvent("__ubMonAlert", { detail: { t: Date.now(), ...e, ...(tags ? { tags } : {}) } })); } catch {}
@@ -174,7 +197,7 @@
   // start/stop no meio da vida da página (painel/agente comanda via evaluate+dispatchEvent)
   window.addEventListener("ub-replay-on", () => { try { recStart(); } catch {} });
   window.addEventListener("ub-replay-off", () => { try { recStop(); } catch {} });
-  window.__ubMon = { v: 4, quiet: window.__ubMonQuiet === true, replay: window.__ubReplay === true,
+  window.__ubMon = { v: 6, isNoise, quiet: window.__ubMonQuiet === true, replay: window.__ubReplay === true,
     read(n) { try { return log.slice(-Math.min(Math.max(Number(n) || 30, 1), 120)); } catch { return []; } },
     count() { try { return log.length; } catch { return 0; } },
     clear() { try { log.length = 0; } catch {} },

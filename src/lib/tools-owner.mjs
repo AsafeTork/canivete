@@ -769,7 +769,7 @@ reg("cv_ubrowser_act", {
       submit: { type: "boolean" }, waitMs: { type: "number" },
       snap: { type: "boolean", description: "p/ goto/new/back/forward/reload: volta top-10 do snapshot junto (economiza 1 call)" },
       goal: { type: "string", description: "com snap:true após navegação, encontre até 5 controles para este objetivo sem outra tool" },
-      filter: { type: "string", enum: ["all", "errors", "net", "console"], default: "all", description: "p/ console: all|errors|net|console" },
+      filter: { type: "string", enum: ["actionable", "all", "errors", "net", "console"], default: "actionable", description: "p/ console: actionable (default, sem ruído de site)|all (cru)|errors|net|console" },
       limit: { type: "number", default: 30, description: "p/ console: máx entradas (1-120)" },
       clear: { type: "boolean", description: "p/ console: limpa o buffer após ler" },
       pages: { type: "number", default: 10, description: "páginas de rolagem p/ scan (listas virtualizadas; 1-20)" },
