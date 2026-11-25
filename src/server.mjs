@@ -7,6 +7,7 @@ import { TOOLS, reg, out, sendToHost, CTX, CTX_BUDGET, visibleTools, toolCount }
 import { TOOL_GROUPS, groupOf as groupOfCore, firstSentence as firstSentenceCore } from "./core/taxonomy.mjs";
 import { installToolConsolidation } from "./core/tool-consolidation.mjs";
 import { buildToolsList, dispatchStdio, MCP_AGENT_SESSION_ID } from "./core/rpc.mjs";
+import { startAutoUpdate } from "./lib/autoupdate.mjs";
 import { sweepTask, safeTaskIds, readJson, TASKS_DIR } from "./lib/tasks.mjs";
 import { ubEnsure } from "./lib/ubridge.mjs";
 import "./lib/fs.mjs";
@@ -126,6 +127,7 @@ if (httpIdx >= 0) {
   const port = Number(process.argv[httpIdx + 1]) || 19423;
   const { serveHttp, getToken } = await import("./remote.mjs");
   await serveHttp(port, getToken());
+  startAutoUpdate(); // internet é a única dependência: fetch origin/main → fast-forward → restart
   await new Promise(() => {});
 }
 
@@ -143,7 +145,26 @@ if (httpIdx < 0) {
     clearTimeout(_t);
     const _j = await _h.json().catch(() => null);
     proxyMode = !!(_j && _j.ok === true);
-    if (proxyMode) process.stderr.write(`[canivete] daemon já ativo na :${MCP_HTTP_PORT} (${_j.tools} tools) — stdio em modo proxy (multi-CLI: nenhuma porta re-bindada)\n`);
+    if (proxyMode) {
+      process.stderr.write(`[canivete] daemon já ativo na :${MCP_HTTP_PORT} (${_j.tools} tools) — stdio em modo proxy (multi-CLI: nenhuma porta re-bindada)\n`);
+      // Catálogo mudou no daemon? Avisa o cliente (codex/claude) para reler tools/list.
+      // O daemon também manda a notificação na próxima resposta; aqui é o cinto.
+      let lastHash = _j.toolsHash || null;
+      const watch = setInterval(async () => {
+        try {
+          const c = new AbortController();
+          const t = setTimeout(() => c.abort(), 3000);
+          const h = await fetch(`http://127.0.0.1:${MCP_HTTP_PORT}/health`, { signal: c.signal });
+          clearTimeout(t);
+          const j = await h.json();
+          if (j.toolsHash && lastHash && j.toolsHash !== lastHash) {
+            lastHash = j.toolsHash;
+            sendToHost({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} });
+          } else if (j.toolsHash) lastHash = j.toolsHash;
+        } catch {}
+      }, 5000);
+      watch.unref();
+    }
   } catch {}
 }
 async function proxyMcp(msg) {

@@ -1,6 +1,7 @@
 // Testes puros de src/core/snapshot.mjs — sem rede, sem extensão, <1s.
 // Cobrem os bugs que custaram tokens/latência no bench: dedup de fragmentos, overview slim, fold.
 import { snapDedupLinks, ubOverviewSlim, snapFold, snapFoldKey } from "../src/core/snapshot.mjs";
+import { toolsHashOf } from "../src/core/tool-version.mjs";
 
 let fail = 0;
 const t = (label, cond, extra = "") => {
@@ -68,6 +69,14 @@ const t = (label, cond, extra = "") => {
   const small = snapFold(els.slice(0, 3));
   t("fold ignora run < 6", small.elements.length === 3);
   t("foldKey usa role+texto", snapFoldKey({ role: "button", text: "OK" }) === "button|ok");
+}
+
+// 5) hash do catálogo muda quando uma tool entra/sai e ignora ordem de registro.
+{
+  const a = new Map([["cv_b", { public: true }], ["cv_a", { public: true }], ["cv_hidden", { public: false }]]);
+  const b = new Map([["cv_a", { public: true }], ["cv_b", { public: true }]]);
+  const c = new Map([["cv_a", { public: true }], ["cv_b", { public: true }], ["cv_c", { public: true }]]);
+  t("toolsHash estável e muda com o catálogo", toolsHashOf(a) === toolsHashOf(b) && toolsHashOf(c) !== toolsHashOf(a));
 }
 
 if (fail) {

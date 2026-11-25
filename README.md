@@ -103,31 +103,27 @@ No Codex, `approve` autoriza as chamadas de todas as tools deste servidor MCP se
 ln -sfn /caminho/canivete ~/.codex/mcp/canivete   # o caminho do args resolve pro repo
 ```
 
-## Atualizar o canivete (qualquer CLI) — 1 comando
+## Atualização automática (MCP + extensão) — só precisa de internet
 
-```bash
-npm run atualizar        # ou: bash scripts/atualizar.sh
-```
+O daemon MCP (`--http`) faz o update sozinho, sem comando do dono nem timer do systemd:
+a cada 5 min (15s no boot) ele dá `git fetch origin main`, aplica `git merge --ff-only`
+somente com árvore limpa em `main`, recarrega as extensões conectadas pela ponte e agenda
+o reinício do daemon **fora do próprio cgroup** (`systemd-run --user --on-active=2`).
+O desligamento espera chamadas HTTP em andamento (máx. 60s). Estado em
+`~/.config/canivete/auto-update.json` e em `GET /health` (`autoUpdate`).
+A única dependência externa é a conexão com a internet; `CANIVETE_NO_AUTOUPDATE=1` desliga.
 
-Funciona do terminal do dono OU via `cv_bash` de qualquer CLI (root cai pro tork sozinho; o
-reinício é agendado via `systemd-run` — sobrevive mesmo executando de dentro do daemon).
-Detalhes do fluxo:
+A extensão também se atualiza sozinha: o `background.js` compara o `manifest.json` do disco
+com a versão carregada a cada ~60s idle e recarrega quando o update troca o código —
+sem `chrome://extensions` e sem clique. O bump de versão no manifest continua sendo o gatilho
+local, e o daemon reforça com `tab.reload-extension` no ciclo de update.
 
-- **Remote (opencode)**: sem restart do cliente — o daemon atende código novo por chamada.
-- **stdio (codex/claude)**: sessão nova spawna o proxy atualizado; sessão aberta segue no código antigo até fechar.
-- **Pegadinha**: se alguém editou arquivos como **root**, o `git pull` do tork falha (arquivo root-owned). Conserte com `sudo chown -R tork:tork /caminho/canivete` e rode de novo.
-- **Auto (padrão)**: timer `canivete-updater` consulta `origin/main` a cada 5min e 2min após boot; avança com segurança de uma branch de PR já mesclada para `main` e reinicia quando o commit avança. O desligamento espera chamadas HTTP em andamento (máx. 60s). Log: `journalctl --user -u canivete-updater`; carimbo: `~/.config/canivete/last-update`.
+Clientes MCP recebem `notifications/tools/list_changed` quando o catálogo muda:
+o daemon anexa a notificação à próxima resposta de sessões stdio (Codex/Claude) e o proxy
+também vigia `toolsHash` em `/health` — a lista de tools do Codex se atualiza sem reabrir a sessão.
 
-Instale/atualize o timer do checkout atual:
-
-```bash
-install -Dm644 systemd/user/canivete-updater.service ~/.config/systemd/user/canivete-updater.service
-install -Dm644 systemd/user/canivete-updater.timer ~/.config/systemd/user/canivete-updater.timer
-systemctl --user daemon-reload
-systemctl --user enable --now canivete-updater.timer
-```
-
-O timer só avança uma cópia limpa e fast-forwardável; alterações locais e branches ainda não mescladas ficam preservadas. `npm run atualizar` continua disponível para aplicar manualmente sem esperar o próximo ciclo.
+Fallback manual (opcional): `npm run atualizar` (ou `bash scripts/atualizar.sh`). Os units
+`systemd/user/canivete-updater.*` continuam no repo como alternativa, mas **não são necessários**.
 
 ## Persistência (sobrevive ao reboot)
 

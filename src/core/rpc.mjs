@@ -53,7 +53,7 @@ export async function dispatchStdio(msg, TOOLS, sendToHost, agentSessionId = DEF
   if (msg.method?.startsWith("notifications/")) return null;
   if (msg.id === undefined || msg.id === null) return null;
   if (msg.method === "initialize") {
-    return { id: msg.id, result: { protocolVersion: msg.params?.protocolVersion || "2024-11-05", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "canivete", version: "1.0.0" } } };
+    return { id: msg.id, result: { protocolVersion: msg.params?.protocolVersion || "2024-11-05", capabilities: { tools: { listChanged: true } }, serverInfo: { name: "canivete", version: "1.0.0" } } };
   }
   if (msg.method === "ping") return { id: msg.id, result: {} };
   if (msg.method === "tools/list") {
@@ -76,7 +76,7 @@ export async function dispatchStdio(msg, TOOLS, sendToHost, agentSessionId = DEF
 export async function dispatchHttpItem(m, TOOLS, agentSessionId = DEFAULT_AGENT_SESSION_ID) {
   if (!m || m.method?.startsWith("notifications/") || m.id === undefined || m.id === null) return null;
   if (m.method === "initialize") {
-    return { jsonrpc: "2.0", id: m.id, result: { protocolVersion: m.params?.protocolVersion || "2024-11-05", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "canivete", version: "1.0.0" } } };
+    return { jsonrpc: "2.0", id: m.id, result: { protocolVersion: m.params?.protocolVersion || "2024-11-05", capabilities: { tools: { listChanged: true } }, serverInfo: { name: "canivete", version: "1.0.0" } } };
   }
   if (m.method === "ping") return { jsonrpc: "2.0", id: m.id, result: {} };
   if (m.method === "tools/list") {

@@ -9,6 +9,8 @@ import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { TOOLS, toolCount } from "./lib/ctx.mjs";
 import { dispatchHttpItem } from "./core/rpc.mjs";
+import { toolsHashOf } from "./core/tool-version.mjs";
+import { autoUpdateStatus } from "./lib/autoupdate.mjs";
 import "./lib/fs.mjs";
 import "./lib/web.mjs";
 import "./lib/apis.mjs";
@@ -40,12 +42,16 @@ export function getToken() {
 }
 
 export async function serveHttp(port, token) {
+  // Clientes stdio (codex/claude) são proxies: cada chamada vira POST /mcp. Eles não
+  // têm canal push, então a Mudança do catálogo viaja junto da PRÓXIMA resposta HTTP
+  // como notificação JSON-RPC extra — o proxy repassa cada item para o stdout.
+  const notifiedHash = new Map();
   const srv = createServer(async (req, res) => {
     try {
       const u = new URL(req.url || "/", "http://127.0.0.1");
       if (u.pathname === "/health" && req.method === "GET") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, tools: toolCount() }));
+        res.end(JSON.stringify({ ok: true, tools: toolCount(), toolsHash: toolsHashOf(TOOLS), autoUpdate: autoUpdateStatus() }));
         return;
       }
       if (u.pathname !== "/mcp") { res.writeHead(404); res.end("not found"); return; }
@@ -76,8 +82,18 @@ export async function serveHttp(port, token) {
         const r = await dispatchHttpItem(m, TOOLS, agentSessionId);
         if (r) out.push(r);
       }
+      // Notifica só proxies stdio. Opencode usa HTTP direto e não aceita resposta
+      // em batch para um request único — seu cliente descobre o catálogo por chamada.
+      if (agentSessionId.startsWith("stdio:")) {
+        const hash = toolsHashOf(TOOLS);
+        const prev = notifiedHash.get(agentSessionId);
+        if (prev !== hash) {
+          notifiedHash.set(agentSessionId, hash);
+          if (prev !== undefined) out.push({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} });
+        }
+      }
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(Array.isArray(msg) ? out : out[0] || {}));
+      res.end(JSON.stringify(Array.isArray(msg) || out.length > 1 ? out : out[0] || {}));
     } catch (e) {
       try { res.writeHead(500); res.end("internal"); } catch {}
     }
