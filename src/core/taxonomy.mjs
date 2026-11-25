@@ -11,7 +11,6 @@ export const TOOL_GROUPS = [
   { title: "Meta", hint: "Ajuda, contexto, skills e feedback", names: ["cv_help", "cv_ctx_status", "cv_skill", "cv_report"] },
   { title: "Reports de elemento", hint: "Listar e resolver marcações feitas na página", names: ["cv_elemreports_list", "cv_elemreports_resolve"] },
   { title: "Mídia local", hint: "Análise de áudio local via ffprobe/ffmpeg", names: ["cv_audio_analyze"] },
-  { title: "WhatsApp", hint: "Consultar e agir via gateway ou Chrome logado", names: ["cv_whatsapp"] },
 ];
 
 export function orchestrationTitle(has, hasTask) {

@@ -72,7 +72,6 @@ const safeArgs = new Map([
   ["cv_browser_screencast", { url: PAGE, width: 640, height: 480, scale: 0.5, actions: [{ wait: 10 }] }],
   ["cv_codespace_lifecycle", { action: "create", repo: "benchmark invalido" }],
   ["cv_codespace_exec", {}],
-  ["cv_whatsapp", { action: "__benchmark_invalid__" }],
   ["cv_audio_analyze", { path: join(SANDBOX, "nao-existe.wav") }],
   ["cv_report", { kind: "aprimoramento", where: "benchmark", expected: "medir sem persistir", got: "dry-run", dryRun: true }],
   ["cv_help", { query: "browser", limit: 5 }],

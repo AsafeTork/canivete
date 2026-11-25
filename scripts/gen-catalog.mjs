@@ -31,7 +31,6 @@ function group(name) {
   if (/^cv_task_|^cv_todo/.test(name)) return "Orquestração";
   if (/^cv_elemreports_/.test(name)) return "Reports de elemento";
   if (name === "cv_audio_analyze") return "Mídia local";
-  if (name === "cv_whatsapp") return "WhatsApp";
   return "Meta";
 }
 

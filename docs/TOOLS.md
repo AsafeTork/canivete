@@ -41,7 +41,6 @@
 | `cv_todowrite` | Orquestração | Substitui (replace, padrão) ou mescla (append por content igual) a lista in-memory. Volátil (morre com o processo). | todos, mode |
 | `cv_webfetch` | Web e consultas | Baixa URL SEM JS e extrai texto principal + og:price/JSON-LD (tenta <article>/<main>). | url, format, maxChars, timeout, links |
 | `cv_websearch` | Web e consultas | Busca web multi-backend (News, DDG, Wikipedia, HN, GitHub, GitHub-novos, Lemmy/fediverso, npm, arXiv; cache 10min, dedupe por URL). | query, numResults, site, since, fresh, page, perPage |
-| `cv_whatsapp` | WhatsApp | WhatsApp DEDICADO: via gateway Baileys (WebSocket, sem browser) com fallback p/ Chrome logado. | action, tabId, tab, name, to, phone, text, pages, limit, data-testid |
 
 Os modos usam enums explícitos e campos específicos por operação. Para a descrição completa, use `cv_help {query, detail:true}`.
 

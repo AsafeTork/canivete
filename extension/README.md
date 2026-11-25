@@ -12,7 +12,7 @@ Ponte entre o MCP `canivete` e ESTE Chrome (perfil logado).
 
 A extensão se atualiza **sozinha**: o worker compara o `manifest.json` do disco com o
 carregado a cada ~60s idle e se recarrega quando a versão muda (content script já se
-auto-reinjeta; `mon/wa-hook.js` lêem do disco a cada injeção). **Convenção: bump na
+auto-reinjeta; `mon-hook.js` lê do disco a cada injeção). **Convenção: bump na
 `version` do manifest a cada mudança na extensão** — é o gatilho do auto-update.
 `cv_owner_inspect {action:"status"}` mostra as versões `bg`/`ub` em execução; se diferirem dos arquivos, a extensão recarrega sozinha.
 Manual só em 2 casos: migração de pasta (esta seção) ou `act {action:"reload-extension"}` p/ forçar na hora.
@@ -24,7 +24,6 @@ Manual só em 2 casos: migração de pasta (esta seção) ou `act {action:"reloa
 | `background.js` | Service worker: ponte HTTP `127.0.0.1:19422`, fila de comandos, CDP, grupos de guias, foco da janela, relay de mensagens do painel e auto-reload remoto. |
 | `content.js` | Content script (mundo isolado): leitura, overview, snapshot, ações DOM, progresso e marcações visuais isoladas, shadow DOM, delta pós-ação e cursor animado. |
 | `mon-hook.js` | Hook de observabilidade (mundo MAIN): console + erros JS + fetch/XHR; erros sobem sozinhos via push. |
-| `wa-hook.js` | Hook do WhatsApp Web (mundo MAIN): `state/chats/open/read/send/ids`. |
 | `popup.html` / `popup.js` | Popup: colar token, status ATIVO/pausado, testar conexão. |
 | `manifest.json` | MV3 (`debugger` para CDP, `tabGroups`, `scripting`, `tabs`, `storage`, `alarms`). |
 

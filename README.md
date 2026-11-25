@@ -19,7 +19,7 @@ O catálogo é gerado do registro real em [docs/TOOLS.md](docs/TOOLS.md). Em run
 | Consultar e editar código | `cv_code_inspect`, `cv_code_edit`, `cv_code_verify` | use o `action` descrito por `cv_help` |
 | Entender o próprio Canivete | `cv_help`, `cv_ctx_status`, `cv_report` | descoberta, consumo de contexto e relato de falha |
 
-As tools especializadas restantes cobrem shell, web search/fetch, Codespaces, mídia, WhatsApp, reports de elementos, skills e processos em segundo plano. Consulte `docs/TOOLS.md` para a lista completa e modos. Operações com efeitos continuam separadas das consultas.
+As tools especializadas restantes cobrem shell, web search/fetch, Codespaces, mídia, reports de elementos, skills e processos em segundo plano. Consulte `docs/TOOLS.md` para a lista completa e modos. Operações com efeitos continuam separadas das consultas.
 
 ## Quickstart (5 min)
 
@@ -265,7 +265,7 @@ src/lib/llm.mjs         slots LLM (fallbacks 2-5, presets)
 src/lib/tools-codespace.mjs  cv_codespace_* (ambiente de teste na nuvem gh)
 src/lib/risk.mjs        classificação informativa de risco
 config/models.json      modelos (modo opencode)
-extension/              extensão MV3 do Chrome autenticado (background.js ponte/CDP/grupos/interrupção de fluxo, content.js overview/progresso/anotações em overlay imersivo, mon-hook.js observabilidade, wa-hook.js WhatsApp, popup)
+extension/              extensão MV3 do Chrome autenticado (background.js ponte/CDP/grupos/interrupção de fluxo, content.js overview/progresso/anotações em overlay imersivo, mon-hook.js observabilidade, popup)
 examples/               configs prontas por CLI
 docs/                   skill global de referência
 test/smoke.mjs          fumaça offline-segura

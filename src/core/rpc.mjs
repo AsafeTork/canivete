@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 const DEFAULT_AGENT_SESSION_ID = `stdio:${randomUUID()}`;
 export const MCP_AGENT_SESSION_ID = DEFAULT_AGENT_SESSION_ID;
 const READ_ONLY_RE = /read|list|glob|grep|search|fetch|status|tabs|snapshot|lookup|inspect|help|context|_todo$/i;
-const DESTRUCTIVE_RE = /write|edit|patch|bash|delete|send|fill|type|lifecycle|connect|login|task_start|task_mailbox|alerts|report|screencast|exec|todowrite|orchestrate|resolve|whatsapp|skill/i;
+const DESTRUCTIVE_RE = /write|edit|patch|bash|delete|send|fill|type|lifecycle|connect|login|task_start|task_mailbox|alerts|report|screencast|exec|todowrite|orchestrate|resolve|skill/i;
 const DESTRUCTIVE_ACT_RE = /(^|_)act(_|$)/i;
 
 export function annotationsFor(name = "") {

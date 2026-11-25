@@ -987,45 +987,6 @@ async function ubTrustedMove(tabId, x, y) {
     })();
     return await withTimeout(scanJob, 60000, "tab.scan");
   }
-  // ---- WhatsApp Web dedicado (seletores data-testid estáveis; sem classes minificadas) ----
-  // ---- Store interno do WhatsApp (padrão venom/wppconnect): funcs estáticas, sem eval ----
-  // (waExec legado com func inline removido — tudo via wa-hook.js + waStore)
-  async function waStore(id, op, args = {}) {
-    await withTimeout(chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", files: ["wa-hook.js"] }), 15000, "injetar wa-hook");
-    const [r] = await withTimeout(
-      chrome.scripting.executeScript({ target: { tabId: id }, world: "MAIN", func: (o, a) => (window.__ubWA ? window.__ubWA.cmd(o, a) : { error: "hook-off" }), args: [op, args] }),
-      25000,
-      "wa store " + op
-    );
-    if (!r) throw new Error("wa sem resposta");
-    if (r.error) throw new Error(r.error);
-    return r.result;
-  }
-  async function waTab(a) {
-    if (a.tabId) return a.tabId;
-    if (a.tab) {
-      const needle = String(a.tab).toLowerCase();
-      const all = await chrome.tabs.query({});
-      const f = all.find((t) => ((t.title || "") + " " + (t.url || "")).toLowerCase().includes(needle) || (t.url || "").includes("web.whatsapp.com"));
-      if (f) return f.id;
-    }
-    const all = await chrome.tabs.query({ url: ["*://web.whatsapp.com/*"] });
-    if (all.length) return all[0].id;
-    return await activeTabId();
-  }
-  if (["tab.wa_state", "tab.wa_chats", "tab.wa_open", "tab.wa_read", "tab.wa_send", "tab.wa_ids"].includes(cmd)) {
-    // Store interno primeiro (padrão venom/wppconnect: sem eval, sem clique); DOM como fallback
-    const id = await waTab(a);
-    const sub = { "tab.wa_state": "wa_state", "tab.wa_chats": "wa_chats", "tab.wa_open": "wa_open", "tab.wa_read": "wa_read", "tab.wa_send": "wa_send", "tab.wa_ids": "wa_ids" }[cmd];
-    const op = { "tab.wa_state": "state", "tab.wa_chats": "chats", "tab.wa_open": "open", "tab.wa_read": "read", "tab.wa_send": "send", "tab.wa_ids": "ids" }[cmd];
-    try {
-      const r = await waStore(id, op, { name: a.name, text: a.text, limit: a.limit, chatName: a.name });
-      if (r && !r.error) return r;
-    } catch (e) {
-      diag.lastError = "wa-store: " + String(e.message || e).slice(0, 100);
-    }
-    return await ask(id, sub, a);
-  }
   if (cmd === "tab.reinject") {
     // hot-update forçado: reinjeta content.js do disco e retorna a versão ativa (sem reload, sem tela)
     const id = a.tabId || (await activeTabId());
@@ -1354,7 +1315,7 @@ const ubBootAt = Date.now();
 let ubWantReload = false, ubSelfCheckAt = 0;
 // auto-update sozinho: compara o manifest DO DISCO com o carregado a cada ~60s idle;
 // versão diferente (git pull/edição) → marca reload, aplicado no próximo idle (quiescente).
-// Content já se auto-reinjeta (UB_EXPECTED); injetados (mon/wa-hook) lêem do disco a cada injeção.
+// Content já se auto-reinjeta (UB_EXPECTED); mon-hook lê do disco a cada injeção.
 // Depois desta versão: sem reload manual, sem chrome://extensions. Convenção: bump em
 // manifest.json a cada mudança na extensão (é o gatilho).
 async function ubSelfUpdate() {

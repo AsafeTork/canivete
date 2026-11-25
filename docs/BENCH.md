@@ -21,7 +21,6 @@ O tempo inclui rede/serviços externos quando a tool os usa. Respostas são desc
 | cv_browser_screencast | 905 | success | 687 |  |
 | cv_codespace_exec | — | SKIP | 0 | executa comandos em um recurso privado da conta |
 | cv_codespace_login | — | SKIP | 0 | inicia um fluxo OAuth externo |
-| cv_whatsapp | 7 | error | 70 |  |
 | cv_audio_analyze | 4 | error | 287 |  |
 | cv_report | 3 | ok | 261 |  |
 | cv_ctx_status | 3 | ok | 266 |  |
