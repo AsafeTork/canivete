@@ -89,7 +89,9 @@ export async function serveHttp(port, token) {
         const prev = notifiedHash.get(agentSessionId);
         if (prev !== hash) {
           notifiedHash.set(agentSessionId, hash);
-          if (prev !== undefined) out.push({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} });
+          // Também no primeiro pedido da sessão: o Codex pode ter iniciado com o
+          // catálogo antigo em cache antes de o daemon ser reiniciado.
+          out.push({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} });
         }
       }
       res.writeHead(200, { "content-type": "application/json" });
